@@ -7,8 +7,10 @@
 # overlay/  New files, laid out as in the QEMU tree. They are symlinked into
 #           qemu/ so that edits made from either side land in this repository.
 # patches/  Changes to existing QEMU files, as a git format-patch series
-#           applied in file name order. Patches must touch disjoint files so
-#           that each can be refreshed independently.
+#           applied in file name order. Like the commits of a series, a
+#           patch may change a file that an earlier one also changes: each
+#           is generated against the tree with every earlier patch applied,
+#           and with the changes of later patches taken back out.
 #
 # The exact revision of every patch applied to qemu/ is recorded in the
 # submodule's git directory (outside the work tree). That record, not the
@@ -64,14 +66,82 @@ is_applied() {
 
 # has_local_edits <patch>: the tree's diff of the patch's files differs from
 # the patch itself. Unlike is_applied, this also sees edits outside the
-# patch's hunks. 'index' lines are skipped: their hash abbreviation length
-# depends on the clone.
+# patch's hunks. An edit to a file that several patches change counts for
+# each of them, since refreshing any one of them would take it in. 'index'
+# lines are skipped: their hash abbreviation length depends on the clone.
 has_local_edits() {
-    local -a files
+    local -a files trees
+    local staged
     mapfile -t files < <(patch_files "$1")
+    # Failing to stage means a later patch's lines were edited
+    staged=$(stage_trees "$(basename "$1")" "${files[@]}" 2>/dev/null) ||
+        return 0
+    read -ra trees <<<"$staged"
     ! cmp -s <(sed -n '/^diff --git /,$p' "$1" | grep -v '^index ') \
-             <(qgit diff --no-color --no-ext-diff -- "${files[@]}" |
-               grep -v '^index ')
+             <(qgit diff --no-color --no-ext-diff "${trees[@]}" -- \
+                   "${files[@]}" | grep -v '^index ')
+}
+
+# applied_revision <patch>: the recorded revision of <patch>, if any
+applied_revision() {
+    local r
+    r="$APPLIED/$(basename "$1")"
+    [ -f "$r" ] && printf '%s\n' "$r"
+}
+
+# touches_any <patch> <file>...: <patch> changes at least one of <file>...
+touches_any() {
+    local p=$1
+    shift
+    grep -qxF -f <(printf '%s\n' "$@") <(patch_files "$p")
+}
+
+# stage_trees <name> <file>...: print the base and result trees of the
+# patch named <name> as it would be generated from qemu/ for <file>...
+# The base is HEAD plus the applied revision of every patch ordered before
+# <name>; the result is the base with <file>... as qemu/ holds them, minus
+# the changes of later applied patches to those files. Only a temporary
+# index and the submodule's object store are used; qemu/ is not touched.
+# Call it in a command substitution: it cleans up on exit of the subshell.
+stage_trees() {
+    local name=$1 idx p r f blob mode base
+    shift
+    idx=$(mktemp -d)/index
+    # shellcheck disable=SC2064 # expand now: $idx is local
+    trap "rm -rf '${idx%/index}'" EXIT
+    local -a inc=() later=()
+    for f; do inc+=(--include="$f"); done
+
+    GIT_INDEX_FILE=$idx qgit read-tree HEAD
+    while IFS= read -r p; do
+        if [ "$(basename "$p")" \< "$name" ]; then
+            r=$(applied_revision "$p") ||
+                die "$(basename "$p") is not applied; run 'make apply' first"
+            GIT_INDEX_FILE=$idx qgit apply --cached "$r"
+        elif [ "$(basename "$p")" != "$name" ] &&
+             r=$(applied_revision "$p") && touches_any "$r" "$@"; then
+            later=("$r" "${later[@]}")  # newest first, for reverting
+        fi
+    done < <(patch_list)
+    base=$(GIT_INDEX_FILE=$idx qgit write-tree)
+
+    for f; do
+        if [ -f "$QEMU/$f" ]; then
+            blob=$(qgit hash-object -w -- "$f")
+            mode=100644
+            [ ! -x "$QEMU/$f" ] || mode=100755
+            GIT_INDEX_FILE=$idx qgit update-index --add \
+                --cacheinfo "$mode,$blob,$f"
+        else
+            GIT_INDEX_FILE=$idx qgit update-index --force-remove -- "$f"
+        fi
+    done
+    for r in "${later[@]}"; do
+        GIT_INDEX_FILE=$idx qgit apply --cached --reverse "${inc[@]}" "$r" ||
+            die "cannot separate $name from the later $(basename "$r")," \
+                "which changes the same lines; edit the later patch instead"
+    done
+    printf '%s %s\n' "$base" "$(GIT_INDEX_FILE=$idx qgit write-tree)"
 }
 
 # record <patch>: note that this exact revision is now applied to qemu/
@@ -96,15 +166,23 @@ revert_recorded() {
     rm -f "$r"
 }
 
-# revert_stale_records: undo recorded revisions that patches/ no longer holds
+# revert_stale_records: undo recorded revisions that patches/ no longer
+# holds, together with every later recorded patch that shares a file with
+# one being undone (its hunks were made on top of it)
 revert_stale_records() {
     local r p
+    local -a out=() files=()
     while IFS= read -r r; do
         p="$PATCHES/$(basename "$r")"
-        if [ ! -f "$p" ] || ! cmp -s "$r" "$p"; then
-            revert_recorded "$r"
+        if [ ! -f "$p" ] || ! cmp -s "$r" "$p" ||
+           { [ ${#files[@]} -gt 0 ] && touches_any "$r" "${files[@]}"; }; then
+            out=("$r" "${out[@]}")
+            mapfile -t -O "${#files[@]}" files < <(patch_files "$r")
         fi
-    done < <(find "$APPLIED" -name '*.patch' | LC_ALL=C sort -r)
+    done < <(find "$APPLIED" -name '*.patch' | LC_ALL=C sort)
+    for r in "${out[@]}"; do
+        revert_recorded "$r"
+    done
 }
 
 check_tree() {
@@ -248,10 +326,6 @@ cmd_status() {
         [ -e "$OVERLAY/$rel" ] || info stale "$rel"
     done < <(overlay_links)
 
-    local dups
-    dups=$(LC_ALL=C sort "$managed" | uniq -d)
-    [ -z "$dups" ] || printf 'warning: files touched by several patches:\n%s\n' "$dups"
-
     echo "unmanaged changes in qemu/:"
     qgit status --porcelain | cut -c4- | while IFS= read -r file; do
         grep -qxF "$file" "$managed" || info changed "$file"
@@ -273,7 +347,10 @@ cmd_new() {
     msg=$(mktemp)
     trap 'rm -f "$msg"' RETURN
     printf 'subsystem: Summary in the imperative mood\n\nWhy the change is needed.\n' >"$msg"
-    "${EDITOR:-vi}" "$msg"
+    # The editor git itself would use; like git, allow arguments in it
+    local editor
+    editor=$(git -C "$ROOT" var GIT_EDITOR)
+    eval "$editor \"\$msg\""
 
     write_patch "$out" "$msg" "$(git -C "$ROOT" var GIT_AUTHOR_IDENT |
         sed 's/> .*/>/')" "$@"
@@ -311,27 +388,29 @@ header() {
     sed -n "s/^$1: //p" <<<"$2"
 }
 
-# write_patch <out> <message-file> <author> <file>...: format the current
-# qemu/ diff of <file>... as a single git format-patch file.
+# write_patch <out> <message-file> <author> <file>...: format the changes
+# of <file>... in qemu/ that belong to the patch named like <out> (see
+# stage_trees) as a single git format-patch file. GIT_AUTHOR_DATE, when
+# set, dates the patch.
 write_patch() {
-    local out=$1 msg=$2 author=$3
+    local out=$1 msg=$2 author=$3 staged base tree
     shift 3
-    [ -n "$(qgit diff --name-only -- "$@")" ] || die "no changes in: $*"
+    staged=$(stage_trees "$(basename "$out")" "$@")
+    read -r base tree <<<"$staged"
+    [ "$base" != "$tree" ] || die "no changes in: $*"
 
-    # Commit into a throw-away worktree so qemu/ itself is left untouched.
-    # The EXIT trap also covers failures part-way through (set -e).
-    local wt
-    wt=$(mktemp -d)
-    trap 'qgit worktree remove --force "$wt" 2>/dev/null; rm -rf "$wt"' EXIT
-    qgit worktree add -q --detach "$wt" HEAD
-    qgit diff --binary -- "$@" | git -C "$wt" apply --index
-    git -C "$wt" -c user.name=qemu-tree -c user.email=qemu-tree@localhost \
-        commit -q --author="$author" -F "$msg"
-    git -C "$wt" format-patch -q -1 --no-signature --zero-commit -N \
-        --stdout >"$out"
-    qgit worktree remove --force "$wt"
-    rm -rf "$wt"
-    trap - EXIT
+    # Commit objects only, never checked out, so qemu/ is left untouched
+    local parent commit name email
+    name=${author% <*}
+    email=${author##*<}
+    email=${email%>}
+    parent=$(qgit commit-tree "$base" -m base)
+    commit=$(GIT_AUTHOR_NAME=$name GIT_AUTHOR_EMAIL=$email \
+             GIT_COMMITTER_NAME=qemu-tree \
+             GIT_COMMITTER_EMAIL=qemu-tree@localhost \
+             qgit commit-tree "$tree" -p "$parent" -F "$msg")
+    qgit format-patch -q -1 --no-signature --zero-commit -N --stdout \
+        "$commit" >"$out"
 }
 
 [ $# -ge 1 ] || { usage; exit 1; }

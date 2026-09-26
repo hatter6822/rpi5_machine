@@ -11,9 +11,21 @@ ways, both managed by `scripts/qemu-tree` (wrapped by `make`):
 | Edit to an existing QEMU file (Kconfig, meson.build, trace-events, index pages) | `patches/NNNN-*.patch` | `git apply` to the work tree |
 
 The rule that keeps this manageable: **anything that can be a new file is a
-new file.** Patches are reserved for the glue that cannot be, and each file
-is touched by at most one patch so that patches can be refreshed
-independently (`make status` warns about overlaps).
+new file.** Patches are reserved for the glue that cannot be.
+
+Patches form a series, applied in file name order, and like the commits of
+an upstream series they may change the same file: `hw/arm/Kconfig` is
+changed both by the upstream-first Kconfig split (0001) and by the BCM2712
+glue (0002). Each patch is generated against the tree with every earlier
+patch applied and with the changes of later patches taken back out, so it
+can still be refreshed on its own. Two consequences:
+
+* when a patch changes (a checkout, a pull), `apply` reverts it together
+  with every later patch that shares a file with it, then reapplies them
+  all in order;
+* an edit to a shared file shows as a local edit of every patch that
+  changes the file (`make status`); refresh the one it belongs to. Edits
+  to lines that a later patch changes belong to that later patch.
 
 ### Everyday loop
 
@@ -36,14 +48,14 @@ Edit it in `qemu/`, then either
 
 ```
 scripts/qemu-tree new hw-misc-add-bcm2712-foo qemu-relative/path ...   # new patch
-scripts/qemu-tree refresh 0001-hw-arm-Build-the-BCM2712-SoC-and-raspi5b-machine.patch
+scripts/qemu-tree refresh 0002-hw-arm-Build-the-BCM2712-SoC-and-raspi5b-machine.patch
 ```
 
-`new` opens `$EDITOR` for a commit message in QEMU style
-(`subsystem: Imperative summary`, then the why). `refresh` regenerates an
-existing patch from the files it touches, keeping its message, author and
-date (parsed with `git mailinfo`), so an unchanged tree reproduces the patch
-byte for byte. The script needs bash 4 and GNU coreutils (`realpath
+`new` appends a patch to the series and opens git's editor for a commit
+message in QEMU style (`subsystem: Imperative summary`, then the why).
+`refresh` regenerates an existing patch from the files it touches, keeping
+its message, author and date (parsed with `git mailinfo`), so an unchanged
+tree reproduces the patch byte for byte. The script needs bash 4 and GNU coreutils (`realpath
 --relative-to`); on macOS install `coreutils` from Homebrew.
 
 `make status` lists edits in `qemu/` that belong to no patch or overlay file;
