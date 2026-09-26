@@ -59,7 +59,7 @@ commit (or a short series) with its own tests.
 
 ## 2. Current state
 
-Delivered so far (WS0.1–WS0.3, WS0.6, WS2.1):
+Delivered so far (WS0.1–WS0.3, WS0.6, WS2.1, WS9.2a):
 
 | Area | State |
 | --- | --- |
@@ -67,7 +67,7 @@ Delivered so far (WS0.1–WS0.3, WS0.6, WS2.1):
 | Kconfig (WS0.6) | every BCM283x device model has its own symbol, so `bcm2712` can select just the models it reuses; a `raspi5b`-only build is tested (`make check-minimal`) |
 | SoC (`bcm2712`) | 1–4 Cortex-A76 (`MPIDR.Aff1` = core, CNTFRQ 54 MHz, optional EL3), GIC-400 with 288 SPIs, 5 priority bits and all timer/maintenance PPIs, UART10 (PL011), system timer (WS2.1), complete memory map with T0 placeholders and two catch-all windows |
 | Board (`raspi5b`) | 1/2/4/8/16 GiB RAM, board revision code, PSCI over SMC with EL2 entry (default) or guest-owned EL3 (`secure=on`), DTB fix-ups for unmodelled devices, `/system/linux,revision` |
-| Tests | qtest (UART IDs, GIC geometry, priority bits and security, RAM, placeholders), bare-metal smoke guest (EL, MPIDR, CNTFRQ, PSCI CPU_ON on all cores, SYSTEM_OFF, EL3 mode) |
+| Tests | qtest (UART IDs, GIC geometry, priority bits and security, RAM, placeholders, system timer), bare-metal smoke guest (EL, MPIDR, CNTFRQ, PSCI CPU_ON on all cores, SYSTEM_OFF, EL3 mode), bare-metal library and suite (WS9.2a: GIC, timers, system timer, PSCI/SMP; 1–4 cores, with and without a DT, EL2 and EL3) |
 | Linux | the stock Raspberry Pi OS kernel (6.18) with the firmware's `bcm2712-rpi-5-b.dtb` boots on 4 CPUs to the root-fs mount, without warnings |
 
 Known provisional values, each marked in the code: 288 SPIs
@@ -131,9 +131,9 @@ immediately exercised by the next:
 
 | # | Unit | Why now |
 | --- | --- | --- |
-| 1 | WS0.6 Kconfig split | unblocks reusing every BCM283x model; a self-contained upstream patch |
-| 2 | WS2.1 system timer | first reused device; exercises the SPI wiring path |
-| 3 | WS9.2a bare-metal framework | exception vectors and a GIC driver in the guest, needed by every later test |
+| 1 | WS0.6 Kconfig split (done) | unblocks reusing every BCM283x model; a self-contained upstream patch |
+| 2 | WS2.1 system timer (done) | first reused device; exercises the SPI wiring path |
+| 3 | WS9.2a bare-metal framework (done) | exception vectors and a GIC driver in the guest, needed by every later test |
 | 4 | WS2.4 PM/watchdog | reset and power-off, which every test harness needs |
 | 5 | WS3.6 reset semantics | makes the watchdog and PSCI `SYSTEM_RESET` trustworthy |
 | 6 | WS2.2 mailbox | the address-translation design decision, made once |
@@ -322,6 +322,19 @@ none UNDEFs; use the WS0.4 reset values when available. Upstream in
 **Done when:** TF-A's `cortex_a76` reset and power-down paths run without
 UNDEF under `secure=on`.
 
+#### WS1.7 Generic counter rate (S, upstream)
+QEMU converts virtual time to generic-timer ticks with a whole number of
+nanoseconds per tick (`gt_cntfrq_period_ns()` in `target/arm/cpu.c`), so
+at the Pi 5's 54 MHz (18.52 ns) the counter really runs at 1 GHz / 18 =
+55.6 MHz: 2.9% fast against the system timer, the RTC and the host. A
+guest that trusts `CNTFRQ_EL0` sees its clock drift. The truncation exists
+so that timer deadlines are an exact inverse of the count; fixing it means
+giving the timers a rational scale (or `muldiv64()` both ways with
+matching rounding) upstream. The bare-metal `systimer/rate` test measures
+the rate and tolerates 4% until then (`TODO(WS1.7)`).
+**Done when:** the counter runs at `CNTFRQ` within 100 ppm of the system
+timer and the test's tolerance drops accordingly.
+
 #### WS1.6 Secure-world interrupt behaviour (S) — track H
 **Depends:** WS1.3.
 With `secure=on`, check Group 0/1 behaviour, banked `GICC_*` registers,
@@ -335,14 +348,15 @@ with a custom armstub.
 These blocks are shared with earlier Raspberry Pi SoCs; the work is mostly
 re-targeting existing QEMU models to BCM2712 addresses and differences.
 
-#### WS2.1 System timer (done except the bare-metal check)
+#### WS2.1 System timer (done)
 *Delivered:* the SoC maps `bcm2835-sys-timer` with comparators on SPIs
 64–67 and the DT node is no longer disabled; two upstream-first fixes to
 the model (patches 0002/0003): reset now cancels armed comparators and
 lowers their interrupts, and armed comparators are migrated. qtests cover
 the counter, every comparator's match, interrupt and acknowledgement,
-reset and migration. The bare-metal interrupt check lands with WS9.2a,
-which provides the exception vectors and GIC driver it needs.
+reset and migration; the bare-metal suite (`systimer/compare`,
+`systimer/rate`) takes each comparator's interrupt through the GIC and
+clears it via `CS`.
 
 **Depends:** WS0.6.
 Instantiate `bcm2835-sys-timer` at `0x10_7c00_3000` (the DT node covers
@@ -1007,7 +1021,15 @@ that is M1's exit test. Every test must be able to run on hardware as
 `kernel_2712.img`, which rules out semihosting for anything but the
 final exit code in QEMU.
 
-**9.2a Framework (S).** `lib/`: console over PL011 (address from the DT
+**9.2a Framework (S, done).** *Delivered:* `tests/guest/lib/` (entry
+and per-EL vectors, console, printf, device-tree walker with `ranges`
+translation, GIC-400 driver, PSCI, generic timer helpers, `TEST()` runner),
+`hello` ported onto it, and a first suite of 11 tests (GIC geometry and
+SGIs, the EL1/EL2/secure physical timers, the system timer, PSCI and
+`CPU_ON` of every core) that `tests/smoke/test_suite.py` runs on 1, 2 and
+4 cores, with and without a device tree, at EL2 and EL3. It also passes
+with the firmware's `bcm2712-rpi-5-b.dtb`. The transcript format is in
+`tests/guest/README.md`. Planned: `lib/`: console over PL011 (address from the DT
 in `x0` when present, hard-coded fallback), `printf` subset, exception
 vectors with a per-EL handler table, a GICv2 driver (distributor and CPU
 interface init, enable/disable, priority, SGI, EOI), per-core stacks,

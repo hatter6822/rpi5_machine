@@ -17,6 +17,11 @@ SECTIONS
         *(.text .text.*)
     }
     .rodata : ALIGN(8) { *(.rodata .rodata.*) }
+    .tests : ALIGN(8) {
+        __tests_start = .;
+        KEEP(*(SORT(.tests.*)))
+        __tests_end = .;
+    }
     .data : ALIGN(8) { *(.data .data.*) }
     .bss (NOLOAD) : ALIGN(16) {
         __bss_start = .;

@@ -1,0 +1,74 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
+//
+// The parts of bcm2712-rpi-5-b.dtb the bare-metal suite looks up, with the
+// same structure: devices under the "soc" simple-bus, whose "ranges" map
+// bus address 0x0 to CPU address 0x10_0000_0000, and the console chosen
+// through an alias. Used by test_suite.py for its -dtb runs.
+
+/dts-v1/;
+
+/ {
+    compatible = "raspberrypi,5-model-b", "brcm,bcm2712";
+    model = "Raspberry Pi 5 Model B (bare-metal suite)";
+    #address-cells = <2>;
+    #size-cells = <2>;
+    interrupt-parent = <&gicv2>;
+
+    aliases {
+        serial10 = "/soc@107c000000/serial@7d001000";
+    };
+
+    chosen {
+        stdout-path = "serial10:115200n8";
+    };
+
+    cpus {
+        #address-cells = <1>;
+        #size-cells = <0>;
+
+        cpu@0 { device_type = "cpu"; compatible = "arm,cortex-a76";
+                reg = <0x000>; enable-method = "psci"; };
+        cpu@1 { device_type = "cpu"; compatible = "arm,cortex-a76";
+                reg = <0x100>; enable-method = "psci"; };
+        cpu@2 { device_type = "cpu"; compatible = "arm,cortex-a76";
+                reg = <0x200>; enable-method = "psci"; };
+        cpu@3 { device_type = "cpu"; compatible = "arm,cortex-a76";
+                reg = <0x300>; enable-method = "psci"; };
+    };
+
+    psci {
+        compatible = "arm,psci-1.0", "arm,psci-0.2";
+        method = "smc";
+    };
+
+    soc@107c000000 {
+        compatible = "simple-bus";
+        #address-cells = <1>;
+        #size-cells = <1>;
+        ranges = <0x00000000  0x10 0x00000000  0x80000000>;
+
+        timer@7c003000 {
+            compatible = "brcm,bcm2835-system-timer";
+            reg = <0x7c003000 0x1000>;
+            interrupts = <0 64 4>, <0 65 4>, <0 66 4>, <0 67 4>;
+            clock-frequency = <1000000>;
+        };
+
+        serial@7d001000 {
+            compatible = "arm,pl011-axi", "arm,pl011", "arm,primecell";
+            reg = <0x7d001000 0x200>;
+            interrupts = <0 121 4>;
+        };
+
+        gicv2: interrupt-controller@7fff9000 {
+            compatible = "arm,gic-400";
+            reg = <0x7fff9000 0x1000>,
+                  <0x7fffa000 0x2000>,
+                  <0x7fffc000 0x2000>,
+                  <0x7fffe000 0x2000>;
+            interrupt-controller;
+            #interrupt-cells = <3>;
+            #address-cells = <0>;
+        };
+    };
+};

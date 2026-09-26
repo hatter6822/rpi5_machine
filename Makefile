@@ -99,6 +99,7 @@ check-qtest: build $(QTEST_BIN)
 
 check-smoke: build guest
 	QEMU=$(abspath $(QEMU_BIN)) GUEST=$(GUEST_BUILD)/hello.elf \
+		SUITE=$(GUEST_BUILD)/suite.elf \
 		$(PYTHON) -m unittest discover -s tests/smoke -v
 
 checkpatch:

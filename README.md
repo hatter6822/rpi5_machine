@@ -42,7 +42,7 @@ overlay/       new files, laid out exactly as in the QEMU tree
   docs/system/arm/raspi5b.rst
 patches/       changes to existing QEMU files (git format-patch series)
 scripts/       qemu-tree: applies the overlay and patches, creates/refreshes patches
-tests/guest/   bare-metal test guests (clang + lld, no GCC cross toolchain)
+tests/guest/   bare-metal runtime, smoke guest and test suite (clang + lld, no GCC)
 tests/smoke/   end-to-end tests that boot the guests
 tests/configs/ QEMU device configurations for test builds
 docs/          plan, development guide, hardware reference
