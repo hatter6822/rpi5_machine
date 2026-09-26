@@ -70,7 +70,8 @@ Delivered by the boilerplate (WS0.1–WS0.3):
 | Linux | the stock Raspberry Pi OS kernel (6.18) with the firmware's `bcm2712-rpi-5-b.dtb` boots on 4 CPUs to the root-fs mount, without warnings |
 
 Known provisional values, each marked in the code: 288 SPIs
-(`TODO(WS1.3)`), the PMU interrupt (`TODO(WS1.4)`), `-bios` handling
+(`TODO(WS1.3)`), the PMU interrupts taken from the vendor DT
+(`TODO(WS1.4)`), `-bios` handling
 (`TODO(WS3.3)`), and the board revision's `REVISION` field (WS9.8).
 
 ## 3. Milestones
@@ -289,12 +290,13 @@ instead of QEMU's generic values; this needs a small upstream extension of
 
 #### WS1.4 PMU overflow interrupt (S) — track H
 **Depends:** WS0.4.
-Neither device tree describes the A76 PMU interrupt. Find it on hardware
-(program a counter to overflow, scan `GICD_ISPENDR` and `ICPENDR` for the
-pending PPI or SPI), wire `pmu-interrupt`, and report it to the DT
-maintainers.
-**Done when:** a bare-metal test takes a PMU overflow interrupt; Linux
-`perf` works with an `arm,cortex-a76-pmu` node added.
+The model wires each core's PMU overflow to SPIs 16–19, following the
+`arm-pmu` node in the Raspberry Pi firmware's `bcm2712-rpi-5-b.dtb` (the
+upstream `bcm2712.dtsi` has no PMU node). Confirm on hardware: program a
+counter to overflow and check that `GICD_ISPENDR` shows SPI 16 + core; if it
+differs, fix the wiring and report it to the DT maintainers.
+**Done when:** a bare-metal test takes a PMU overflow interrupt on every
+core, in QEMU and on hardware; `TODO(WS1.4)` is gone.
 
 #### WS1.5 IMPDEF system registers used by firmware (S)
 TF-A's Cortex-A76 support (`lib/cpus/aarch64/cortex_a76.S`: errata

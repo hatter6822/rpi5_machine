@@ -215,7 +215,12 @@ static bool bcm2712_realize_gic(BCM2712State *s, Error **errp)
         for (int t = 0; t < ARRAY_SIZE(timer_intid); t++) {
             qdev_connect_gpio_out(cpudev, t, bcm2712_ppi(s, i, timer_intid[t]));
         }
-        /* TODO(WS1.4): wire the PMU overflow interrupt once it is located */
+        /*
+         * Per-core SPIs, from the arm-pmu node of the Raspberry Pi firmware's
+         * bcm2712-rpi-5-b.dtb. TODO(WS1.4): confirm on hardware.
+         */
+        qdev_connect_gpio_out_named(cpudev, "pmu-interrupt", 0,
+                                    bcm2712_spi(s, BCM2712_SPI_PMU0 + i));
 
         sysbus_connect_irq(gicsbd, i,
                            qdev_get_gpio_in(cpudev, ARM_CPU_IRQ));

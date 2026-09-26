@@ -97,9 +97,30 @@ static const char *const raspi5b_unmodelled_compatibles[] = {
     "brcm,bcm2712-mop",
     "brcm,bcm2712-moplet",
     "brcm,bcm2712-pispbe",
+    "brcm,bcm2712c0-pinctrl",
+    "brcm,bcm2712c0-aon-pinctrl",
+    "brcm,brcmstb-gpio",
+    "brcm,l2-intc",             /* also matches brcm,bcm2711-l2-intc nodes */
+    "brcm,bcm7271-l2-intc",
+    "brcm,brcmstb-reset",
+    "brcm,bcm7216-pcie-sata-rescal",
     /* Nodes only present in the Raspberry Pi downstream device tree */
     "brcm,bcm2712-iommu",
     "brcm,bcm2712-iommuc",
+    "brcm,bcm2711-avs-monitor",
+    "brcm,bcm2712-dma",
+    "brcm,bcm2712-hevc-dec",
+    "raspberrypi,pispbe",
+    "brcm,syscon-piarbctl",
+    "brcm,brcm2711-dvp",
+    "brcm,bcm2835-spi",
+    "raspberrypi,gpiomem",
+    /* Clients of the VideoCore firmware (mailbox) or of RP1's */
+    "brcm,bcm2708-fb",
+    "raspberrypi,rpi-otp",
+    "raspberrypi,bcm2835-power",
+    "raspberrypi,rpi-rtc",
+    "raspberrypi,rp1-firmware",
 };
 
 /*

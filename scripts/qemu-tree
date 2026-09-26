@@ -9,6 +9,13 @@
 # patches/  Changes to existing QEMU files, as a git format-patch series
 #           applied in file name order. Patches must touch disjoint files so
 #           that each can be refreshed independently.
+#
+# The exact revision of every patch applied to qemu/ is recorded in the
+# submodule's git directory (outside the work tree). That record, not the
+# current patches/ content, says what the tree holds: when a checkout or
+# pull changes a patch, 'apply' reverts the recorded revision before
+# applying the new one, and local edits to patched files are left alone
+# while their patch is unchanged.
 
 set -euo pipefail
 
@@ -55,9 +62,44 @@ is_applied() {
     qgit apply --reverse --check "$1" >/dev/null 2>&1
 }
 
+# record <patch>: note that this exact revision is now applied to qemu/
+record() {
+    cp "$1" "$APPLIED/$(basename "$1")"
+}
+
+# revert_recorded <record>: undo a recorded revision and forget it
+revert_recorded() {
+    local r=$1 name
+    name=$(basename "$r")
+    if qgit apply --reverse --check "$r" 2>/dev/null; then
+        qgit apply --reverse "$r"
+        info revert "$name"
+    elif ! qgit apply --check "$r" 2>/dev/null; then
+        die "cannot revert the applied revision of $name: files it touches" \
+            "have local edits. Save them (e.g. 'git -C qemu diff >" \
+            "edits.diff'), restore the files with 'git -C qemu checkout --'," \
+            "then run this again"
+    fi
+    # else: its files are already pristine, so only the record is stale
+    rm -f "$r"
+}
+
+# revert_stale_records: undo recorded revisions that patches/ no longer holds
+revert_stale_records() {
+    local r p
+    while IFS= read -r r; do
+        p="$PATCHES/$(basename "$r")"
+        if [ ! -f "$p" ] || ! cmp -s "$r" "$p"; then
+            revert_recorded "$r"
+        fi
+    done < <(find "$APPLIED" -name '*.patch' | LC_ALL=C sort -r)
+}
+
 check_tree() {
     [ -e "$QEMU/.git" ] ||
         die "qemu/ is not checked out; run 'git submodule update --init qemu'"
+    APPLIED="$(qgit rev-parse --absolute-git-dir)/qemu-tree/applied"
+    mkdir -p "$APPLIED"
 
     local pinned head
     pinned=$(git -C "$ROOT" ls-tree HEAD qemu | awk '{ print $3 }')
@@ -71,13 +113,24 @@ check_tree() {
 cmd_apply() {
     check_tree
 
-    local p rel dst
     # Quiet unless something changes: the Makefile runs this before builds
+    revert_stale_records
+
+    local p rel dst
     while IFS= read -r p; do
-        if is_applied "$p"; then
-            continue
+        if [ -f "$APPLIED/$(basename "$p")" ]; then
+            # Recorded: re-apply only if its files were restored behind our
+            # back; anything else is the tree holding it, possibly with local
+            # edits in progress
+            if ! is_applied "$p" && qgit apply --check "$p" 2>/dev/null; then
+                qgit apply --whitespace=error-all "$p"
+                info apply "$(basename "$p")"
+            fi
+        elif is_applied "$p"; then
+            record "$p"                 # applied before records existed
         elif qgit apply --check "$p" 2>/dev/null; then
             qgit apply --whitespace=error-all "$p"
+            record "$p"
             info apply "$(basename "$p")"
         else
             die "$(basename "$p") does not apply; see 'git -C qemu apply -v $p'"
@@ -117,6 +170,11 @@ cmd_unapply() {
     done < <(overlay_links)
 
     while IFS= read -r p; do
+        revert_recorded "$p"
+    done < <(find "$APPLIED" -name '*.patch' | LC_ALL=C sort -r)
+
+    # Trees patched before revisions were recorded
+    while IFS= read -r p; do
         if is_applied "$p"; then
             qgit apply --reverse "$p"
             info revert "$(basename "$p")"
@@ -132,14 +190,26 @@ cmd_status() {
     trap 'rm -f "$managed"' RETURN
 
     echo "patches:"
+    local r
     while IFS= read -r p; do
-        if is_applied "$p"; then
+        r="$APPLIED/$(basename "$p")"
+        if [ -f "$r" ] && cmp -s "$r" "$p" && ! is_applied "$p"; then
+            info applied "$(basename "$p") (with local edits)"
+        elif [ -f "$r" ] && cmp -s "$r" "$p"; then
             info applied "$(basename "$p")"
+        elif [ -f "$r" ]; then
+            info outdated "$(basename "$p") (another revision is applied)"
+        elif is_applied "$p"; then
+            info applied "$(basename "$p") (unrecorded)"
         else
             info pending "$(basename "$p")"
         fi
         patch_files "$p" >>"$managed"
     done < <(patch_list)
+    while IFS= read -r r; do
+        [ -f "$PATCHES/$(basename "$r")" ] ||
+            info removed "$(basename "$r") (still applied)"
+    done < <(find "$APPLIED" -name '*.patch' | LC_ALL=C sort)
 
     echo "overlay:"
     while IFS= read -r rel; do
@@ -183,6 +253,7 @@ cmd_new() {
 
     write_patch "$out" "$msg" "$(git -C "$ROOT" var GIT_AUTHOR_IDENT |
         sed 's/> .*/>/')" "$@"
+    record "$out"
     info new "$(basename "$out")"
 }
 
@@ -207,6 +278,7 @@ cmd_refresh() {
     local -a files
     mapfile -t files < <(patch_files "$p")
     GIT_AUTHOR_DATE="$date" write_patch "$p" "$tmp/msg" "$author" "${files[@]}"
+    record "$p"
     info refresh "$(basename "$p")"
 }
 

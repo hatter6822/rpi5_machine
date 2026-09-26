@@ -91,6 +91,7 @@ extern const MemMapEntry bcm2712_memmap[BCM2712_NUM_DEVICES];
 
 /* GIC-400 SPI numbers, i.e. the N in "<GIC_SPI N ...>" in bcm2712.dtsi */
 enum {
+    BCM2712_SPI_PMU0            = 16,   /* 16..19: one per core */
     BCM2712_SPI_MBOX            = 33,
     BCM2712_SPI_SYSTIMER0       = 64,   /* 64..67: one per comparator */
     BCM2712_SPI_ISP             = 72,
