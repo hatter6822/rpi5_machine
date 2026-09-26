@@ -1,0 +1,49 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: A7om <hatter6822@gmail.com>
+Date: Sat, 26 Sep 2026 00:00:00 +0000
+Subject: [PATCH] hw/intc/arm_gic: Honour GICD_SGIR.NSATT with the Security
+ Extensions
+
+With the Security Extensions, a write to GICD_SGIR forwards an SGI to a
+target only if the SGI is configured there as the group NSATT names:
+Group 0 for NSATT 0, Group 1 for NSATT 1. Non-secure writes act as if
+NSATT were 1, whatever they write, so the Non-secure world can never
+raise a Secure (Group 0) SGI (GIC architecture specification v2,
+section 4.3.15).
+
+The model ignored NSATT and the security of the access, so Non-secure
+software could make any SGI pending on any core, including the Group 0
+SGIs a Secure monitor relies on, and a Secure write meant for Group 1
+could hit a core that had the SGI as Group 0.
+
+Drop the targets whose configured group does not match before marking
+the SGI pending. Without the Security Extensions nothing changes.
+---
+ hw/intc/arm_gic.c | 14 ++++++++++++++
+ 1 file changed, 14 insertions(+)
+
+diff --git a/hw/intc/arm_gic.c b/hw/intc/arm_gic.c
+index 4d4b79e..c94809a 100644
+--- a/hw/intc/arm_gic.c
++++ b/hw/intc/arm_gic.c
+@@ -1522,6 +1522,20 @@ static void gic_dist_writel(void *opaque, hwaddr offset,
+             mask = ALL_CPU_MASK;
+             break;
+         }
++        if (s->security_extn) {
++            /*
++             * NSATT selects the group an SGI must be configured as on its
++             * target to be forwarded there; a Non-secure write only ever
++             * raises Group 1 SGIs, whatever its NSATT bit.
++             */
++            bool group1 = !attrs.secure || (value & (1 << 15));
++
++            for (target_cpu = 0; target_cpu < GIC_NCPU; target_cpu++) {
++                if (GIC_DIST_TEST_GROUP(irq, 1 << target_cpu) != group1) {
++                    mask &= ~(1 << target_cpu);
++                }
++            }
++        }
+         GIC_DIST_SET_PENDING(irq, mask);
+         target_cpu = ctz32(mask);
+         while (target_cpu < GIC_NCPU) {

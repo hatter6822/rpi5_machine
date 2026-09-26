@@ -1,0 +1,77 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: A7om <hatter6822@gmail.com>
+Date: Sat, 26 Sep 2026 00:00:00 +0000
+Subject: [PATCH] hw/misc/bcm2835_powermgt: Report a watchdog reset in RSTS
+
+RSTS is how the boot code learns why the chip was reset and which
+partition to boot: Linux writes the partition to its even bits before
+rebooting through the watchdog, and partition 63 asks the firmware to
+halt. The model reloaded the power-on value on every system reset, so
+a guest could not see either after a reboot.
+
+Set the power-on value once, at realize, and keep RSTS across system
+resets. When the watchdog fires, replace the power-on flag with
+HADWRF (bit 5), the watchdog full reset flag, leaving the partition
+bits alone.
+---
+ hw/misc/bcm2835_powermgt.c | 20 ++++++++++++++++++--
+ 1 file changed, 18 insertions(+), 2 deletions(-)
+
+diff --git a/hw/misc/bcm2835_powermgt.c b/hw/misc/bcm2835_powermgt.c
+index 87458d8..022d0c7 100644
+--- a/hw/misc/bcm2835_powermgt.c
++++ b/hw/misc/bcm2835_powermgt.c
+@@ -25,6 +25,8 @@
+ #define R_RSTS 0x20
+ /* The boot partition, spread over bits 0, 2, 4, 6, 8 and 10 */
+ #define V_RSTS_PARTITION_MASK 0x555
++#define V_RSTS_HADWRF 0x20 /* the watchdog caused a full reset */
++#define V_RSTS_HADPOR 0x1000 /* power-on reset */
+ #define V_RSTS_POWEROFF 0x555 /* Linux uses partition 63 to indicate halt. */
+ #define R_WDOG 0x24
+ #define V_WDOG_TIME_MASK 0xfffff
+@@ -64,6 +66,7 @@ static void bcm2835_powermgt_wdog_expired(void *opaque)
+     BCM2835PowerMgtState *s = opaque;
+ 
+     s->wdog = 0;
++    s->rsts = (s->rsts & ~V_RSTS_HADPOR) | V_RSTS_HADWRF;
+     if ((s->rsts & V_RSTS_PARTITION_MASK) == V_RSTS_POWEROFF) {
+         qemu_system_shutdown_request(SHUTDOWN_CAUSE_GUEST_SHUTDOWN);
+     } else {
+@@ -205,14 +208,26 @@ static void bcm2835_powermgt_init(Object *obj)
+                   bcm2835_powermgt_wdog_expired, s);
+ }
+ 
++static void bcm2835_powermgt_realize(DeviceState *dev, Error **errp)
++{
++    BCM2835PowerMgtState *s = BCM2835_POWERMGT(dev);
++
++    /* https://elinux.org/BCM2835_registers#PM */
++    s->rsts = V_RSTS_HADPOR;
++}
++
+ static void bcm2835_powermgt_reset(DeviceState *dev)
+ {
+     BCM2835PowerMgtState *s = BCM2835_POWERMGT(dev);
+ 
+     timer_del(&s->watchdog);
+-    /* https://elinux.org/BCM2835_registers#PM */
++    /*
++     * https://elinux.org/BCM2835_registers#PM
++     *
++     * RSTS is what the boot code reads to learn why it was started and
++     * which partition to boot, so it survives a system reset.
++     */
+     s->rstc = 0x00000102;
+-    s->rsts = 0x00001000;
+     s->wdog = 0x00000000;
+ }
+ 
+@@ -220,6 +235,7 @@ static void bcm2835_powermgt_class_init(ObjectClass *klass, const void *data)
+ {
+     DeviceClass *dc = DEVICE_CLASS(klass);
+ 
++    dc->realize = bcm2835_powermgt_realize;
+     device_class_set_legacy_reset(dc, bcm2835_powermgt_reset);
+     dc->vmsd = &vmstate_bcm2835_powermgt;
+ }

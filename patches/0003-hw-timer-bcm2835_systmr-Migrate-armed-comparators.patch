@@ -1,0 +1,77 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: A7om <hatter6822@gmail.com>
+Date: Sat, 26 Sep 2026 00:00:00 +0000
+Subject: [PATCH] hw/timer/bcm2835_systmr: Migrate armed comparators
+
+The comparator timers are not part of the migration stream, so a
+compare value armed before a migration or snapshot never fires on the
+destination and the guest waits forever for its interrupt.
+
+Send the timers in a subsection, needed only while one of them is
+armed, so that streams of an idle timer are unchanged and migration to
+and from older QEMU keeps working in that case. The interrupt levels
+need no state of their own: each line is high exactly while its
+CTRL_STATUS bit is set.
+---
+ hw/timer/bcm2835_systmr.c | 41 +++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 41 insertions(+)
+
+diff --git a/hw/timer/bcm2835_systmr.c b/hw/timer/bcm2835_systmr.c
+index 17a0e7d..11e6526 100644
+--- a/hw/timer/bcm2835_systmr.c
++++ b/hw/timer/bcm2835_systmr.c
+@@ -146,6 +146,43 @@ static void bcm2835_systmr_realize(DeviceState *dev, Error **errp)
+     }
+ }
+ 
++static bool bcm2835_systmr_timers_needed(void *opaque)
++{
++    BCM2835SystemTimerState *s = opaque;
++
++    for (size_t i = 0; i < ARRAY_SIZE(s->tmr); i++) {
++        if (timer_pending(&s->tmr[i].timer)) {
++            return true;
++        }
++    }
++    return false;
++}
++
++static const VMStateDescription bcm2835_systmr_compare_vmstate = {
++    .name = "bcm2835_sys_timer/compare",
++    .version_id = 1,
++    .minimum_version_id = 1,
++    .fields = (const VMStateField[]) {
++        VMSTATE_TIMER(timer, BCM2835SystemTimerCompare),
++        VMSTATE_END_OF_LIST()
++    }
++};
++
++/* Armed comparators; a stream without them has none armed */
++static const VMStateDescription bcm2835_systmr_timers_vmstate = {
++    .name = "bcm2835_sys_timer/timers",
++    .version_id = 1,
++    .minimum_version_id = 1,
++    .needed = bcm2835_systmr_timers_needed,
++    .fields = (const VMStateField[]) {
++        VMSTATE_STRUCT_ARRAY(tmr, BCM2835SystemTimerState,
++                             BCM2835_SYSTIMER_COUNT, 1,
++                             bcm2835_systmr_compare_vmstate,
++                             BCM2835SystemTimerCompare),
++        VMSTATE_END_OF_LIST()
++    }
++};
++
+ static const VMStateDescription bcm2835_systmr_vmstate = {
+     .name = "bcm2835_sys_timer",
+     .version_id = 1,
+@@ -155,6 +192,10 @@ static const VMStateDescription bcm2835_systmr_vmstate = {
+         VMSTATE_UINT32_ARRAY(reg.compare, BCM2835SystemTimerState,
+                              BCM2835_SYSTIMER_COUNT),
+         VMSTATE_END_OF_LIST()
++    },
++    .subsections = (const VMStateDescription * const []) {
++        &bcm2835_systmr_timers_vmstate,
++        NULL
+     }
+ };
+ 

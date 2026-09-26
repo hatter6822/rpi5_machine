@@ -52,11 +52,75 @@ jobs:
           shellcheck scripts/qemu-tree
           make checkpatch
 
+      # The series as it would be posted: applies with git am to the pinned
+      # revision and passes checkpatch
+      - name: Export the upstream series
+        run: make export-series
+
       - name: Build
         run: make build
 
       - name: Test
         run: make check
+
+      # Proves the machine selects every device it needs by itself
+      - name: Build and test with raspi5b as the only board
+        run: make check-minimal
+
+      # dt-schema is pinned with the kernel tag the bindings come from
+      - name: Install dt-schema
+        run: |
+          python3 -m venv "$RUNNER_TEMP/dtschema"
+          "$RUNNER_TEMP/dtschema/bin/pip" install --quiet dtschema==2026.9
+          echo "$RUNNER_TEMP/dtschema/bin" >> "$GITHUB_PATH"
+
+      - name: Restore processed device-tree bindings
+        uses: actions/cache@v4
+        with:
+          path: build-dt-schema
+          key: dt-schema-2026.9-${{ hashFiles('Makefile') }}
+
+      - name: Validate the built-in device tree
+        run: make check-dt
+
+      - name: Compiler cache statistics
+        run: ccache --show-stats
+
+  # Every commit of the exported series builds (bisectability)
+  series-builds:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      CCACHE_MAXSIZE: 1G
+      # The series is built in a temporary worktree: hash relative paths
+      CCACHE_BASEDIR: /tmp
+      CCACHE_NOHASHDIR: 'true'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+          fetch-depth: 1
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            ccache ninja-build python3-venv \
+            libglib2.0-dev libpixman-1-dev libfdt-dev
+
+      - name: Restore compiler cache
+        uses: actions/cache@v4
+        with:
+          path: .ccache
+          key: ccache-series-${{ runner.os }}-${{ hashFiles('.gitmodules', 'patches/**', 'overlay/**') }}
+          restore-keys: ccache-series-${{ runner.os }}-
+
+      - name: Enable ccache
+        run: echo /usr/lib/ccache >> "$GITHUB_PATH"
+
+      - name: Build every commit of the series
+        run: make export-series SERIES_FLAGS=--build
 
       - name: Compiler cache statistics
         run: ccache --show-stats

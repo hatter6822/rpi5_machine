@@ -1,0 +1,167 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: A7om <hatter6822@gmail.com>
+Date: Sat, 26 Sep 2026 00:00:00 +0000
+Subject: [PATCH] hw/misc/bcm2835_property: Do not answer requests the firmware
+ cannot read
+
+The firmware reads a property request through the VideoCore's view of
+memory, and a buffer outside it gets no answer. The model instead read
+zeros from the unmapped address, wrote its response nowhere and still
+raised the mailbox interrupt, so a guest that passed a bad address
+(an ARM physical address above the VideoCore's aliases, say) saw a
+response and went on as if the request had succeeded.
+
+Check that the buffer is readable through the DMA address space before
+taking the request, first its header and then the whole size the header
+gives, and log a guest error otherwise. Requests in RAM behave as
+before: every BCM283x board maps its RAM into that address space.
+
+Then keep the parser inside that size: every tag must fit, the end tag
+as one word and any other with its 12-byte header and the value buffer
+it declares. A request cut short ends the parse there, with the
+interface's "error parsing request buffer" response code (0x80000001)
+in place of the success the guest would trust. The response codes join
+the firmware definitions, named as in the kernel's header.
+---
+ hw/misc/bcm2835_property.c           | 71 +++++++++++++++++++++++-----
+ include/hw/arm/raspberrypi-fw-defs.h |  7 +++
+ 2 files changed, 65 insertions(+), 13 deletions(-)
+
+diff --git a/hw/misc/bcm2835_property.c b/hw/misc/bcm2835_property.c
+index 216a746..fd9dfc5 100644
+--- a/hw/misc/bcm2835_property.c
++++ b/hw/misc/bcm2835_property.c
+@@ -26,6 +26,9 @@
+ static void bcm2835_property_mbox_push(BCM2835PropertyState *s, uint32_t value)
+ {
+     uint32_t tot_len;
++    uint32_t bufsize = 0;
++    hwaddr end, pos;
++    bool malformed = false;
+ 
+     /*
+      * Copy the current state of the framebuffer config; we will update
+@@ -40,17 +43,39 @@ static void bcm2835_property_mbox_push(BCM2835PropertyState *s, uint32_t value)
+     s->addr = value;
+ 
+     tot_len = ldl_le_phys(&s->dma_as, value);
++    end = (hwaddr)s->addr + tot_len;
+ 
+     /* @(addr + 4) : Buffer response code */
+-    value = s->addr + 8;
+-    while (value + 8 <= s->addr + tot_len) {
+-        uint32_t tag = ldl_le_phys(&s->dma_as, value);
+-        uint32_t bufsize = ldl_le_phys(&s->dma_as, value + 4);
++    for (pos = (hwaddr)s->addr + 8; ; pos += 12 + bufsize) {
++        uint32_t tag;
+         /* @(value + 8) : Request/response indicator */
+         size_t resplen = 0;
+-        switch (tag) {
+-        case RPI_FWREQ_PROPERTY_END:
++
++        /*
++         * Only the buffer the header sizes was checked to be readable, so
++         * every tag must lie within it: the end tag's word, and for any
++         * other tag its 12-byte header and the value buffer it declares.
++         * A request cut short is answered with the error code instead.
++         */
++        if (pos + 4 > end) {
++            malformed = true;
++            break;
++        }
++        tag = ldl_le_phys(&s->dma_as, pos);
++        if (tag == RPI_FWREQ_PROPERTY_END) {
++            break;
++        }
++        if (pos + 12 > end) {
++            malformed = true;
++            break;
++        }
++        bufsize = ldl_le_phys(&s->dma_as, pos + 4);
++        if (pos + 12 + bufsize > end) {
++            malformed = true;
+             break;
++        }
++        value = pos;
++        switch (tag) {
+         case RPI_FWREQ_GET_FIRMWARE_REVISION:
+             stl_le_phys(&s->dma_as, value + 12, 346337);
+             resplen = 4;
+@@ -422,12 +447,13 @@ static void bcm2835_property_mbox_push(BCM2835PropertyState *s, uint32_t value)
+         }
+ 
+         trace_bcm2835_mbox_property(tag, bufsize, resplen);
+-        if (tag == 0) {
+-            break;
+-        }
+-
+-        stl_le_phys(&s->dma_as, value + 8, (1 << 31) | resplen);
+-        value += bufsize + 12;
++        stl_le_phys(&s->dma_as, value + 8,
++                    RPI_FIRMWARE_STATUS_SUCCESS | resplen);
++    }
++    if (malformed) {
++        qemu_log_mask(LOG_GUEST_ERROR,
++                      "%s: request at 0x%08x cut short at 0x%" HWADDR_PRIx
++                      " of its %u bytes\n", __func__, s->addr, pos, tot_len);
+     }
+ 
+     /* Reconfigure framebuffer if required */
+@@ -436,7 +462,9 @@ static void bcm2835_property_mbox_push(BCM2835PropertyState *s, uint32_t value)
+     }
+ 
+     /* Buffer response code */
+-    stl_le_phys(&s->dma_as, s->addr + 4, (1 << 31));
++    stl_le_phys(&s->dma_as, s->addr + 4,
++                malformed ? RPI_FIRMWARE_STATUS_ERROR
++                          : RPI_FIRMWARE_STATUS_SUCCESS);
+ }
+ 
+ static uint64_t bcm2835_property_read(void *opaque, hwaddr offset,
+@@ -469,11 +497,28 @@ static void bcm2835_property_write(void *opaque, hwaddr offset,
+                                    uint64_t value, unsigned size)
+ {
+     BCM2835PropertyState *s = opaque;
++    hwaddr buf;
+ 
+     switch (offset) {
+     case MBOX_AS_DATA:
+         /* bcm2835_mbox should check our pending status before pushing */
+         assert(!s->pending);
++        /*
++         * The firmware can only reach the buffer through the VideoCore's
++         * view of memory, and never answers when any of it is not there:
++         * the header, then the whole size the header gives.
++         */
++        buf = value & ~0xf;
++        if (!address_space_access_valid(&s->dma_as, buf, 8, false,
++                                        MEMTXATTRS_UNSPECIFIED) ||
++            !address_space_access_valid(&s->dma_as, buf,
++                                        MAX(ldl_le_phys(&s->dma_as, buf), 8),
++                                        false, MEMTXATTRS_UNSPECIFIED)) {
++            qemu_log_mask(LOG_GUEST_ERROR,
++                          "%s: buffer at bus address 0x%08"PRIx64
++                          " is not in memory\n", __func__, buf);
++            return;
++        }
+         s->pending = true;
+         bcm2835_property_mbox_push(s, value);
+         qemu_set_irq(s->mbox_irq, 1);
+diff --git a/include/hw/arm/raspberrypi-fw-defs.h b/include/hw/arm/raspberrypi-fw-defs.h
+index 60b8e5b..bee0dd6 100644
+--- a/include/hw/arm/raspberrypi-fw-defs.h
++++ b/include/hw/arm/raspberrypi-fw-defs.h
+@@ -142,6 +142,13 @@ enum rpi_firmware_property_tag {
+     RPI_FWREQ_GET_DMA_CHANNELS =                       0x00060001,
+ };
+ 
++/* The buffer's response code, in its second word */
++enum rpi_firmware_property_status {
++    RPI_FIRMWARE_STATUS_REQUEST = 0,
++    RPI_FIRMWARE_STATUS_SUCCESS = 0x80000000,
++    RPI_FIRMWARE_STATUS_ERROR =   0x80000001,   /* error parsing the request */
++};
++
+ enum rpi_firmware_clk_id {
+     RPI_FIRMWARE_EMMC_CLK_ID = 1,
+     RPI_FIRMWARE_UART_CLK_ID,

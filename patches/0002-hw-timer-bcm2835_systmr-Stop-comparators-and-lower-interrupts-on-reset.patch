@@ -1,0 +1,45 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: A7om <hatter6822@gmail.com>
+Date: Sat, 26 Sep 2026 00:00:00 +0000
+Subject: [PATCH] hw/timer/bcm2835_systmr: Stop comparators and lower
+ interrupts on reset
+
+Reset clears the registers but leaves each comparator's QEMUTimer armed
+and its interrupt line as it was. After a system reset an old compare
+value can therefore still fire and set a status bit in the fresh
+CTRL_STATUS, and an interrupt raised before the reset stays asserted
+with no status bit left for the guest to acknowledge.
+
+Cancel the timers and lower the lines along with the register reset.
+While here, drop the stale claim that the comparators are not
+implemented.
+---
+ hw/timer/bcm2835_systmr.c | 8 ++++++--
+ 1 file changed, 6 insertions(+), 2 deletions(-)
+
+diff --git a/hw/timer/bcm2835_systmr.c b/hw/timer/bcm2835_systmr.c
+index 06a919b..17a0e7d 100644
+--- a/hw/timer/bcm2835_systmr.c
++++ b/hw/timer/bcm2835_systmr.c
+@@ -8,8 +8,8 @@
+  * Datasheet: BCM2835 ARM Peripherals (C6357-M-1398)
+  * https://www.raspberrypi.org/app/uploads/2012/02/BCM2835-ARM-Peripherals.pdf
+  *
+- * Only the free running 64-bit counter is implemented.
+- * The 4 COMPARE registers and the interruption are not implemented.
++ * A free running 64-bit counter at 1 MHz and four 32-bit comparators, each
++ * raising its own interrupt when the low word of the counter matches it.
+  */
+ 
+ #include "qemu/osdep.h"
+@@ -122,6 +122,10 @@ static void bcm2835_systmr_reset(DeviceState *dev)
+ {
+     BCM2835SystemTimerState *s = BCM2835_SYSTIMER(dev);
+ 
++    for (size_t i = 0; i < ARRAY_SIZE(s->tmr); i++) {
++        timer_del(&s->tmr[i].timer);
++        qemu_set_irq(s->tmr[i].irq, 0);
++    }
+     memset(&s->reg, 0, sizeof(s->reg));
+ }
+ 

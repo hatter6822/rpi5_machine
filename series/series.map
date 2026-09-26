@@ -1,0 +1,13 @@
+# The overlay files each patch of patches/ brings with it when the series
+# is exported for upstream (scripts/qemu-tree export). Patches are named
+# without their number, so renumbering the series needs no change here.
+# Every file under overlay/ must be listed exactly once; patches that add
+# no file are not listed.
+#
+# <patch name>: <overlay file>...
+
+hw-misc-Add-the-Broadcom-RNG200-random-number-generator: hw/misc/bcm2711_rng200.c include/hw/misc/bcm2711_rng200.h
+hw-arm-Add-the-Broadcom-BCM2712-SoC: hw/arm/bcm2712.c include/hw/arm/bcm2712.h
+hw-arm-Add-the-Raspberry-Pi-5-Model-B-machine: hw/arm/raspi5b.c
+tests-qtest-Add-tests-for-the-raspi5b-machine: tests/qtest/raspi5b-test.c
+docs-system-arm-Document-the-raspi5b-machine: docs/system/arm/raspi5b.rst

@@ -12,8 +12,9 @@ from pathlib import Path
 
 from test_hello import GUEST, QEMU, TIMEOUT
 
-# Only one of the compatibles raspi5b disables is present, which also
-# checks that absent ones are skipped rather than treated as errors.
+# Modelled devices and only one of the compatibles raspi5b disables,
+# which also checks that absent ones are skipped rather than treated as
+# errors.
 MINIMAL_DTS = """
 /dts-v1/;
 / {
@@ -34,15 +35,46 @@ MINIMAL_DTS = """
         compatible = "brcm,bcm2835-system-timer";
         reg = <0x10 0x7c003000 0x0 0x1000>;
     };
+
+    mailbox@107c013880 {
+        compatible = "brcm,bcm2835-mbox";
+        reg = <0x10 0x7c013880 0x0 0x40>;
+    };
+
+    watchdog@107d200000 {
+        compatible = "brcm,bcm2712-pm";
+        reg = <0x10 0x7d200000 0x0 0x308>;
+    };
+
+    rng@107d208000 {
+        compatible = "brcm,bcm2711-rng200";
+        reg = <0x10 0x7d208000 0x0 0x28>;
+    };
+
+    v3d@1002000000 {
+        compatible = "brcm,2712-v3d";
+        reg = <0x10 0x02000000 0x0 0x4000>;
+    };
 };
 """
 
 
 def fdtget(dtb, node, prop):
-    """Return a string property, or None when it is absent."""
+    """Return a string property of @node, or None when the node lacks it.
+
+    The node itself must exist: a tree the fix-ups had dropped it from
+    would otherwise read as "no status property" and pass.
+    """
+    subprocess.run(["fdtget", "-p", str(dtb), node], capture_output=True,
+                   text=True, check=True)
     result = subprocess.run(["fdtget", "-t", "s", str(dtb), node, prop],
                             capture_output=True, text=True)
-    return result.stdout.strip() if result.returncode == 0 else None
+    if result.returncode == 0:
+        return result.stdout.strip()
+    if "FDT_ERR_NOTFOUND" in result.stderr:
+        return None
+    raise subprocess.CalledProcessError(result.returncode, result.args,
+                                        result.stdout, result.stderr)
 
 
 @unittest.skipUnless(QEMU.exists() and GUEST.exists(),
@@ -71,8 +103,27 @@ class DtbFixupTest(unittest.TestCase):
 
     def test_unmodelled_devices_disabled(self):
         dtb = self.fixed_up()
-        self.assertEqual(fdtget(dtb, "/timer@107c003000", "status"),
+        self.assertEqual(fdtget(dtb, "/v3d@1002000000", "status"),
                          "disabled")
+
+    def test_modelled_devices_untouched(self):
+        dtb = self.fixed_up()
+        self.assertIsNone(fdtget(dtb, "/timer@107c003000", "status"))
+        self.assertIsNone(fdtget(dtb, "/watchdog@107d200000", "status"))
+        self.assertIsNone(fdtget(dtb, "/mailbox@107c013880", "status"))
+        self.assertIsNone(fdtget(dtb, "/rng@107d208000", "status"))
+
+    def test_memory_leaves_out_videocore(self):
+        """The top 4 MiB of the first GiB belong to the VideoCore."""
+        for ram, reg in (("1G", "0 0 0 3fc00000"),
+                         ("4G", "0 0 0 3fc00000 0 40000000 0 c0000000")):
+            with self.subTest(ram=ram):
+                dtb = self.fixed_up("-m", ram)
+                result = subprocess.run(["fdtget", "-t", "x", str(dtb),
+                                         "/memory", "reg"],
+                                        capture_output=True, text=True,
+                                        check=True)
+                self.assertEqual(result.stdout.strip(), reg)
 
     def test_board_revision(self):
         dtb = self.fixed_up("-m", "4G")

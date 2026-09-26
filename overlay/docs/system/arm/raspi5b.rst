@@ -1,3 +1,5 @@
+.. SPDX-License-Identifier: GPL-2.0-or-later
+
 Raspberry Pi 5 (``raspi5b``)
 ============================
 
@@ -16,6 +18,21 @@ Implemented devices
 * 1 to 4 Cortex-A76 CPUs (``-smp``), ``MPIDR_EL1.Aff1`` = core number
 * ARM generic timer at 54 MHz
 * GIC-400 (GICv2 with Virtualization Extensions)
+* System timer at ``0x10_7c00_3000``: 1 MHz free-running counter and four
+  comparators on SPIs 64 to 67
+* Power management block at ``0x10_7d20_0000``: the watchdog, which resets
+  the machine (or powers it off, for Linux's partition 63 halt request)
+  and follows ``-action watchdog=...``, and the reset status register,
+  which survives the reset and reports a watchdog reset
+* VideoCore mailbox at ``0x10_7c01_3880`` (SPI 33) with the firmware's
+  property and framebuffer channels. The firmware reads requests through
+  the VideoCore's view of memory: the first GiB of RAM at bus addresses
+  ``0x0`` (as Linux passes them) and ``0xc000_0000`` (as code for older
+  Pis does); requests elsewhere get no answer, as on hardware. The
+  VideoCore keeps the top 4 MiB of that GiB, which the device tree memory
+  node leaves out
+* RNG200 random number generator at ``0x10_7d20_8000``, fed by QEMU's
+  random source (reproducible with ``-seed``)
 * UART10: the PL011 debug UART at ``0x10_7d00_1000``, connected to the
   first ``-serial`` backend
 * 1, 2, 4, 8 or 16 GiB of RAM at physical address 0 (``-m``; default 2 GiB)
@@ -27,9 +44,11 @@ with ``-d unimp``.
 Missing devices
 ---------------
 
-* System timer, VideoCore mailbox and firmware property interface
+* Firmware property tags specific to the Pi 5 (clocks, power, RTC, GPIO
+  expander); the BCM283x set is answered
 * SD/eMMC controllers, PCIe root complexes and the RP1 south bridge
-* GPIO, pin control, the Broadcom L2 interrupt controllers, watchdog, RNG
+* GPIO, pin control, the Broadcom L2 interrupt controllers
+* Power domains (only V3D's is driven by Linux on this SoC)
 * Display (HVS, HDMI), V3D and ISP
 
 Boot and exception levels
@@ -50,13 +69,66 @@ start in EL3, and every CPU starts at the image entry point.
 
 ``-kernel`` accepts an AArch64 Linux ``Image`` (booted using the Linux boot
 protocol, with the device tree address in ``x0``) or an ELF file (entered at
-its entry point; a ``-dtb`` blob is placed at the base of RAM if it fits
+its entry point; the device tree is placed at the base of RAM if it fits
 below the image). ``-bios`` is not supported yet.
+
+Firmware property interface
+---------------------------
+
+The property channel answers the BCM283x tag set. The tags that identify
+the board and the firmware answer as follows:
+
+* board revision: the new-style code of a Pi 5 with the configured RAM;
+* board serial number: ``-machine raspi5b,serial=<n>`` (a 64-bit number;
+  the default, ``0x0123456789abcdef``, is made up);
+* firmware revision, variant and hash: a fixed revision, the standard
+  ("start") firmware and an all-zero hash, since no firmware build stands
+  behind the model;
+* ARM and VideoCore memory: the first GiB less the top 4 MiB, and those
+  4 MiB;
+* command line: the ``-append`` string;
+* DMA channels: 0 to 10, the channels of the ``dma32`` and ``dma40``
+  device tree nodes.
+
+Every answer stays within the value buffer its tag declares: a buffer too
+small for it gets as much as fits, and the tag's response length says how
+much the whole answer needs (the command line is the exception, copied
+only when it fits, as the firmware does). A request that is cut short
+inside a tag, or whose tag runs past the request's own length, is answered
+with the interface's error code, ``0x80000001``; a request the VideoCore
+cannot reach is not answered at all.
+
+Reset and power-off
+-------------------
+
+PSCI ``SYSTEM_RESET``, the watchdog and the monitor's ``system_reset`` all
+reset the machine the same way: every device returns to its reset state,
+RAM is kept, the images given with ``-kernel`` and ``-dtb`` are loaded
+again and the boot starts over as from power-on, except that the PM
+block's reset status register (``RSTS``) keeps its value and records a
+watchdog reset. PSCI ``SYSTEM_OFF`` and Linux's halt request through the
+watchdog (boot partition 63 in ``RSTS``) power the machine off, and QEMU
+exits with status 0.
+
+Device tree
+-----------
+
+Without ``-dtb``, the machine generates a device tree describing what it
+models, derived from its memory map: the CPUs with PSCI, the generic timer,
+the PMU, the GIC, the system timer, the mailbox and the firmware interface,
+the PM block, the RNG, UART10 (``serial10``, the ``stdout-path``), the fixed
+clocks, and a CMA pool in the first GiB, where the VideoCore can reach
+Linux's buffers. Node names and properties follow Linux's ``bcm2712.dtsi``
+and the firmware's tree, and the result validates against the Linux
+bindings. ``-machine raspi5b,builtin-dtb=off`` gives the guest no device
+tree at all, like an empty ``device_tree=`` line in the firmware's
+``config.txt``.
 
 When a device tree is supplied with ``-dtb`` (for example
 ``bcm2712-rpi-5-b.dtb``), QEMU sets the memory node, marks nodes of devices
 that are not modelled yet as ``status = "disabled"`` and publishes the board
-revision in ``/system/linux,revision``, as the VideoCore firmware does.
+revision in ``/system/linux,revision``, as the VideoCore firmware does. The
+generated tree gets the same memory node and ``/system`` property.
 
 Examples
 --------
@@ -65,7 +137,12 @@ Bare-metal ELF payload::
 
   $ qemu-system-aarch64 -M raspi5b -nographic -kernel payload.elf
 
-Linux, with the console on UART10::
+Linux on the built-in device tree, with the console on UART10::
+
+  $ qemu-system-aarch64 -M raspi5b -m 4G -nographic -kernel Image \
+      -append "console=ttyAMA10,115200"
+
+Linux on the firmware's device tree::
 
   $ qemu-system-aarch64 -M raspi5b -m 4G -nographic \
       -kernel Image -dtb bcm2712-rpi-5-b.dtb \

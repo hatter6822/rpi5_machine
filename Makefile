@@ -21,7 +21,9 @@ OVERLAY_SRCS := $(shell cd overlay && find . -name '*.[ch]' | sed 's|^\./||')
 
 .DEFAULT_GOAL := build
 .PHONY: FORCE help setup apply unapply status configure build guest check \
-        check-qtest check-smoke checkpatch run-hello clean distclean
+        check-qtest check-smoke check-minimal check-dt checkpatch export-series \
+        run-hello \
+        clean distclean
 
 help:
 	@echo 'setup        initialise the qemu submodule and apply the overlay'
@@ -32,7 +34,10 @@ help:
 	@echo 'build        build qemu-system-aarch64 (default target)'
 	@echo 'guest        build the bare-metal test guests (clang + lld)'
 	@echo 'check        run the raspi5b qtest and the smoke tests'
+	@echo 'check-minimal build QEMU with raspi5b as its only board, run check on it'
+	@echo 'check-dt     validate the built-in device tree (needs dtschema, network)'
 	@echo 'checkpatch   run QEMU checkpatch.pl over overlay sources and patches'
+	@echo 'export-series write the upstream series to $$(SERIES_DIR) and check it'
 	@echo 'run-hello    boot the hello guest interactively'
 	@echo 'clean        remove guest builds; distclean also removes $$(BUILD_DIR)'
 
@@ -76,12 +81,70 @@ guest:
 
 check: check-qtest check-smoke
 
+# A QEMU containing the raspi5b machine and nothing else, which proves that
+# the machine selects every device it needs by itself, without the other
+# Raspberry Pi boards (CONFIG_RASPI). configure looks the device file up
+# relative to qemu/configs/devices/aarch64-softmmu/.
+MINIMAL_BUILD_DIR ?= build-minimal
+MINIMAL_DEVICES   := tests/configs/raspi5b-only
+MINIMAL_CONFIGURE_FLAGS := --without-default-devices \
+	--with-devices-aarch64=../../../../$(MINIMAL_DEVICES)
+
+check-minimal:
+	$(MAKE) BUILD_DIR=$(MINIMAL_BUILD_DIR) \
+		EXTRA_CONFIGURE_FLAGS='$(MINIMAL_CONFIGURE_FLAGS)' check
+	@! grep -qx 'CONFIG_RASPI=y' \
+		$(MINIMAL_BUILD_DIR)/aarch64-softmmu-config-devices.mak || \
+		{ echo 'check-minimal: CONFIG_RASPI is enabled' >&2; exit 1; }
+
 check-qtest: build $(QTEST_BIN)
 	QTEST_QEMU_BINARY=$(abspath $(QEMU_BIN)) $(QTEST_BIN) --tap
 
 check-smoke: build guest
 	QEMU=$(abspath $(QEMU_BIN)) GUEST=$(GUEST_BUILD)/hello.elf \
+		SUITE=$(GUEST_BUILD)/suite.elf \
 		$(PYTHON) -m unittest discover -s tests/smoke -v
+
+# The built-in device tree is validated against the kernel's bindings at a
+# pinned tag, fetched once (bindings only) and processed by dt-schema's
+# dt-mk-schema (pip install dtschema). Making the schema clears and clones
+# linux/ in $(DT_SCHEMA_DIR), and distclean removes the directory, so it
+# must be new, empty, or marked as made here by an earlier run.
+LINUX_DT_TAG  ?= v6.18
+DT_SCHEMA_DIR ?= build-dt-schema
+DT_SCHEMA     := $(DT_SCHEMA_DIR)/linux-$(LINUX_DT_TAG).json
+DT_SCHEMA_MARKER := $(DT_SCHEMA_DIR)/.check-dt
+
+$(DT_SCHEMA):
+	@if [ -e '$(DT_SCHEMA_DIR)' ] && [ ! -f '$(DT_SCHEMA_MARKER)' ] && \
+	   [ -n "$$(find '$(DT_SCHEMA_DIR)' -mindepth 1 -maxdepth 1 -print -quit 2>&1)" ]; then \
+		echo "check-dt: $(DT_SCHEMA_DIR) exists and was not made here;" \
+		     "set DT_SCHEMA_DIR to a new or empty directory" >&2; exit 1; \
+	fi
+	mkdir -p $(DT_SCHEMA_DIR) && touch $(DT_SCHEMA_MARKER)
+	rm -rf $(DT_SCHEMA_DIR)/linux
+	git clone --quiet --depth 1 --filter=blob:none --sparse \
+		--branch $(LINUX_DT_TAG) https://github.com/torvalds/linux.git \
+		$(DT_SCHEMA_DIR)/linux
+	git -C $(DT_SCHEMA_DIR)/linux sparse-checkout set \
+		Documentation/devicetree/bindings
+	dt-mk-schema -j $(DT_SCHEMA_DIR)/linux/Documentation/devicetree/bindings \
+		> $@.tmp
+	mv $@.tmp $@
+	rm -rf $(DT_SCHEMA_DIR)/linux
+
+check-dt: build guest $(DT_SCHEMA)
+	QEMU=$(abspath $(QEMU_BIN)) GUEST=$(GUEST_BUILD)/hello.elf \
+		DT_SCHEMA=$(abspath $(DT_SCHEMA)) \
+		$(PYTHON) -m unittest discover -s tests/smoke -p test_dt_schema.py -v
+
+# The upstream series (scripts/qemu-tree export): SERIES_FLAGS takes
+# -v <n>, --build (build every commit) and --signoff
+SERIES_DIR   ?= build-series
+SERIES_FLAGS ?=
+
+export-series:
+	scripts/qemu-tree export $(SERIES_FLAGS) $(SERIES_DIR)
 
 checkpatch:
 	@status=0; \
@@ -100,5 +163,31 @@ run-hello: build guest
 clean:
 	$(MAKE) -C $(GUEST_DIR) OUT=$(GUEST_BUILD) clean
 
+# distclean removes a directory only when this repository made it, since
+# each of these variables can point anywhere: a build directory carries
+# configure's stamp, an export the marker scripts/qemu-tree writes, and the
+# schema directory the marker check-dt writes. A directory that holds a
+# repository is never a build directory, whatever it carries:
+# not this one or a parent of it ('make configure BUILD_DIR=.' leaves the
+# stamp in the checkout), and not another checkout (qemu/ included).
+ROOT := $(realpath $(CURDIR))
+
+define rm_made
+@if [ -d '$(1)' ]; then \
+	d=$$(cd '$(1)' && pwd -P) && case '$(ROOT)/' in "$${d%/}/"*) \
+		echo "distclean: $(1) holds this repository, leaving it" >&2; exit 1;; \
+	esac; \
+	if [ -e '$(1)/.git' ]; then \
+		echo "distclean: $(1) is a checkout, leaving it" >&2; exit 1; \
+	fi; \
+fi; \
+if [ -e '$(1)' ] && ! { [ -d '$(1)' ] && $(2); }; then \
+	echo "distclean: $(1) was not made here, leaving it" >&2; exit 1; \
+fi; rm -rf '$(1)'
+endef
+
 distclean: clean
-	rm -rf $(BUILD_DIR)
+	$(call rm_made,$(BUILD_DIR),[ -f '$(BUILD_DIR)/$(notdir $(CONFIGURE_STAMP))' ])
+	$(call rm_made,$(MINIMAL_BUILD_DIR),[ -f '$(MINIMAL_BUILD_DIR)/$(notdir $(CONFIGURE_STAMP))' ])
+	$(call rm_made,$(SERIES_DIR),[ -f '$(SERIES_DIR)/.qemu-tree-export' ])
+	$(call rm_made,$(DT_SCHEMA_DIR),[ -f '$(DT_SCHEMA_MARKER)' ])

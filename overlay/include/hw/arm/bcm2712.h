@@ -11,7 +11,14 @@
 
 #include "exec/hwaddr.h"
 #include "hw/char/pl011.h"
+#include "hw/display/bcm2835_fb.h"
 #include "hw/intc/arm_gic.h"
+#include "hw/misc/bcm2711_rng200.h"
+#include "hw/misc/bcm2835_mbox.h"
+#include "hw/misc/bcm2835_powermgt.h"
+#include "hw/misc/bcm2835_property.h"
+#include "hw/nvram/bcm2835_otp.h"
+#include "hw/timer/bcm2835_systmr.h"
 #include "qemu/units.h"
 #include "qom/object.h"
 #include "target/arm/cpu.h"
@@ -36,6 +43,24 @@ OBJECT_DECLARE_SIMPLE_TYPE(BCM2712State, BCM2712)
 #define BCM2712_RAM_BASE            0x0
 #define BCM2712_RAM_SIZE_MIN        (1 * GiB)
 #define BCM2712_RAM_SIZE_MAX        (16 * GiB)
+
+/*
+ * The VideoCore reaches the first GiB of RAM only, at bus address 0x0
+ * and at 0xc000_0000 (the alias older Pis use), and keeps the top of it
+ * for itself; the firmware leaves that out of the ARM memory node.
+ * TODO(WS0.4): check GET_VC_MEMORY on hardware.
+ */
+#define BCM2712_VC_RAM_WINDOW       (1 * GiB)
+#define BCM2712_VC_RAM_BUS_BASE     0xc0000000
+#define BCM2712_VC_RAM_SIZE         (4 * MiB)
+#define BCM2712_VC_RAM_BASE         0x3fc00000     /* top of the window */
+
+/*
+ * The DMA channels the ARM may use (GET_DMA_CHANNELS): those of the
+ * "dma32" (0-5) and "dma40" (6-10) nodes of the firmware's device tree.
+ * TODO(WS0.4): check the firmware's answer on hardware.
+ */
+#define BCM2712_DMA_CHANNEL_MASK    0x07ff
 
 /*
  * Physical memory map. Addresses are 40-bit CPU physical addresses; the
@@ -128,10 +153,31 @@ struct BCM2712State {
     /*< public >*/
     uint32_t num_cpus;
     bool has_el3;
+    MemoryRegion *ram;
 
     ARMCPU cpu[BCM2712_NUM_CPUS];
     GICState gic;
+    BCM2835SystemTimerState systimer;
+    BCM2835PowerMgtState pm;
+    BCM2711Rng200State rng;
     PL011State uart10;
+
+    /* The VideoCore firmware interface, behind the mailbox */
+    BCM2835MboxState mbox;
+    MemoryRegion mbox_regs;
+    MemoryRegion mbox_chans;
+    MemoryRegion vc_bus;        /* the VideoCore's view of memory */
+    MemoryRegion vc_ram[2];     /* aliases of the first GiB of RAM in it */
+    BCM2835PropertyState property;
+    BCM2835FBState fb;
+    BCM2835OTPState otp;
 };
+
+/*
+ * Add the SoC's nodes to the device tree @fdt: CPUs, timer, PMU, fixed
+ * clocks, the "soc" bus with every modelled device, the firmware
+ * interface and the serial10 alias, and point the root at the GIC.
+ */
+void bcm2712_fdt_populate(BCM2712State *s, void *fdt);
 
 #endif /* HW_ARM_BCM2712_H */

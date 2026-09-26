@@ -17,6 +17,11 @@ SECTIONS
         *(.text .text.*)
     }
     .rodata : ALIGN(8) { *(.rodata .rodata.*) }
+    .tests : ALIGN(8) {
+        __tests_start = .;
+        KEEP(*(SORT(.tests.*)))
+        __tests_end = .;
+    }
     .data : ALIGN(8) { *(.data .data.*) }
     .bss (NOLOAD) : ALIGN(16) {
         __bss_start = .;
@@ -28,6 +33,15 @@ SECTIONS
     . = ALIGN(16);
     . += 4 * 16K;               /* one stack per core, see start.S */
     __stack_top = .;
+
+    /*
+     * Kept across system resets (bm_persistent()). Like the stacks it is in
+     * no loadable segment, so QEMU neither reloads nor zeroes it on reset.
+     */
+    . = ALIGN(16);
+    __persist_start = .;
+    . += 4K;
+    __persist_end = .;
 
     /DISCARD/ : { *(.comment) *(.note*) *(.eh_frame*) }
 }

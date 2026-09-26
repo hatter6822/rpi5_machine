@@ -59,18 +59,20 @@ commit (or a short series) with its own tests.
 
 ## 2. Current state
 
-Delivered by the boilerplate (WS0.1–WS0.3):
+Delivered so far (WS0.1–WS0.3, WS0.5, WS0.6, WS2.1, WS2.2, WS2.3a, WS2.4, WS2.5, WS3.2, WS3.6, WS9.2), which completes M1:
 
 | Area | State |
 | --- | --- |
-| Repository | pinned QEMU v11.1.1 submodule, overlay + patch series managed by `scripts/qemu-tree`, CI with ccache |
-| SoC (`bcm2712`) | 1–4 Cortex-A76 (`MPIDR.Aff1` = core, CNTFRQ 54 MHz, optional EL3), GIC-400 with 288 SPIs, 5 priority bits and all timer/maintenance PPIs, UART10 (PL011), complete memory map with T0 placeholders and two catch-all windows |
-| Board (`raspi5b`) | 1/2/4/8/16 GiB RAM, board revision code, PSCI over SMC with EL2 entry (default) or guest-owned EL3 (`secure=on`), DTB fix-ups for unmodelled devices, `/system/linux,revision` |
-| Tests | qtest (UART IDs, GIC geometry, priority bits and security, RAM, placeholders), bare-metal smoke guest (EL, MPIDR, CNTFRQ, PSCI CPU_ON on all cores, SYSTEM_OFF, EL3 mode) |
-| Linux | the stock Raspberry Pi OS kernel (6.18) with the firmware's `bcm2712-rpi-5-b.dtb` boots on 4 CPUs to the root-fs mount, without warnings |
+| Repository | pinned QEMU v11.1.1 submodule, overlay + patch series (patches may share files, like an upstream series) managed by `scripts/qemu-tree`, which also exports the upstream series (WS0.5: 15 commits and a cover letter, checked with `git am`, checkpatch and a build of every commit), CI with ccache |
+| Kconfig (WS0.6) | every BCM283x device model has its own symbol, so `bcm2712` can select just the models it reuses; a `raspi5b`-only build is tested (`make check-minimal`) |
+| SoC (`bcm2712`) | 1–4 Cortex-A76 (`MPIDR.Aff1` = core, CNTFRQ 54 MHz, optional EL3), GIC-400 with 288 SPIs, 5 priority bits and all timer/maintenance PPIs, UART10 (PL011), system timer (WS2.1), watchdog and reset status (WS2.4), RNG200 (WS2.5), VideoCore mailbox with the BCM283x property and framebuffer channels (WS2.2) and every identity tag answered (WS2.3a), complete memory map with T0 placeholders and two catch-all windows |
+| Board (`raspi5b`) | 1/2/4/8/16 GiB RAM, board revision code, serial number (`serial=`), PSCI over SMC with EL2 entry (default) or guest-owned EL3 (`secure=on`), system reset and power-off through PSCI, the watchdog and the monitor (WS3.6), a built-in device tree when no `-dtb` is given (WS3.2; `builtin-dtb=off` passes none), DTB fix-ups for unmodelled devices, `/system/linux,revision` |
+| Tests | qtest (UART IDs, GIC geometry, priority bits and security, RAM, placeholders, system timer, watchdog, mailbox, identity tags, RNG), the built-in tree validated against the Linux v6.18 bindings (`make check-dt`), bare-metal smoke guest (EL, MPIDR, CNTFRQ, PSCI CPU_ON on all cores, SYSTEM_OFF, EL3 mode), and the bare-metal suite (WS9.2, 26 tests: GIC and the Secure/Non-secure group split, every timer on every core, SGIs between all core pairs, SPI routing, PSCI, the system timer, the mailbox and identity tags, the RNG, UART receive and loopback, a watchdog reset and four system resets checked against the boot state, an ID-register dump; 1–4 cores, with the built-in tree, a `-dtb` one and none, EL2 and EL3) |
+| Linux | the stock Raspberry Pi OS kernel (6.18) boots on 4 CPUs to the root-fs mount, without warnings, with the firmware's `bcm2712-rpi-5-b.dtb` and on the built-in tree (1, 2 and 8 GiB) |
 
 Known provisional values, each marked in the code: 288 SPIs
-(`TODO(WS1.3)`), the PMU interrupts taken from the vendor DT
+(`TODO(WS1.3)`), the VideoCore memory size and DMA channel mask
+(`TODO(WS0.4)`), the PMU interrupts taken from the vendor DT
 (`TODO(WS1.4)`), `-bios` handling
 (`TODO(WS3.3)`), and the board revision's `REVISION` field (WS9.8).
 
@@ -85,7 +87,7 @@ and turns provisional values into verified ones. H never gates a milestone.
 | Milestone | Capability | Units | Exit test |
 | --- | --- | --- | --- |
 | **M0** Skeleton | machine boots bare-metal payloads | WS0.1–0.3 | done: `make check` |
-| **M1** Bare-metal platform | everything a microkernel needs: timers, IPIs, mailbox/property, watchdog reset, RNG, a device tree | WS0.5, WS0.6, WS2.1, WS2.2, WS2.3a, WS2.4, WS2.5, WS3.2, WS3.6, WS9.2 | the bare-metal suite (WS9.2) passes on 1–4 cores with and without `-dtb`; PSCI `SYSTEM_RESET` and the watchdog reboot the guest three times |
+| **M1** Bare-metal platform | everything a microkernel needs: timers, IPIs, mailbox/property, watchdog reset, RNG, a device tree | WS0.5, WS0.6, WS2.1, WS2.2, WS2.3a, WS2.4, WS2.5, WS3.2, WS3.6, WS9.2 | done: the bare-metal suite (WS9.2) passes on 1–4 cores with and without `-dtb`; PSCI `SYSTEM_RESET` and the watchdog reboot the guest four times |
 | **M2** Firmware-faithful boot | real TF-A, U-Boot and UEFI run unmodified | WS1.5, WS3.1, WS3.3, WS3.4 | upstream TF-A `rpi5` BL31 (`secure=on`) → U-Boot → Linux to the root-fs mount; EDK2 to the UEFI shell |
 | **M3** Linux on SD card | Raspberry Pi OS boots to a login prompt | WS2.3b–e, WS2.6, WS4.1–4.6, WS5.1, WS5.2, WS3.5 | unmodified Raspberry Pi OS Lite image boots from `-drive if=sd` with `scripts/rpi5-boot`; `reboot` and `poweroff` work |
 | **M4** PCIe | PCIe root complexes and MSI | WS6.1–6.5 | NVMe root and virtio-net on the external PCIe1 port under Linux |
@@ -130,17 +132,17 @@ immediately exercised by the next:
 
 | # | Unit | Why now |
 | --- | --- | --- |
-| 1 | WS0.6 Kconfig split | unblocks reusing every BCM283x model; a self-contained upstream patch |
-| 2 | WS2.1 system timer | first reused device; exercises the SPI wiring path |
-| 3 | WS9.2a bare-metal framework | exception vectors and a GIC driver in the guest, needed by every later test |
-| 4 | WS2.4 PM/watchdog | reset and power-off, which every test harness needs |
-| 5 | WS3.6 reset semantics | makes the watchdog and PSCI `SYSTEM_RESET` trustworthy |
-| 6 | WS2.2 mailbox | the address-translation design decision, made once |
-| 7 | WS2.3a property identity tags | first consumer of the mailbox; lets the `firmware` DT node be enabled |
-| 8 | WS2.5 RNG200 | small, standalone, upstreamable |
-| 9 | WS3.2 built-in device tree | microkernels get a DT without `-dtb`; forces the memory map to be the single source of truth |
-| 10 | WS9.2b full bare-metal suite | M1 exit test |
-| 11 | WS0.5 series export | prepares the first upstream submission |
+| 1 | WS0.6 Kconfig split (done) | unblocks reusing every BCM283x model; a self-contained upstream patch |
+| 2 | WS2.1 system timer (done) | first reused device; exercises the SPI wiring path |
+| 3 | WS9.2a bare-metal framework (done) | exception vectors and a GIC driver in the guest, needed by every later test |
+| 4 | WS2.4 PM/watchdog (done) | reset and power-off, which every test harness needs |
+| 5 | WS3.6 reset semantics (done) | makes the watchdog and PSCI `SYSTEM_RESET` trustworthy |
+| 6 | WS2.2 mailbox (done) | the address-translation design decision, made once |
+| 7 | WS2.3a property identity tags (done) | first consumer of the mailbox; lets the `firmware` DT node be enabled |
+| 8 | WS2.5 RNG200 (done) | small, standalone, upstreamable |
+| 9 | WS3.2 built-in device tree (done) | microkernels get a DT without `-dtb`; forces the memory map to be the single source of truth |
+| 10 | WS9.2b full bare-metal suite (done) | M1 exit test |
+| 11 | WS0.5 series export (done) | prepares the first upstream submission |
 | 12 | WS4.1 L2 interrupt controllers | opens the M3 chain |
 
 ## 5. Unit conventions
@@ -222,7 +224,26 @@ prints a machine-readable dump over UART10.
 the diff in CI; every difference is either fixed by a WS1 unit or listed
 in the allow-list with a reason.
 
-#### WS0.5 Upstream series export (M)
+#### WS0.5 Upstream series export (done)
+*Delivered:* `scripts/qemu-tree export` (`make export-series`). Each
+patch in `patches/` is one upstream commit, and `series/series.map`
+names the overlay files that go with it, keyed by the patch's name
+without its number so renumbering needs no edit; commit messages stay in
+the patches, a single source instead of the planned `series/NN-*.txt`.
+The export commits onto the pinned revision in a temporary worktree,
+refuses an overlay file that is in no patch or in two, writes the
+series with `git format-patch --cover-letter --base` and the cover
+letter from `series/cover.txt`, checks that it applies with `git am`
+and reproduces the tree, and runs checkpatch (`--no-signoff` unless
+`--signoff` adds the user's own). `--build` builds every commit; CI
+exports on every change and builds every commit in a separate job. To
+make the series reviewable, the SoC patch became two (the SoC, then the
+board), the qtest and documentation patches now carry their files'
+descriptions, and `MAINTAINERS` gains the new files in the Raspberry
+Pi entry; `refresh` can now add a file to a patch. The M0+M1 series is
+15 commits. Posting it waits for the author's `Signed-off-by:` and a
+choice of maintainer entry (WS9.7).
+
 `scripts/qemu-tree export <dir>` turns the overlay and patches into the
 series a maintainer will review.
 
@@ -246,10 +267,22 @@ series a maintainer will review.
 `git am`, builds at every commit, and passes checkpatch; the M0+M1 cover
 letter exists.
 
-#### WS0.6 Decouple BCM283x models from `CONFIG_RASPI` (S, upstream-first)
-Today `bcm2835_systmr.c`, `bcm2835_mbox.c`, `bcm2835_property.c`,
+#### WS0.6 Decouple BCM283x models from `CONFIG_RASPI` (done; to be posted upstream)
+*Delivered:* `patches/0001-hw-Add-a-Kconfig-symbol-for-each-BCM283x-device-model.patch`,
+first in the series so that it can be posted on its own; `make check-minimal`
+builds and tests a QEMU whose only board is `raspi5b` (`CONFIG_RASPI=n`).
+Posting to qemu-devel waits for the human author's `Signed-off-by:` (WS9.7).
+The raspi5b-only build also exposed an upstream link failure: QEMU 11.1
+builds `target/arm/tcg/gicv5-cpuif.c` unconditionally but the GICv5
+helpers it calls only with `CONFIG_ARM_GICV5`, and the TCG stub for
+`define_gicv5_cpuif_regs()` asserts. `tests/configs/raspi5b-only.mak`
+enables `ARM_GICV5` as a workaround; *follow-up (S):* post the fix
+(build the file only with `ARM_GICV5`, make the stub a no-op for CPUs
+without FEAT_GCIE) alongside this patch.
+
+Before this unit `bcm2835_systmr.c`, `bcm2835_mbox.c`, `bcm2835_property.c`,
 `bcm2835_powermgt.c`, `bcm2835_rng.c`, `bcm2835_thermal.c`, `bcm2835_fb.c`,
-`bcm2835_dma.c` and friends are only built under the board symbol
+`bcm2835_dma.c` and friends were only built under the board symbol
 `CONFIG_RASPI` (`hw/*/meson.build`). Introduce per-device symbols
 (`BCM2835_SYSTMR`, `BCM2835_MBOX`, `BCM2835_PROPERTY`, `BCM2835_FB`, ...)
 selected by `RASPI`, and let `BCM2712` select only what it reuses.
@@ -309,6 +342,19 @@ none UNDEFs; use the WS0.4 reset values when available. Upstream in
 **Done when:** TF-A's `cortex_a76` reset and power-down paths run without
 UNDEF under `secure=on`.
 
+#### WS1.7 Generic counter rate (S, upstream)
+QEMU converts virtual time to generic-timer ticks with a whole number of
+nanoseconds per tick (`gt_cntfrq_period_ns()` in `target/arm/cpu.c`), so
+at the Pi 5's 54 MHz (18.52 ns) the counter really runs at 1 GHz / 18 =
+55.6 MHz: 2.9% fast against the system timer, the RTC and the host. A
+guest that trusts `CNTFRQ_EL0` sees its clock drift. The truncation exists
+so that timer deadlines are an exact inverse of the count; fixing it means
+giving the timers a rational scale (or `muldiv64()` both ways with
+matching rounding) upstream. The bare-metal `systimer/rate` test measures
+the rate and tolerates 4% until then (`TODO(WS1.7)`).
+**Done when:** the counter runs at `CNTFRQ` within 100 ppm of the system
+timer and the test's tolerance drops accordingly.
+
 #### WS1.6 Secure-world interrupt behaviour (S) — track H
 **Depends:** WS1.3.
 With `secure=on`, check Group 0/1 behaviour, banked `GICC_*` registers,
@@ -322,7 +368,16 @@ with a custom armstub.
 These blocks are shared with earlier Raspberry Pi SoCs; the work is mostly
 re-targeting existing QEMU models to BCM2712 addresses and differences.
 
-#### WS2.1 System timer (S)
+#### WS2.1 System timer (done)
+*Delivered:* the SoC maps `bcm2835-sys-timer` with comparators on SPIs
+64–67 and the DT node is no longer disabled; two upstream-first fixes to
+the model (patches 0002/0003): reset now cancels armed comparators and
+lowers their interrupts, and armed comparators are migrated. qtests cover
+the counter, every comparator's match, interrupt and acknowledgement,
+reset and migration; the bare-metal suite (`systimer/compare`,
+`systimer/rate`) takes each comparator's interrupt through the GIC and
+clears it via `CS`.
+
 **Depends:** WS0.6.
 Instantiate `bcm2835-sys-timer` at `0x10_7c00_3000` (the DT node covers
 `0x1000`; the model is `0x20` bytes, so the rest stays a placeholder),
@@ -332,7 +387,36 @@ comparators 0–3 to SPIs 64–67. The DT declares `clock-frequency =
 interrupt; the bare-metal suite takes a comparator interrupt through the
 GIC and clears it via `CS`.
 
-#### WS2.2 VideoCore mailbox and bus-address translation (M)
+#### WS2.2 VideoCore mailbox and bus-address translation (done)
+*Delivered:* the SoC maps `bcm2835-mbox` at the node's window (the
+model's registers start 0x80 earlier, as on BCM2835, so an alias maps
+just the `0x40` bytes) on SPI 33, with `bcm2835-property` and
+`bcm2835-fb` behind it, and the `vc-bus` address space of step 1
+(first GiB of RAM at `0xc000_0000` and `0x0`). Correction to the
+background below, found by tracing the mailbox: the firmware's DT gives
+`soc` no `dma-ranges` (only `firmware` has an empty one), so Linux passes
+plain physical addresses; the `0x0` alias is the one Linux needs, and
+`0xc000_0000` serves code written for older Pis. One upstream-first fix
+(patch 0006): the property channel no longer answers a buffer that is
+not in that address space (before, it read zeros, wrote nowhere and
+still signalled a response), and a request cut short inside a tag gets
+the interface's error code; a second (patch 0008) keeps every tag
+within the value buffer it declares, reading missing fields as zero
+and clipping answers, as the identity tags already did. The property
+model needs a framebuffer and an OTP to link to, so both are
+instantiated now (WS8.1 still owns the framebuffer's behaviour); its
+VideoCore memory is the top 4 MiB of the first GiB (`TODO(WS0.4)`:
+`GET_VC_MEMORY` on hardware), which the machine now leaves out of the DT
+memory node, as the firmware does. The `mailbox` and `firmware` nodes
+stay enabled: Linux's mailbox driver probes, `raspberrypi-firmware`
+attaches ("Attached to firmware from ..."), and none of its clients
+reports an error at boot.
+Tags the model does not know yet (firmware variant and hash) are
+WS2.3a. qtests cover `GET_BOARD_REVISION` through both aliases with the
+interrupt, an unreachable buffer, and the ARM/VC memory split; the
+bare-metal suite reads the revision through the mailbox and checks it
+against the DT.
+
 **Depends:** WS0.6.
 Instantiate `bcm2835-mbox` at `0x10_7c01_3880` (SPI 33) with the property
 channel behind it, and decide once how buffer addresses are interpreted.
@@ -368,6 +452,29 @@ allocates them from the CMA area below `0x4000_0000`, see `linux,cma` in
 `raspberrypi-firmware soc:firmware: Attached to firmware from ...`.
 
 #### WS2.3 Firmware property interface (L, split)
+*WS2.3a delivered:* one upstream-first patch (0007) answers the firmware
+variant (the standard firmware, "start") and hash (all zeroes), which
+Linux asks for at probe and got a success over its own buffer for, and
+turns the board model (0), serial and DMA-channel stubs into defined
+answers: the serial and the DMA mask are new `board-serial` and
+`dma-channel-mask` properties whose defaults leave the other boards
+unchanged. `raspi5b` takes the serial from a `serial` machine property
+(default `0x0123456789abcdef`) and reports DMA channels 0–10, the
+channels of the firmware DT's `dma32` and `dma40` nodes
+(`TODO(WS0.4)`). The rest of the 2.3a set already had correct answers
+(revision, MAC, ARM/VC memory, command line); qtests now cover every
+tag, including the command line's too-short-buffer case, and the
+bare-metal suite (`mbox/identity`) checks the answers against each
+other and against the DT memory node. Linux prints "Attached to
+firmware from ..., variant start" and the hash, and asks for no tag the
+model lacks until `SET_CLOCK_STATE` (2.3b). Deviation: the tag table
+below is deferred to 2.3b, which adds a couple of dozen tags; 2.3a
+added five cases, and a refactor of every existing handler would have
+dwarfed them in the upstream patch. The firmware revision stays the
+model's fixed value, and the MAC address QEMU's default, until the RP1
+Ethernet (WS7) owns a NIC to take it from, so there is no `mac` machine
+property yet.
+
 **Depends:** WS2.2.
 `bcm2835-property` implements the tags the Pi 3/4 models need. Rather
 than growing one `switch` further, split the tag handlers into a table
@@ -394,7 +501,28 @@ RTC drivers probe with the upstream and downstream device trees; `hwclock`
 reads and sets the time; `vcgencmd`-style queries from a bare-metal test
 match the seeded table.
 
-#### WS2.4 Power management and watchdog (M)
+#### WS2.4 Power management and watchdog (done)
+*Delivered:* the SoC maps QEMU's `bcm2835-powermgt` (generalising it
+needed no variant: the watchdog registers are identical) and the DT node
+stays enabled. Two upstream-first fixes to the model (patches 0004/0005):
+the watchdog now counts `WDOG` down at 65536 Hz instead of resetting as
+soon as it is armed (which rebooted any guest that merely started it),
+reads back the ticks left, pauses when disarmed, fires through
+`watchdog_perform_action()` and is migrated; and `RSTS` survives system
+reset, with the power-on flag replaced by `HADWRF` (bit 5) when the
+watchdog fires. The halt test now looks at the partition bits only.
+qtests cover the password, the countdown, kicking, pausing, the reset and
+its `RSTS`, the halt and migration; the bare-metal suite
+(`pm/watchdog-countdown`, `pm/watchdog-reset`) survives a watchdog reset
+through a boot counter and runner state kept in RAM. Linux probes
+`bcm2835-wdt` and `bcm2835-power`. Deviations from the steps below: the
+reset flag is `HADWRF`, not `HADWRH`, because the partition number owns
+the even bits (`HADWRH` is bit 6, partition bit 3, which Linux sets to
+halt); the power domain registers stay a placeholder, because on BCM2712
+Linux only drives V3D's (a reset bit in `PM_GRAFX_2712`, never polled) and V3D
+is not modelled. On Pi 5, Linux reboots and powers off through PSCI
+(its handler outranks `bcm2835_wdt`'s), so `reboot`/`poweroff` are WS3.6.
+
 `brcm,bcm2712-pm` at `0x10_7d20_0000`, `0x604` bytes, driven by Linux's
 `bcm2835_wdt.c` (watchdog and reboot) and `bcm2835-pm.c` (power domains,
 `is_2712` path).
@@ -428,7 +556,30 @@ registers (`PM_GRAFX`, `PM_IMAGE`, the ASB bridges) are T1 storage.
 expire and observes the boot counter incremented and `HADWRH_SET`; Linux
 `reboot` and `poweroff` work through `bcm2835_wdt`.
 
-#### WS2.5 RNG200 (S)
+#### WS2.5 RNG200 (done)
+*Delivered:* a new model, `bcm2711-rng200` (`hw/misc/bcm2711_rng200.c`),
+with its Kconfig symbol, meson line and trace events as upstream-first
+patch 0008, ahead of the SoC patch. With no datasheet, it follows
+Linux's driver, including the BCM2711 path's spin until
+`TOTAL_BIT_COUNT` passes 16, which has no timeout, so the node could not
+stay enabled without a model. The generator is infinitely fast: while it
+runs, the 16-word FIFO is full, each word read is replaced at once, and
+the bit count advances by the bits that took, starting with the warm-up
+bits the guest asked to discard (`TOTAL_BIT_COUNT_THRESHOLD`). Start-up
+and crossing the threshold raise `STARTUP_TRANSITIONS_MET` and
+`TOTAL_BITS_COUNT` (write-one-to-clear); either soft reset empties the
+FIFO and restarts the count; stopped, the FIFO drains. It has an
+interrupt output (`INT_STATUS & INT_ENABLE`) for the Pi 4, whose node
+names SPI 125; the Pi 5 node has none, so it stays unconnected. Data
+comes from `qemu_guest_getrandom_nofail()`, so `-seed` reproduces it.
+qtests cover the stopped state, start-up, the counts and status, the
+drain, both soft resets, system reset and `-seed`; the bare-metal suite
+draws 1 KiB (`rng/draw`) and runs Linux's recovery sequence
+(`rng/soft-reset`), and `reset/system-reset` hashes the RNG. Linux
+registers the hwrng and seeds the CRNG from it ("crng init done" follows
+at once). Wiring it into `raspi4b` is left to the upstream series, as a
+follow-up patch once this one is accepted.
+
 `brcm,bcm2711-rng200` at `0x10_7d20_8000`, from Linux `iproc-rng200.c`:
 `RNG_CTRL` `0x00` (bit 0 `RBGEN` enable, mask `0x1fff`), `RNG_SOFT_RESET`
 `0x04`, `RBG_SOFT_RESET` `0x08`, `RNG_INT_STATUS` `0x18` (bits for
@@ -484,7 +635,32 @@ it) and the `dt-blob`/firmware documentation.
 **Done when:** the fixed-up DT of a QEMU boot and a real boot differ only
 in the documented list; no "firmware out-of-date" message.
 
-#### WS3.2 Built-in device tree (M)
+#### WS3.2 Built-in device tree (done)
+*Delivered:* with no `-dtb`, `raspi5b` hands the guest a tree generated
+by `bcm2712_fdt_populate()` from the same constants that build the memory
+map: the root, `/cpus` (one `cpu@<MPIDR>` per core, PSCI), the GIC, the
+timer and PMU interrupts sized to `-smp`, the fixed clocks, and under
+`/soc@107c000000` (`ranges` from the 32-bit bus to `0x10_0000_0000`) the
+system timer, mailbox, UART10, watchdog and RNG, each named and
+compatible as in `bcm2712.dtsi`; `arm_load_dtb()` then adds `/memory`,
+`/psci` and `/chosen`, and the board adds `stdout-path` and
+`/system/linux,revision`. `builtin-dtb=off` restores the old behaviour
+(no tree, `x0` = 0) for guests that must probe without one. Three
+findings from booting Linux on it: the PL011 node needs
+`arm,primecell-periphid` (its 0x200-byte `reg` hides the ID registers;
+the value is QEMU's, `0x00141011`); the `firmware` node must sit under
+`/soc` with an empty `dma-ranges`, as mainline's
+`bcm2712-rpi-5-b-ovl-rp1.dts` has it, or Linux's mailbox buffers get the
+wrong address; and a `linux,cma` pool in the first GiB is needed because
+the VideoCore reaches only that window and the model ignores buffers
+outside it (WS2.2). The bare-metal runtime found a bug of its own: it
+counted cores by `cpu@N` names; it now walks `/cpus` by `device_type`.
+`make check-dt` fetches the Linux v6.18 bindings, runs `dt-validate`
+(dt-schema 2026.9, both pinned) over three configurations, and fails on
+any message outside a commented allowlist (the undocumented
+`/system/linux,revision`, and the firmware node's properties, which the
+mainline tree above shares); CI runs it with the bindings cached.
+
 When no `-dtb` is given, generate a DT from the model (`get_dtb`) so that
 bare-metal code and microkernels always receive a valid tree in `x0`.
 
@@ -567,7 +743,24 @@ Rather than emulating the closed-source firmware, a host tool
 **Done when:** it boots an unmodified Raspberry Pi OS Lite image to the
 login prompt with one command.
 
-#### WS3.6 Reset and power semantics (S)
+#### WS3.6 Reset and power semantics (done)
+*Delivered:* the audit found every stateful child of the SoC on the main
+system bus (GIC, system timer, PM, UART10, placeholders), so the machine
+reset reaches it; the CPUs are reset by `arm_load_kernel()`'s hook, and
+the SoC object itself holds no state. PSCI `SYSTEM_RESET`, the watchdog
+and `system_reset` all end in `qemu_system_reset_request()`. The
+bare-metal suite gained `bm_early()`, a hook that runs before the
+runtime touches any device, and `reset/system-reset`, which dirties every
+block (GIC, system timer, PM, UART, CPU timers, a running secondary),
+resets three times through PSCI and once through the watchdog, and
+compares the state each reset leaves, block by block, with the state the
+boot started with, along with the entry EL, the DT and the boot count; a
+PM model that kept `WDOG` across reset fails it. `pm/halt-exit` checks
+that the halt pattern ends QEMU with status 0 (`SYSTEM_OFF` is covered by
+the hello smoke test). The stock Raspberry Pi OS kernel with `panic=1`
+reboots through PSCI in a loop (seven boots in a minute, checked by
+hand; no Linux image in CI).
+
 **Depends:** WS2.4.
 System reset must reset every device (audit `Resettable` coverage of the
 SoC's children), restore the boot handoff (`arm_load_kernel`'s reset hook
@@ -986,20 +1179,50 @@ that is M1's exit test. Every test must be able to run on hardware as
 `kernel_2712.img`, which rules out semihosting for anything but the
 final exit code in QEMU.
 
-**9.2a Framework (S).** `lib/`: console over PL011 (address from the DT
+**9.2a Framework (S, done).** *Delivered:* `tests/guest/lib/` (entry
+and per-EL vectors, console, printf, device-tree walker with `ranges`
+translation, GIC-400 driver, PSCI, generic timer helpers, `TEST()` runner),
+`hello` ported onto it, and a first suite of 11 tests (GIC geometry and
+SGIs, the EL1/EL2/secure physical timers, the system timer, PSCI and
+`CPU_ON` of every core) that `tests/smoke/test_suite.py` runs on 1, 2 and
+4 cores, with and without a device tree, at EL2 and EL3. It also passes
+with the firmware's `bcm2712-rpi-5-b.dtb`. The transcript format is in
+`tests/guest/README.md`. Planned: `lib/`: console over PL011 (address from the DT
 in `x0` when present, hard-coded fallback), `printf` subset, exception
 vectors with a per-EL handler table, a GICv2 driver (distributor and CPU
 interface init, enable/disable, priority, SGI, EOI), per-core stacks,
 `TEST()`/`ASSERT()` macros with a `PASS:`/`FAIL:` transcript format that
 the smoke runner parses, PSCI helpers, a spin-wait on the generic timer.
 
-**9.2b Tests (M).** Timer interrupt on every core (EL1 physical and
-virtual), SGIs between all core pairs, system timer comparator interrupt,
-mailbox `GET_BOARD_REVISION` round-trip, PSCI `CPU_ON`/`CPU_OFF`/
-`AFFINITY_INFO`/`SYSTEM_RESET` (with a boot counter in RAM),
-watchdog reset, RNG draw, UART loopback (QEMU `-serial` socket peer),
-`secure=on` EL3 → EL2 drop with Group 0/1 configuration, and the
-hardware-probe dump (WS0.4) as one more test.
+**9.2b Tests (M, done).** *Delivered:* the suite grew to 26 tests,
+listed by area in `tests/guest/README.md`: the EL1 physical and virtual
+timers on every core (`timer/every-core`), SGIs between every pair of
+cores and to all others with the sender checked in `GICC_IAR`
+(`smp/sgi`), a system timer SPI routed to each core in turn
+(`smp/spi-routing`), PSCI `CPU_ON`/`CPU_OFF`/`AFFINITY_INFO` statuses
+(`psci/cpu-on-off`), a line from the UART's peer (`uart/echo`, which the
+smoke test answers) and internal loopback, polled and by interrupt
+(`uart/loopback`), and an identification-register dump (`probe/dump`,
+the first slice of WS0.4). The system timer, mailbox, `SYSTEM_RESET`,
+watchdog and RNG tests came with their units. At EL3 the runtime now
+starts secondaries itself from a spin table, so the SMP tests run there
+too, and `bm_run_nonsecure_el2()` drops to Non-secure EL2 for
+`gic/security-groups`: Group 1 is an IRQ taken at EL2, Group 0 an FIQ
+taken at EL3 while EL2 runs, and the Non-secure world can neither see
+Group 0 configuration nor raise a Group 0 SGI. Without a DT the runtime
+counts cores with PSCI `AFFINITY_INFO`. The suite passes on 1, 2 and 4
+cores with every DT mode and at EL3, and with the firmware's
+`bcm2712-rpi-5-b.dtb`.
+
+Two QEMU bugs found by these tests are fixed by upstream-first patches
+ahead of the SoC patch (now 0011): with the Security Extensions,
+`GICD_SGIR` ignored `NSATT` and the security of the write, so
+Non-secure code could raise Secure SGIs (0009, `hw/intc/arm_gic`); and
+a timer whose offset exceeds the physical count, such as the virtual
+timer with `CNTVOFF_EL2` above `CNTPCT` (a virtual count below zero),
+never fired, because the deadline's wrap-around was taken for "never"
+(0010, `target/arm`). `uart/echo` does not feed input before its prompt:
+every reset, and enabling the PL011 FIFO, empties the receiver.
 
 **Done when:** `make check-smoke` runs the suite on 1, 2 and 4 cores
 with and without `-dtb`; the transcript format is documented in

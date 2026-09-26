@@ -1,0 +1,49 @@
+hw/arm: Add the Raspberry Pi 5 (raspi5b) machine
+
+This series adds raspi5b, a model of the Raspberry Pi 5 Model B and its
+Broadcom BCM2712 SoC: four Cortex-A76 cores, a GIC-400, UART10 (PL011),
+the system timer, the watchdog and reset status block, the RNG200 and
+the VideoCore mailbox with the firmware property channel. Every other
+block of the memory map is an unimplemented-device placeholder. The
+RP1 south bridge, behind PCIe, is not modelled yet, so there is no
+Ethernet, USB or GPIO.
+
+The target for now is bare-metal and microkernel bring-up. The machine
+boots like the Raspberry Pi firmware does: the guest enters at EL2 with
+PSCI over SMC, or owns EL3 with secure=on. Without -dtb it generates a
+device tree, which validates against the kernel's bindings. The stock
+Raspberry Pi OS kernel boots to the root file system mount, on that
+tree or on the firmware's bcm2712-rpi-5-b.dtb.
+
+The series is in four parts:
+
+- The BCM283x device models get a Kconfig symbol each, so the BCM2712
+  can select the ones it reuses without the Pi 1-4 boards. No
+  functional change.
+
+- Fixes to models the BCM2712 reuses, which apply to the older Pis too.
+  The system timer now stops its comparators on reset and migrates them.
+  The watchdog now counts down instead of resetting the machine as soon
+  as it is armed, and the reset status survives the reset it reports.
+  The property channel no longer answers a buffer the firmware could
+  not read, answers a request cut short with the interface's error
+  code, keeps every tag within the value buffer it declares, and
+  answers the firmware and board identity tags Linux asks for.
+
+- A new RNG200 model, and two fixes for bugs found by the tests:
+  - with the Security Extensions, a Non-secure write to GICD_SGIR could
+    raise Group 0 SGIs;
+  - a generic timer whose offset exceeds the count, such as the virtual
+    timer with CNTVOFF_EL2 above CNTPCT, never fired.
+
+- The SoC, the board, a qtest and the documentation.
+
+Testing: the qtest covers every modelled device at register level. A
+bare-metal test suite runs on 1 to 4 cores, at EL2 and EL3, with and
+without a device tree. It covers per-core timers and SGIs, SPI routing,
+PSCI, the mailbox, the watchdog and system resets, the RNG and the UART.
+The suite lives out of tree, with the rest of the development history:
+https://github.com/hatter6822/rpi5_machine
+
+The new files are added to the existing Raspberry Pi entry in
+MAINTAINERS.

@@ -1,8 +1,13 @@
 # QEMU build directory (see BUILD_DIR in the Makefile)
 /build/
+/build-minimal/
 
 # Bare-metal guest objects
 /tests/guest/build/
+
+# Processed device-tree bindings (make check-dt)
+/build-dt-schema/
+/build-series/
 
 __pycache__/
 *.py[co]
