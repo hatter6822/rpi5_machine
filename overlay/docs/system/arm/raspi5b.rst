@@ -24,9 +24,9 @@ Implemented devices
   which survives the reset and reports a watchdog reset
 * VideoCore mailbox at ``0x10_7c01_3880`` (SPI 33) with the firmware's
   property and framebuffer channels. The firmware reads requests through
-  the VideoCore's view of memory: the first GiB of RAM at bus address
-  ``0xc000_0000`` (and at ``0x0``); requests elsewhere get no answer, as
-  on hardware. The VideoCore keeps the top 4 MiB of that GiB, which the
+  the VideoCore's view of memory: the first GiB of RAM at bus addresses
+  ``0x0`` (as Linux passes them) and ``0xc000_0000`` (as code for older
+  Pis does); requests elsewhere get no answer, as on hardware. The VideoCore keeps the top 4 MiB of that GiB, which the
   device tree memory node leaves out
 * RNG200 random number generator at ``0x10_7d20_8000``, fed by QEMU's
   random source (reproducible with ``-seed``)

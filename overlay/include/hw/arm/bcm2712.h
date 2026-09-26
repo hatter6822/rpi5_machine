@@ -45,8 +45,8 @@ OBJECT_DECLARE_SIMPLE_TYPE(BCM2712State, BCM2712)
 #define BCM2712_RAM_SIZE_MAX        (16 * GiB)
 
 /*
- * The VideoCore reaches the first GiB of RAM only, at bus address
- * 0xc000_0000 ("dma-ranges" of the "soc" node), and keeps the top of it
+ * The VideoCore reaches the first GiB of RAM only, at bus address 0x0
+ * and at 0xc000_0000 (the alias older Pis use), and keeps the top of it
  * for itself; the firmware leaves that out of the ARM memory node.
  * TODO(WS0.4): check GET_VC_MEMORY on hardware.
  */

@@ -19,7 +19,7 @@
 #define MBOX_STATUS_EMPTY       BIT(30)
 #define MBOX_CHAN_PROPERTY      8
 
-/* The VideoCore sees the first GiB of RAM here (dma-ranges of "soc") */
+/* The VideoCore sees the first GiB of RAM here, as on older Pis */
 #define VC_BUS_RAM              0xc0000000u
 #define VC_RAM_WINDOW           0x40000000u
 

@@ -373,7 +373,11 @@ GIC and clears it via `CS`.
 model's registers start 0x80 earlier, as on BCM2835, so an alias maps
 just the `0x40` bytes) on SPI 33, with `bcm2835-property` and
 `bcm2835-fb` behind it, and the `vc-bus` address space of step 1
-(first GiB of RAM at `0xc000_0000` and `0x0`). One upstream-first fix
+(first GiB of RAM at `0xc000_0000` and `0x0`). Correction to the
+background below, found by tracing the mailbox: the firmware's DT gives
+`soc` no `dma-ranges` (only `firmware` has an empty one), so Linux passes
+plain physical addresses; the `0x0` alias is the one Linux needs, and
+`0xc000_0000` serves code written for older Pis. One upstream-first fix
 (patch 0006): the property channel no longer answers a buffer that is
 not in that address space; before, it read zeros, wrote nowhere and
 still signalled a response. The property model needs a framebuffer and

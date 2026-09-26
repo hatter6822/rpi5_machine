@@ -346,9 +346,9 @@ static bool bcm2712_realize_mbox_client(BCM2712State *s, SysBusDevice *sbd,
  * The VideoCore firmware interface: the ARM mailbox, and behind it the
  * property and framebuffer channels of the BCM283x models. Buffers are
  * read through the VideoCore's view of memory: the first GiB of RAM at
- * bus address 0xc000_0000, as Linux addresses it through the "soc"
- * node's dma-ranges, and at 0x0 as well, which firmware accepts from
- * code written for older Pis. Anything else goes unanswered.
+ * bus address 0x0, where Linux addresses it (the firmware's device tree
+ * gives the "soc" node no dma-ranges), and at 0xc000_0000, the alias
+ * code written for older Pis uses. Anything else goes unanswered.
  */
 static bool bcm2712_realize_vc(BCM2712State *s, Error **errp)
 {

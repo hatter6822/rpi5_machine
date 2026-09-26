@@ -66,7 +66,7 @@
 #define FW_TAG_COMMAND_LINE     0x00050001
 #define FW_TAG_RESPONSE         BIT(31)
 
-/* Where the VideoCore sees the first GiB of RAM (dma-ranges of "soc") */
+/* The alias of the first GiB of RAM that code for older Pis uses */
 #define VC_BUS_RAM              0xc0000000u
 
 /* Linux drivers/watchdog/bcm2835_wdt.c */
@@ -531,7 +531,7 @@ static void mbox_response(QTestState *qts, uint64_t buf, uint32_t bus_addr,
 
 /*
  * The firmware reads requests through the VideoCore's view of the first
- * GiB of RAM: at bus address 0xc000_0000, as Linux passes them, and at 0
+ * GiB of RAM: at bus address 0, as Linux passes them, and at 0xc000_0000
  * for code written for older Pis.
  */
 static void test_mbox_board_revision(void)
