@@ -58,7 +58,9 @@ configure: $(BUILD_DIR)/build.ninja
 build: configure
 	$(NINJA) -C $(BUILD_DIR) qemu-system-aarch64
 
-$(QTEST_BIN): configure
+# After 'build', never beside it: two ninja processes must not share a
+# build directory (make -j would otherwise run both at once)
+$(QTEST_BIN): build
 	$(NINJA) -C $(BUILD_DIR) tests/qtest/raspi5b-test
 
 guest:
