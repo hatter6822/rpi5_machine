@@ -11,9 +11,9 @@ RuntimeWatchdogSec, for one) rebooted immediately instead of being
 reset only when it stops kicking it.
 
 Model the counter instead: WDOG[19:0] counts down in 1/65536 s ticks
-while WRCFG is armed, reads return the ticks left (as the driver's
-get_timeleft() expects), writing WDOG while armed restarts it, and
-disarming freezes it. When it reaches zero, the partition 63 halt
+while WRCFG selects the full reset, the one configuration modelled;
+reads return the ticks left (as the driver's get_timeleft() expects),
+writing WDOG while armed restarts it, and disarming freezes it. When it reaches zero, the partition 63 halt
 pattern in RSTS still powers off, and anything else now goes through
 watchdog_perform_action() so -action watchdog= applies. A reboot
 through the driver's restart handler, which arms a 10 tick timeout,
@@ -29,7 +29,7 @@ An armed watchdog is migrated in a subsection.
  2 files changed, 95 insertions(+), 13 deletions(-)
 
 diff --git a/hw/misc/bcm2835_powermgt.c b/hw/misc/bcm2835_powermgt.c
-index 3ec7aba..87458d8 100644
+index 3ec7aba..5cf5b3d 100644
 --- a/hw/misc/bcm2835_powermgt.c
 +++ b/hw/misc/bcm2835_powermgt.c
 @@ -14,15 +14,62 @@
@@ -57,7 +57,7 @@ index 3ec7aba..87458d8 100644
 +
 +static bool bcm2835_powermgt_wdog_armed(BCM2835PowerMgtState *s)
 +{
-+    return s->rstc & V_RSTC_WRCFG_FULL_RESET;
++    return (s->rstc & V_RSTC_WRCFG_MASK) == V_RSTC_WRCFG_FULL_RESET;
 +}
 +
 +static void bcm2835_powermgt_wdog_start(BCM2835PowerMgtState *s)

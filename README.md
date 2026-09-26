@@ -80,7 +80,7 @@ $ sudo apt install build-essential python3-venv ninja-build \
 | `make check` | run the `raspi5b` qtest and the bare-metal smoke tests |
 | `make export-series` | write the upstream patch series to `build-series/` and check it (applies, checkpatch; `SERIES_FLAGS=--build` builds every commit) |
 | `make check-minimal` | build a QEMU whose only board is `raspi5b` (in `build-minimal/`) and run the same tests on it |
-| `make check-dt` | validate the built-in device tree against the Linux bindings (needs `pip install dtschema` and network access the first time) |
+| `make check-dt` | validate the built-in device tree against the Linux bindings, fetched into `build-dt-schema/` the first time (needs `pip install dtschema` and network access) |
 | `make checkpatch` | run QEMU's `checkpatch.pl` over our sources and patches |
 | `make status` | show overlay/patch state and any unmanaged edits in `qemu/` |
 | `make unapply` | return `qemu/` to the pristine pinned commit |

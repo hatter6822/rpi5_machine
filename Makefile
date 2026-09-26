@@ -107,12 +107,21 @@ check-smoke: build guest
 
 # The built-in device tree is validated against the kernel's bindings at a
 # pinned tag, fetched once (bindings only) and processed by dt-schema's
-# dt-mk-schema (pip install dtschema).
+# dt-mk-schema (pip install dtschema). Making the schema clears and clones
+# linux/ in $(DT_SCHEMA_DIR), and distclean removes the directory, so it
+# must be new, empty, or marked as made here by an earlier run.
 LINUX_DT_TAG  ?= v6.18
 DT_SCHEMA_DIR ?= build-dt-schema
 DT_SCHEMA     := $(DT_SCHEMA_DIR)/linux-$(LINUX_DT_TAG).json
+DT_SCHEMA_MARKER := $(DT_SCHEMA_DIR)/.check-dt
 
 $(DT_SCHEMA):
+	@if [ -e '$(DT_SCHEMA_DIR)' ] && [ ! -f '$(DT_SCHEMA_MARKER)' ] && \
+	   [ -n "$$(find '$(DT_SCHEMA_DIR)' -mindepth 1 -maxdepth 1 -print -quit 2>&1)" ]; then \
+		echo "check-dt: $(DT_SCHEMA_DIR) exists and was not made here;" \
+		     "set DT_SCHEMA_DIR to a new or empty directory" >&2; exit 1; \
+	fi
+	mkdir -p $(DT_SCHEMA_DIR) && touch $(DT_SCHEMA_MARKER)
 	rm -rf $(DT_SCHEMA_DIR)/linux
 	git clone --quiet --depth 1 --filter=blob:none --sparse \
 		--branch $(LINUX_DT_TAG) https://github.com/torvalds/linux.git \
@@ -157,8 +166,8 @@ clean:
 # distclean removes a directory only when this repository made it, since
 # each of these variables can point anywhere: a build directory carries
 # configure's stamp, an export the marker scripts/qemu-tree writes, and the
-# schema directory holds nothing but the schema and its clone. A directory
-# that holds a repository is never a build directory, whatever it carries:
+# schema directory the marker check-dt writes. A directory that holds a
+# repository is never a build directory, whatever it carries:
 # not this one or a parent of it ('make configure BUILD_DIR=.' leaves the
 # stamp in the checkout), and not another checkout (qemu/ included).
 ROOT := $(realpath $(CURDIR))
@@ -181,4 +190,4 @@ distclean: clean
 	$(call rm_made,$(BUILD_DIR),[ -f '$(BUILD_DIR)/$(notdir $(CONFIGURE_STAMP))' ])
 	$(call rm_made,$(MINIMAL_BUILD_DIR),[ -f '$(MINIMAL_BUILD_DIR)/$(notdir $(CONFIGURE_STAMP))' ])
 	$(call rm_made,$(SERIES_DIR),[ -f '$(SERIES_DIR)/.qemu-tree-export' ])
-	$(call rm_made,$(DT_SCHEMA_DIR),[ -z "$$(find '$(DT_SCHEMA_DIR)' -mindepth 1 -maxdepth 1 ! -name 'linux-*.json' ! -name 'linux-*.json.tmp' ! -name linux -print -quit)" ])
+	$(call rm_made,$(DT_SCHEMA_DIR),[ -f '$(DT_SCHEMA_MARKER)' ])

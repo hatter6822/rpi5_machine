@@ -77,6 +77,7 @@
 #define PM_RSTS                 0x20
 #define PM_WDOG                 0x24
 #define PM_PASSWORD             0x5a000000
+#define PM_RSTC_WRCFG_MASK      0x30
 #define PM_RSTC_WRCFG_FULL_RESET 0x20
 #define PM_RSTC_RESET           0x102
 #define PM_RSTS_HADWRF          0x20
@@ -290,6 +291,15 @@ static void test_pm_registers(void)
     g_assert_cmphex(pm_readl(qts, PM_WDOG), ==, 0xfffff);
     qtest_clock_step(qts, NANOSECONDS_PER_SECOND);
     g_assert_cmphex(pm_readl(qts, PM_WDOG), ==, 0xfffff);
+
+    /*
+     * Only WRCFG = full reset arms it: the other configurations are not
+     * modelled, and do nothing rather than reset as if they were
+     */
+    pm_writel(qts, PM_RSTC, PM_RSTC_WRCFG_MASK);
+    qtest_clock_step(qts, NANOSECONDS_PER_SECOND);
+    g_assert_cmphex(pm_readl(qts, PM_WDOG), ==, 0xfffff);
+    g_assert_cmphex(pm_readl(qts, PM_RSTS), ==, PM_RSTS_HADPOR);
 
     qtest_quit(qts);
 }
