@@ -53,12 +53,13 @@ patches are applied to the submodule's work tree, which `.gitmodules` marks
 ## Building
 
 Requirements: the usual QEMU build dependencies (a C compiler, Python 3 with
-`venv`, ninja, GLib, pixman, libfdt) plus clang and lld for the test guests.
+`venv`, ninja, GLib, pixman, libfdt), plus clang and lld for the test guests
+and `dtc`/`fdtget` for the device-tree tests.
 On Debian/Ubuntu:
 
 ```
 $ sudo apt install build-essential python3-venv ninja-build \
-      libglib2.0-dev libpixman-1-dev libfdt-dev clang lld
+      libglib2.0-dev libpixman-1-dev libfdt-dev clang lld device-tree-compiler
 ```
 
 | Command | Effect |

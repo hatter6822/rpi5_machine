@@ -72,9 +72,10 @@ cmd_apply() {
     check_tree
 
     local p rel dst
+    # Quiet unless something changes: the Makefile runs this before builds
     while IFS= read -r p; do
         if is_applied "$p"; then
-            info applied "$(basename "$p")"
+            continue
         elif qgit apply --check "$p" 2>/dev/null; then
             qgit apply --whitespace=error-all "$p"
             info apply "$(basename "$p")"

@@ -43,8 +43,11 @@ setup:
 apply unapply status:
 	scripts/qemu-tree $@
 
-$(BUILD_DIR)/build.ninja:
-	scripts/qemu-tree apply
+# 'apply' is idempotent and runs before every build (order-only, so it never
+# forces a reconfigure): this keeps qemu/ in sync after 'make unapply', a
+# checkout, or new overlay files. Ninja itself re-runs meson when the glue
+# changes.
+$(BUILD_DIR)/build.ninja: | apply
 	mkdir -p $(BUILD_DIR)
 	cd $(BUILD_DIR) && $(QEMU_SRC)/configure $(CONFIGURE_FLAGS) \
 		$(EXTRA_CONFIGURE_FLAGS)

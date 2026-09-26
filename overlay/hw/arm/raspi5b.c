@@ -26,6 +26,7 @@
 #include "hw/core/registerfields.h"
 #include "system/address-spaces.h"
 #include "system/device_tree.h"
+#include <libfdt.h>
 
 #define TYPE_RASPI5B_MACHINE MACHINE_TYPE_NAME("raspi5b")
 OBJECT_DECLARE_SIMPLE_TYPE(Raspi5bMachineState, RASPI5B_MACHINE)
@@ -76,6 +77,7 @@ static uint32_t raspi5b_board_rev(uint64_t ram_size)
  * list should only ever shrink; see docs/PLAN.md.
  */
 static const char *const raspi5b_unmodelled_compatibles[] = {
+    "brcm,bcm2835-system-timer",
     "brcm,bcm2712-pcie",
     "brcm,bcm2712-mip",
     "brcm,bcm2712-sdhci",
@@ -100,6 +102,42 @@ static const char *const raspi5b_unmodelled_compatibles[] = {
     "brcm,bcm2712-iommuc",
 };
 
+/*
+ * With -smp below 4, mark the CPU nodes of absent cores "fail": unlike
+ * "disabled", which means "can be brought online", Linux skips failed CPU
+ * nodes entirely instead of trying to start them with PSCI CPU_ON.
+ */
+static void raspi5b_fdt_fail_absent_cpus(void *fdt, unsigned int num_cpus)
+{
+    g_autoptr(GPtrArray) absent = g_ptr_array_new_with_free_func(g_free);
+    int cpus = fdt_path_offset(fdt, "/cpus");
+    int node;
+
+    if (cpus < 0) {
+        return;
+    }
+    /* Collect paths first: setting a property moves node offsets */
+    fdt_for_each_subnode(node, fdt, cpus) {
+        const char *type = fdt_getprop(fdt, node, "device_type", NULL);
+        int len;
+        const fdt32_t *reg = fdt_getprop(fdt, node, "reg", &len);
+        char path[128];
+
+        /* The low cell holds Aff0..Aff2 whatever /cpus #address-cells is */
+        if (!type || strcmp(type, "cpu") || !reg || len < sizeof(*reg) ||
+            ((fdt32_to_cpu(reg[len / sizeof(*reg) - 1]) >> ARM_AFF1_SHIFT)
+             & 0xff) < num_cpus ||
+            fdt_get_path(fdt, node, path, sizeof(path))) {
+            continue;
+        }
+        g_ptr_array_add(absent, g_strdup(path));
+    }
+    for (unsigned int i = 0; i < absent->len; i++) {
+        qemu_fdt_setprop_string(fdt, g_ptr_array_index(absent, i),
+                                "status", "fail");
+    }
+}
+
 static void raspi5b_modify_dtb(const struct arm_boot_info *info, void *fdt)
 {
     const Raspi5bMachineState *s =
@@ -109,6 +147,9 @@ static void raspi5b_modify_dtb(const struct arm_boot_info *info, void *fdt)
     qemu_fdt_add_path(fdt, "/system");
     qemu_fdt_setprop_cell(fdt, "/system", "linux,revision", s->board_rev);
 
+    raspi5b_fdt_fail_absent_cpus(fdt, s->parent_obj.smp.cpus);
+
+    /* No match yields an empty list; errors mean a corrupt blob */
     for (int i = 0; i < ARRAY_SIZE(raspi5b_unmodelled_compatibles); i++) {
         const char *compat = raspi5b_unmodelled_compatibles[i];
         g_auto(GStrv) paths = qemu_fdt_node_path(fdt, NULL, compat,
