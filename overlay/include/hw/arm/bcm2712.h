@@ -12,6 +12,7 @@
 #include "exec/hwaddr.h"
 #include "hw/char/pl011.h"
 #include "hw/intc/arm_gic.h"
+#include "hw/misc/bcm2835_powermgt.h"
 #include "hw/timer/bcm2835_systmr.h"
 #include "qemu/units.h"
 #include "qom/object.h"
@@ -133,6 +134,7 @@ struct BCM2712State {
     ARMCPU cpu[BCM2712_NUM_CPUS];
     GICState gic;
     BCM2835SystemTimerState systimer;
+    BCM2835PowerMgtState pm;
     PL011State uart10;
 };
 

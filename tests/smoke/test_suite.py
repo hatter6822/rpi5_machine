@@ -93,6 +93,16 @@ class SuiteTest(unittest.TestCase):
         _, out = run_suite(dtb=self.dtb)
         self.assertIn("uart 0x107d001000 (dt), gic 0x107fff9000/0x107fffa000"
                       " (dt), systimer 0x107c003000 intid 96-99 (dt)", out)
+        self.assertIn("# pm 0x107d200000 (dt)", out)
+
+    def test_watchdog_reset(self):
+        """pm/watchdog-reset really reset the machine, once."""
+        _, out = run_suite()
+        self.assertIn("# pm 0x107d200000 (default), boot 1, reset status"
+                      " 0x1000", out)
+        self.assertIn("# boot 2: pm/watchdog-reset reset the machine", out)
+        self.assertNotIn("boot 3", out)
+        self.assertEqual(out.count("PASS: pm/watchdog-reset"), 1, out)
 
 
 if __name__ == "__main__":

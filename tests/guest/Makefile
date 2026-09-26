@@ -23,7 +23,8 @@ LDFLAGS := -nostdlib -static --no-dynamic-linker -T lib/link.ld
 
 # The runtime every guest links; the test runner (test.c) provides
 # bm_main() for the suite
-LIB_SRCS := start.S console.c exception.c fdt.c gic.c psci.c runtime.c string.c
+LIB_SRCS := start.S console.c exception.c fdt.c gic.c pm.c psci.c runtime.c \
+            string.c
 LIB_OBJS := $(patsubst %,$(OUT)/lib/%.o,$(basename $(LIB_SRCS)))
 SUITE_OBJS := $(OUT)/lib/test.o $(patsubst %.c,$(OUT)/%.o,$(wildcard suite/*.c))
 

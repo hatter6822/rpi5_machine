@@ -32,6 +32,8 @@ struct bm_platform {
     uintptr_t systimer;
     unsigned systimer_intid[BM_SYSTIMER_COMPARATORS];
     bool systimer_from_dt;
+    uintptr_t pm;               /* power management and watchdog */
+    bool pm_from_dt;
     unsigned num_cpus;          /* from the DT; BM_MAX_CPUS without one */
 };
 
@@ -53,6 +55,20 @@ bm_panic(const char *fmt, ...);
 
 /* Called by bm_panic() after its message, so a test runner can report */
 extern void (*bm_panic_hook)(void);
+
+/*
+ * This boot's number: 1 after power-on, one more after each system reset
+ * (the watchdog, PSCI SYSTEM_RESET, QEMU's system_reset). RAM survives a
+ * reset, and the program starts again from its entry point.
+ */
+unsigned bm_boot_count(void);
+
+/*
+ * BM_PERSIST_WORDS words the program keeps across system resets: zero at
+ * power-on, left alone by the boots after it.
+ */
+#define BM_PERSIST_WORDS        64
+uint64_t *bm_persistent(void);
 
 /*
  * Start @fn(core) on secondary @core with PSCI CPU_ON: the core gets its

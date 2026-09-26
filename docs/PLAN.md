@@ -59,15 +59,15 @@ commit (or a short series) with its own tests.
 
 ## 2. Current state
 
-Delivered so far (WS0.1–WS0.3, WS0.6, WS2.1, WS9.2a):
+Delivered so far (WS0.1–WS0.3, WS0.6, WS2.1, WS2.4, WS9.2a):
 
 | Area | State |
 | --- | --- |
 | Repository | pinned QEMU v11.1.1 submodule, overlay + patch series (patches may share files, like an upstream series) managed by `scripts/qemu-tree`, CI with ccache |
 | Kconfig (WS0.6) | every BCM283x device model has its own symbol, so `bcm2712` can select just the models it reuses; a `raspi5b`-only build is tested (`make check-minimal`) |
-| SoC (`bcm2712`) | 1–4 Cortex-A76 (`MPIDR.Aff1` = core, CNTFRQ 54 MHz, optional EL3), GIC-400 with 288 SPIs, 5 priority bits and all timer/maintenance PPIs, UART10 (PL011), system timer (WS2.1), complete memory map with T0 placeholders and two catch-all windows |
+| SoC (`bcm2712`) | 1–4 Cortex-A76 (`MPIDR.Aff1` = core, CNTFRQ 54 MHz, optional EL3), GIC-400 with 288 SPIs, 5 priority bits and all timer/maintenance PPIs, UART10 (PL011), system timer (WS2.1), watchdog and reset status (WS2.4), complete memory map with T0 placeholders and two catch-all windows |
 | Board (`raspi5b`) | 1/2/4/8/16 GiB RAM, board revision code, PSCI over SMC with EL2 entry (default) or guest-owned EL3 (`secure=on`), DTB fix-ups for unmodelled devices, `/system/linux,revision` |
-| Tests | qtest (UART IDs, GIC geometry, priority bits and security, RAM, placeholders, system timer), bare-metal smoke guest (EL, MPIDR, CNTFRQ, PSCI CPU_ON on all cores, SYSTEM_OFF, EL3 mode), bare-metal library and suite (WS9.2a: GIC, timers, system timer, PSCI/SMP; 1–4 cores, with and without a DT, EL2 and EL3) |
+| Tests | qtest (UART IDs, GIC geometry, priority bits and security, RAM, placeholders, system timer, watchdog), bare-metal smoke guest (EL, MPIDR, CNTFRQ, PSCI CPU_ON on all cores, SYSTEM_OFF, EL3 mode), bare-metal library and suite (WS9.2a: GIC, timers, system timer, PSCI/SMP, a watchdog reset survived through RAM; 1–4 cores, with and without a DT, EL2 and EL3) |
 | Linux | the stock Raspberry Pi OS kernel (6.18) with the firmware's `bcm2712-rpi-5-b.dtb` boots on 4 CPUs to the root-fs mount, without warnings |
 
 Known provisional values, each marked in the code: 288 SPIs
@@ -134,7 +134,7 @@ immediately exercised by the next:
 | 1 | WS0.6 Kconfig split (done) | unblocks reusing every BCM283x model; a self-contained upstream patch |
 | 2 | WS2.1 system timer (done) | first reused device; exercises the SPI wiring path |
 | 3 | WS9.2a bare-metal framework (done) | exception vectors and a GIC driver in the guest, needed by every later test |
-| 4 | WS2.4 PM/watchdog | reset and power-off, which every test harness needs |
+| 4 | WS2.4 PM/watchdog (done) | reset and power-off, which every test harness needs |
 | 5 | WS3.6 reset semantics | makes the watchdog and PSCI `SYSTEM_RESET` trustworthy |
 | 6 | WS2.2 mailbox | the address-translation design decision, made once |
 | 7 | WS2.3a property identity tags | first consumer of the mailbox; lets the `firmware` DT node be enabled |
@@ -429,7 +429,28 @@ RTC drivers probe with the upstream and downstream device trees; `hwclock`
 reads and sets the time; `vcgencmd`-style queries from a bare-metal test
 match the seeded table.
 
-#### WS2.4 Power management and watchdog (M)
+#### WS2.4 Power management and watchdog (done)
+*Delivered:* the SoC maps QEMU's `bcm2835-powermgt` (generalising it
+needed no variant: the watchdog registers are identical) and the DT node
+stays enabled. Two upstream-first fixes to the model (patches 0004/0005):
+the watchdog now counts `WDOG` down at 65536 Hz instead of resetting as
+soon as it is armed (which rebooted any guest that merely started it),
+reads back the ticks left, pauses when disarmed, fires through
+`watchdog_perform_action()` and is migrated; and `RSTS` survives system
+reset, with the power-on flag replaced by `HADWRF` (bit 5) when the
+watchdog fires. The halt test now looks at the partition bits only.
+qtests cover the password, the countdown, kicking, pausing, the reset and
+its `RSTS`, the halt and migration; the bare-metal suite
+(`pm/watchdog-countdown`, `pm/watchdog-reset`) survives a watchdog reset
+through a boot counter and runner state kept in RAM. Linux probes
+`bcm2835-wdt` and `bcm2835-power`. Deviations from the steps below: the
+reset flag is `HADWRF`, not `HADWRH`, because the partition number owns
+the even bits (`HADWRH` is bit 6, partition bit 3, which Linux sets to
+halt); the power domain registers stay a placeholder, because on BCM2712
+Linux only drives V3D's (a reset bit in `PM_GRAFX_2712`, never polled) and V3D
+is not modelled. On Pi 5, Linux reboots and powers off through PSCI
+(its handler outranks `bcm2835_wdt`'s), so `reboot`/`poweroff` are WS3.6.
+
 `brcm,bcm2712-pm` at `0x10_7d20_0000`, `0x604` bytes, driven by Linux's
 `bcm2835_wdt.c` (watchdog and reboot) and `bcm2835-pm.c` (power domains,
 `is_2712` path).

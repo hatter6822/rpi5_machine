@@ -17,6 +17,7 @@
 #define GICD_BASE               0x107fff9000ULL
 #define MBOX_BASE               0x107c013880ULL
 #define SYSTIMER_BASE           0x107c003000ULL
+#define PM_BASE                 0x107d200000ULL
 #define SOC_WINDOW_BASE         0x107c000000ULL
 
 #define PL011_PERIPHID0         0xfe0
@@ -38,6 +39,18 @@
 #define ST_C(n)                 (0x0c + 4 * (n))
 #define ST_COUNT                4
 #define ST_SPI(n)               (64 + (n))      /* bcm2712.dtsi */
+
+/* Linux drivers/watchdog/bcm2835_wdt.c */
+#define PM_RSTC                 0x1c
+#define PM_RSTS                 0x20
+#define PM_WDOG                 0x24
+#define PM_PASSWORD             0x5a000000
+#define PM_RSTC_WRCFG_FULL_RESET 0x20
+#define PM_RSTC_RESET           0x102
+#define PM_RSTS_HADWRF          0x20
+#define PM_RSTS_HADPOR          0x1000
+#define PM_RSTS_HALT            0x555           /* partition 63 */
+#define PM_WDOG_TICKS_PER_SEC   65536
 
 static void test_uart10_ids(void)
 {
@@ -198,6 +211,156 @@ static void test_systimer_reset(void)
     qtest_quit(qts);
 }
 
+static uint32_t pm_readl(QTestState *qts, uint32_t reg)
+{
+    return qtest_readl(qts, PM_BASE + reg);
+}
+
+static void pm_writel(QTestState *qts, uint32_t reg, uint32_t val)
+{
+    qtest_writel(qts, PM_BASE + reg, PM_PASSWORD | val);
+}
+
+/* Linux's bcm2835_wdt_start(): load the timeout, then arm a full reset */
+static void pm_wdog_start(QTestState *qts, uint32_t ticks)
+{
+    pm_writel(qts, PM_WDOG, ticks);
+    pm_writel(qts, PM_RSTC, PM_RSTC_WRCFG_FULL_RESET);
+}
+
+/* Linux's __bcm2835_restart(): the partition goes in the even bits */
+static uint32_t pm_partition(uint32_t partition)
+{
+    uint32_t rsts = 0;
+
+    for (int i = 0; i < 6; i++) {
+        rsts |= extract32(partition, i, 1) << (2 * i);
+    }
+    return rsts;
+}
+
+static void test_pm_registers(void)
+{
+    QTestState *qts = qtest_init("-machine raspi5b");
+
+    g_assert_cmphex(pm_readl(qts, PM_RSTC), ==, PM_RSTC_RESET);
+    g_assert_cmphex(pm_readl(qts, PM_RSTS), ==, PM_RSTS_HADPOR);
+    g_assert_cmphex(pm_readl(qts, PM_WDOG), ==, 0);
+
+    /* Writes without the password are ignored */
+    qtest_writel(qts, PM_BASE + PM_WDOG, 0x1234);
+    qtest_writel(qts, PM_BASE + PM_RSTC, PM_RSTC_WRCFG_FULL_RESET);
+    g_assert_cmphex(pm_readl(qts, PM_WDOG), ==, 0);
+    g_assert_cmphex(pm_readl(qts, PM_RSTC), ==, PM_RSTC_RESET);
+
+    /* The timeout is 20 bits wide, and does not run while disarmed */
+    pm_writel(qts, PM_WDOG, 0xffffff);
+    g_assert_cmphex(pm_readl(qts, PM_WDOG), ==, 0xfffff);
+    qtest_clock_step(qts, NANOSECONDS_PER_SECOND);
+    g_assert_cmphex(pm_readl(qts, PM_WDOG), ==, 0xfffff);
+
+    qtest_quit(qts);
+}
+
+/* The watchdog counts down in 1/65536 s ticks and can be paused */
+static void test_pm_watchdog_countdown(void)
+{
+    QTestState *qts = qtest_init("-machine raspi5b -action watchdog=none");
+    QDict *event;
+
+    pm_wdog_start(qts, 2 * PM_WDOG_TICKS_PER_SEC);
+    qtest_clock_step(qts, NANOSECONDS_PER_SECOND);
+    g_assert_cmpuint(pm_readl(qts, PM_WDOG), ==, PM_WDOG_TICKS_PER_SEC);
+    qtest_clock_step(qts, NANOSECONDS_PER_SECOND / 2);
+    g_assert_cmpuint(pm_readl(qts, PM_WDOG), ==, PM_WDOG_TICKS_PER_SEC / 2);
+
+    /* bcm2835_wdt_stop() */
+    pm_writel(qts, PM_RSTC, PM_RSTC_RESET);
+    qtest_clock_step(qts, 10 * NANOSECONDS_PER_SECOND);
+    g_assert_cmpuint(pm_readl(qts, PM_WDOG), ==, PM_WDOG_TICKS_PER_SEC / 2);
+
+    /* Arming again resumes from where it stopped */
+    pm_writel(qts, PM_RSTC, PM_RSTC_WRCFG_FULL_RESET);
+    qtest_clock_step(qts, NANOSECONDS_PER_SECOND / 2 - 1);
+    g_assert_cmpuint(pm_readl(qts, PM_WDOG), ==, 1);
+    g_assert_cmphex(pm_readl(qts, PM_RSTS), ==, PM_RSTS_HADPOR);
+    qtest_clock_step(qts, 1);
+    event = qtest_qmp_eventwait_ref(qts, "WATCHDOG");
+    g_assert_cmpstr(qdict_get_str(qdict_get_qdict(event, "data"), "action"),
+                    ==, "none");
+    qobject_unref(event);
+    g_assert_cmpuint(pm_readl(qts, PM_WDOG), ==, 0);
+    g_assert_cmphex(pm_readl(qts, PM_RSTS), ==, PM_RSTS_HADWRF);
+
+    qtest_quit(qts);
+}
+
+/* Kicking the watchdog (bcm2835_wdt_start() again) restarts the timeout */
+static void test_pm_watchdog_kick(void)
+{
+    QTestState *qts = qtest_init("-machine raspi5b -action watchdog=none");
+
+    pm_wdog_start(qts, PM_WDOG_TICKS_PER_SEC);
+    for (int i = 0; i < 4; i++) {
+        qtest_clock_step(qts, NANOSECONDS_PER_SECOND * 3 / 4);
+        pm_wdog_start(qts, PM_WDOG_TICKS_PER_SEC);
+    }
+    g_assert_cmpuint(pm_readl(qts, PM_WDOG), ==, PM_WDOG_TICKS_PER_SEC);
+    g_assert_cmphex(pm_readl(qts, PM_RSTS), ==, PM_RSTS_HADPOR);
+
+    qtest_quit(qts);
+}
+
+/*
+ * Linux reboots through the watchdog with a 10 tick timeout. The reset
+ * status survives the reset and tells the boot code why it happened and
+ * which partition to boot.
+ */
+static void test_pm_watchdog_reset(void)
+{
+    QTestState *qts = qtest_init("-machine raspi5b");
+    QDict *event;
+
+    pm_writel(qts, PM_RSTS, PM_RSTS_HADPOR | pm_partition(5));
+    pm_wdog_start(qts, 10);
+    qtest_clock_step(qts, 200 * SCALE_US);
+    event = qtest_qmp_eventwait_ref(qts, "RESET");
+    g_assert_cmpstr(qdict_get_str(qdict_get_qdict(event, "data"), "reason"),
+                    ==, "guest-reset");
+    qobject_unref(event);
+
+    g_assert_cmphex(pm_readl(qts, PM_RSTS), ==,
+                    PM_RSTS_HADWRF | pm_partition(5));
+    g_assert_cmphex(pm_readl(qts, PM_RSTC), ==, PM_RSTC_RESET);
+    g_assert_cmphex(pm_readl(qts, PM_WDOG), ==, 0);
+
+    /* Any other system reset leaves it alone too */
+    qtest_system_reset(qts);
+    g_assert_cmphex(pm_readl(qts, PM_RSTS), ==,
+                    PM_RSTS_HADWRF | pm_partition(5));
+
+    qtest_quit(qts);
+}
+
+/* Partition 63 asks the firmware to halt: QEMU powers off instead */
+static void test_pm_halt(void)
+{
+    QTestState *qts = qtest_init("-machine raspi5b -action shutdown=pause");
+    QDict *event;
+
+    g_assert_cmphex(pm_partition(63), ==, PM_RSTS_HALT);
+    /* Earlier reset flags in RSTS do not matter */
+    pm_writel(qts, PM_RSTS, PM_RSTS_HADWRF | PM_RSTS_HALT);
+    pm_wdog_start(qts, 10);
+    qtest_clock_step(qts, 200 * SCALE_US);
+    event = qtest_qmp_eventwait_ref(qts, "SHUTDOWN");
+    g_assert_cmpstr(qdict_get_str(qdict_get_qdict(event, "data"), "reason"),
+                    ==, "guest-shutdown");
+    qobject_unref(event);
+
+    qtest_quit(qts);
+}
+
 static void wait_for_migration(QTestState *qts)
 {
     for (;;) {
@@ -252,6 +415,43 @@ static void test_systimer_migrate(void)
     unlink(file);
 }
 
+/* An armed watchdog keeps counting on the destination */
+static void test_pm_migrate(void)
+{
+    g_autofree char *file = g_strdup_printf("%s/raspi5b-pm-%d.mig",
+                                            g_get_tmp_dir(), getpid());
+    g_autofree char *out = g_strdup_printf("exec:cat > %s", file);
+    g_autofree char *in = g_strdup_printf("exec:cat %s", file);
+    const char *args = "-machine raspi5b -m 1G -action watchdog=none";
+    QTestState *src, *dst;
+    int64_t now;
+
+    src = qtest_init(args);
+    pm_wdog_start(src, PM_WDOG_TICKS_PER_SEC);
+    qtest_clock_step(src, NANOSECONDS_PER_SECOND / 4);
+    now = NANOSECONDS_PER_SECOND / 4;
+    qtest_qmp_assert_success(src, "{ 'execute': 'migrate',"
+                             "  'arguments': { 'uri': %s } }", out);
+    wait_for_migration(src);
+    qtest_quit(src);
+
+    dst = qtest_initf("%s -incoming defer", args);
+    qtest_qmp_assert_success(dst, "{ 'execute': 'migrate-incoming',"
+                             "  'arguments': { 'uri': %s } }", in);
+    wait_for_migration(dst);
+
+    /* The qtest clock is not migrated: carry it over by hand */
+    qtest_clock_set(dst, now);
+    g_assert_cmpuint(pm_readl(dst, PM_WDOG), ==,
+                     PM_WDOG_TICKS_PER_SEC * 3 / 4);
+    qtest_clock_step(dst, NANOSECONDS_PER_SECOND * 3 / 4);
+    qtest_qmp_eventwait(dst, "WATCHDOG");
+    g_assert_cmphex(pm_readl(dst, PM_RSTS), ==, PM_RSTS_HADWRF);
+
+    qtest_quit(dst);
+    unlink(file);
+}
+
 static void test_unimplemented_regions(void)
 {
     QTestState *qts = qtest_init("-machine raspi5b");
@@ -277,6 +477,13 @@ int main(int argc, char **argv)
     qtest_add_func("/raspi5b/systimer/compare", test_systimer_compare);
     qtest_add_func("/raspi5b/systimer/reset", test_systimer_reset);
     qtest_add_func("/raspi5b/systimer/migrate", test_systimer_migrate);
+    qtest_add_func("/raspi5b/pm/registers", test_pm_registers);
+    qtest_add_func("/raspi5b/pm/watchdog-countdown",
+                   test_pm_watchdog_countdown);
+    qtest_add_func("/raspi5b/pm/watchdog-kick", test_pm_watchdog_kick);
+    qtest_add_func("/raspi5b/pm/watchdog-reset", test_pm_watchdog_reset);
+    qtest_add_func("/raspi5b/pm/halt", test_pm_halt);
+    qtest_add_func("/raspi5b/pm/migrate", test_pm_migrate);
 
     return g_test_run();
 }

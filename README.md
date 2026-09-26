@@ -25,6 +25,7 @@ The first milestone targets bare-metal and microkernel bring-up.
 | GIC-400 (GICv2 + virtualization extensions, 5 priority bits), timer/maintenance PPIs | done |
 | UART10 (PL011 debug UART) | done |
 | System timer (1 MHz counter, four comparators) | done |
+| Watchdog and reset status (PM block) | done |
 | Firmware boot contract: EL2 entry, PSCI over SMC (`secure=off`); guest-owned EL3 (`secure=on`) | done |
 | Complete BCM2712 memory map, unmodelled blocks logged with `-d unimp` | done |
 | Linux: stock Raspberry Pi OS kernel boots to the root-fs mount with `bcm2712-rpi-5-b.dtb` | smoke-tested |

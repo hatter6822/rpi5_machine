@@ -6,7 +6,7 @@ the repository root) and booted by the smoke tests in `tests/smoke/`.
 
 | Directory | Contents |
 | --- | --- |
-| `lib/` | the runtime every guest links: entry, exception vectors, console, device-tree walker, GIC-400 driver, PSCI, generic timer helpers, test runner |
+| `lib/` | the runtime every guest links: entry, exception vectors, console, device-tree walker, GIC-400 driver, PSCI, watchdog and reset status (PM), generic timer helpers, test runner |
 | `hello/` | the original smoke guest: boot EL, MPIDR, CNTFRQ, PSCI `CPU_ON` of every core, `SYSTEM_OFF` |
 | `suite/` | the bare-metal test suite (WS9.2), one file per area |
 
@@ -28,9 +28,10 @@ Before `bm_main()` runs on core 0, the runtime looks for a device tree in
 `x0` (the Linux boot protocol, used by firmware and by QEMU for an `Image`)
 and then at physical address 0 (where QEMU places a `-dtb` blob for an ELF
 image). With a tree, the console (`/chosen/stdout-path`), the GIC
-(`arm,gic-400`), the system timer (`brcm,bcm2835-system-timer`) and the
-number of usable cores come from it, with `reg` translated through every
-parent's `ranges`; without one, built-in raspi5b addresses are used.
+(`arm,gic-400`), the system timer (`brcm,bcm2835-system-timer`), the
+power management block (`brcm,bcm2712-pm`) and the number of usable cores
+come from it, with `reg` translated through every parent's `ranges`;
+without one, built-in raspi5b addresses are used.
 Secondary cores are started with `bm_start_core()` (PSCI `CPU_ON`) and turn
 themselves off when their function returns.
 
@@ -39,6 +40,12 @@ PSCI `SYSTEM_OFF`, at EL3 with semihosting `SYS_EXIT` (QEMU needs
 `-semihosting-config enable=on,target=native`; on hardware the core parks).
 Unexpected exceptions and interrupts print a `PANIC:` line and end the
 program.
+
+A system reset (the watchdog, PSCI `SYSTEM_RESET`) keeps RAM and starts
+the program again from its entry point. `bm_boot_count()` numbers the
+boots since power-on, and `bm_persistent()` gives the program memory that
+is zero at power-on and kept by later boots; both live beyond the stacks,
+outside every loadable segment, so reloading the image leaves them alone.
 
 ## Writing a test
 
@@ -58,6 +65,27 @@ synchronous exception hook is cleared after every test; anything else a
 test changes (enabled interrupts, handlers, device state) it restores
 itself.
 
+A test may reset the machine. The runner keeps its progress in
+`bm_persistent()`, so after the reset it runs the same test again, with
+`bm_test_resets()` counting the resets it has caused and
+`bm_test_scratch()` holding what it saved before, then carries on with the
+next test:
+
+```c
+TEST(pm_watchdog_reset, "pm/watchdog-reset")
+{
+    if (bm_test_resets() == 0) {
+        bm_test_scratch()[0] = bm_boot_count();
+        pm_watchdog_start(10);
+        wait_until(false, 100000);
+        ASSERT_MSG(false, "no reset");
+    }
+    ASSERT_EQ(bm_boot_count(), bm_test_scratch()[0] + 1);
+}
+```
+
+A test that keeps resetting fails after eight resets.
+
 ## Transcript
 
 The suite reports over the console, one line per event, so that a UART
@@ -66,18 +94,25 @@ capture from hardware can be compared with QEMU's:
 ```
 # raspi5b bare-metal tests
 # EL2, 4 cores, device tree at 0x0 (177480 bytes)
+# pm 0x107d200000 (dt), boot 1, reset status 0x1000
 # uart 0x107d001000 (dt), gic 0x107fff9000/0x107fffa000 (dt), systimer 0x107c003000 intid 96-99 (dt)
-# 11 tests
+# 13 tests
 PASS: gic/geometry
-SKIP: timer/secure-physical: runs at EL3 only
+# raspi5b bare-metal tests
+# EL2, 4 cores, device tree at 0x0 (177480 bytes)
+# pm 0x107d200000 (dt), boot 2, reset status 0x464
+# uart 0x107d001000 (dt), gic 0x107fff9000/0x107fffa000 (dt), systimer 0x107c003000 intid 96-99 (dt)
+# boot 2: pm/watchdog-reset reset the machine, running it again
+PASS: pm/watchdog-reset
 FAIL: systimer/compare: systimer.c:98: st_cs == BIT(n) (0x0 vs 0x1)
-# passed 9, failed 1, skipped 1
+SKIP: timer/secure-physical: runs at EL3 only
+# passed 10, failed 1, skipped 1
 END: FAIL
 ```
 
 | Line | Meaning |
 | --- | --- |
-| `# ...` | information: platform, measurements; not parsed |
+| `# ...` | information: platform, measurements, a reset a test caused (the header is printed again after it); not parsed |
 | `PASS: <name>` | the test passed |
 | `FAIL: <name>: <file>:<line>: <detail>` | the first failed assertion; `FAIL: <name>: panic` after a `PANIC:` line |
 | `SKIP: <name>: <reason>` | not applicable in this configuration |

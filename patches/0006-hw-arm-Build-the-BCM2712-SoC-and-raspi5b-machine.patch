@@ -8,15 +8,15 @@ Add Kconfig symbols and meson rules for the Broadcom BCM2712 SoC model
 The board is AArch64-only and, like the other Raspberry Pi boards,
 requires TCG.
 ---
- hw/arm/Kconfig     | 14 ++++++++++++++
+ hw/arm/Kconfig     | 15 +++++++++++++++
  hw/arm/meson.build |  2 ++
- 2 files changed, 16 insertions(+)
+ 2 files changed, 17 insertions(+)
 
 diff --git a/hw/arm/Kconfig b/hw/arm/Kconfig
-index 16f83f0..dbace6a 100644
+index 16f83f0..1270d58 100644
 --- a/hw/arm/Kconfig
 +++ b/hw/arm/Kconfig
-@@ -384,6 +384,20 @@ config RASPI
+@@ -384,6 +384,21 @@ config RASPI
      select BCM2836_CONTROL
      select BCM2838_GPIO
  
@@ -30,6 +30,7 @@ index 16f83f0..dbace6a 100644
 +config BCM2712
 +    bool
 +    select ARM_GIC
++    select BCM2835_POWERMGT
 +    select BCM2835_SYSTMR
 +    select PL011 # UART
 +    select UNIMP

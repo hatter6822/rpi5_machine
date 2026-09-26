@@ -34,5 +34,14 @@ SECTIONS
     . += 4 * 16K;               /* one stack per core, see start.S */
     __stack_top = .;
 
+    /*
+     * Kept across system resets (bm_persistent()). Like the stacks it is in
+     * no loadable segment, so QEMU neither reloads nor zeroes it on reset.
+     */
+    . = ALIGN(16);
+    __persist_start = .;
+    . += 4K;
+    __persist_end = .;
+
     /DISCARD/ : { *(.comment) *(.note*) *(.eh_frame*) }
 }

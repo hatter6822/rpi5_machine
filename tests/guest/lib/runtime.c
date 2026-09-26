@@ -13,6 +13,7 @@
 #include <bm/io.h>
 #include <bm/psci.h>
 #include <bm/runtime.h>
+#include <bm/string.h>
 
 /* raspi5b addresses, used when there is no device tree (bcm2712.dtsi) */
 #define DEFAULT_UART10          0x107d001000ul
@@ -20,6 +21,7 @@
 #define DEFAULT_GICC            0x107fffa000ul
 #define DEFAULT_SYSTIMER        0x107c003000ul
 #define DEFAULT_SYSTIMER_SPI    64
+#define DEFAULT_PM              0x107d200000ul
 
 /* Where QEMU places a -dtb blob for an ELF image, which gets no x0 */
 #define RAM_BASE                0x0ul
@@ -29,6 +31,20 @@
 
 struct bm_platform bm_plat;
 void (*bm_panic_hook)(void);
+
+/* What survives a reset, at __persist_start (link.ld) */
+#define PERSIST_MAGIC           0x74736973726570ull     /* "persist" */
+#define PERSIST_SIZE            4096
+
+struct persist {
+    uint64_t magic;
+    uint64_t boots;
+    uint64_t words[BM_PERSIST_WORDS];
+};
+
+_Static_assert(sizeof(struct persist) <= PERSIST_SIZE, "see link.ld");
+
+extern char __persist_start[];
 
 extern char secondary_entry[];
 static void (*volatile secondary_fn[BM_MAX_CPUS])(unsigned core);
@@ -91,6 +107,29 @@ static void discover_systimer(void)
     }
 }
 
+static void discover_pm(void)
+{
+    /* Linux drivers/mfd/bcm2835-pm.c */
+    static const char *const compatibles[] = {
+        "brcm,bcm2712-pm", "brcm,bcm2711-pm", "brcm,bcm2835-pm",
+        "brcm,bcm2835-pm-wdt",
+    };
+    uint64_t addr, size;
+
+    bm_plat.pm = DEFAULT_PM;
+    for (unsigned i = 0; i < sizeof(compatibles) / sizeof(*compatibles);
+         i++) {
+        int node = fdt_find_compatible(compatibles[i]);
+
+        if (node >= 0 && fdt_node_is_enabled(node) &&
+            fdt_reg(node, 0, &addr, &size)) {
+            bm_plat.pm = addr;
+            bm_plat.pm_from_dt = true;
+            return;
+        }
+    }
+}
+
 /* Cores the tree describes as usable (QEMU marks absent ones "fail") */
 static void discover_cpus(void)
 {
@@ -112,10 +151,38 @@ static void discover_cpus(void)
     }
 }
 
+static struct persist *persist(void)
+{
+    return (struct persist *)__persist_start;
+}
+
+/* Power-on leaves no magic (QEMU zeroes RAM; hardware leaves noise) */
+static void count_boot(void)
+{
+    struct persist *p = persist();
+
+    if (p->magic != PERSIST_MAGIC) {
+        memset(p, 0, sizeof(*p));
+        p->magic = PERSIST_MAGIC;
+    }
+    p->boots++;
+}
+
+unsigned bm_boot_count(void)
+{
+    return persist()->boots;
+}
+
+uint64_t *bm_persistent(void)
+{
+    return persist()->words;
+}
+
 /* Called by start.S on core 0; @x0 is the boot register x0 */
 void bm_start(uintptr_t x0);
 void bm_start(uintptr_t x0)
 {
+    count_boot();
     if ((x0 && fdt_init((const void *)x0)) ||
         fdt_init((const void *)RAM_BASE)) {
         bm_plat.has_dtb = true;
@@ -124,6 +191,7 @@ void bm_start(uintptr_t x0)
     discover_uart();
     discover_gic();
     discover_systimer();
+    discover_pm();
     discover_cpus();
 
     console_init(bm_plat.uart);

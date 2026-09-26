@@ -82,7 +82,6 @@ static const char *const raspi5b_unmodelled_compatibles[] = {
     "brcm,bcm2712-sdhci",
     "brcm,bcm2835-mbox",
     "raspberrypi,bcm2835-firmware",
-    "brcm,bcm2712-pm",
     "brcm,bcm2711-rng200",
     "brcm,bcm7271-uart",
     "brcm,brcmstb-i2c",

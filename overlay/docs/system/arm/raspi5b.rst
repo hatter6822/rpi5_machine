@@ -18,6 +18,10 @@ Implemented devices
 * GIC-400 (GICv2 with Virtualization Extensions)
 * System timer at ``0x10_7c00_3000``: 1 MHz free-running counter and four
   comparators on SPIs 64 to 67
+* Power management block at ``0x10_7d20_0000``: the watchdog, which resets
+  the machine (or powers it off, for Linux's partition 63 halt request)
+  and follows ``-action watchdog=...``, and the reset status register,
+  which survives the reset and reports a watchdog reset
 * UART10: the PL011 debug UART at ``0x10_7d00_1000``, connected to the
   first ``-serial`` backend
 * 1, 2, 4, 8 or 16 GiB of RAM at physical address 0 (``-m``; default 2 GiB)
@@ -31,7 +35,8 @@ Missing devices
 
 * VideoCore mailbox and firmware property interface
 * SD/eMMC controllers, PCIe root complexes and the RP1 south bridge
-* GPIO, pin control, the Broadcom L2 interrupt controllers, watchdog, RNG
+* GPIO, pin control, the Broadcom L2 interrupt controllers, RNG
+* Power domains (only V3D's is driven by Linux on this SoC)
 * Display (HVS, HDMI), V3D and ISP
 
 Boot and exception levels

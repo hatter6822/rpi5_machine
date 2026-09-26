@@ -13,6 +13,19 @@
  * Tests run on core 0, one after the other, in name order. A test ends at
  * its first failed assertion; the transcript format is documented in
  * tests/guest/README.md.
+ *
+ * A test may reset the machine (the watchdog, PSCI SYSTEM_RESET). The
+ * program then starts again, and the runner runs that test again before
+ * carrying on with the next:
+ *
+ *   TEST(pm_watchdog_reset, "pm/watchdog-reset")
+ *   {
+ *       if (bm_test_resets() == 0) {
+ *           pm_watchdog_start(10);
+ *           ...wait, and fail if the reset does not come
+ *       }
+ *       ...check what the reset left behind
+ *   }
  */
 
 #ifndef BM_TEST_H
@@ -36,6 +49,13 @@ struct bm_test {
 void bm_test_fail(const char *file, int line, const char *fmt, ...)
     __attribute__((format(printf, 3, 4)));
 void bm_test_skip(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
+
+/* How many system resets the running test has caused: 0 on its first run */
+unsigned bm_test_resets(void);
+
+/* Words the running test keeps across its resets, zero on its first run */
+#define BM_TEST_SCRATCH_WORDS   8
+uint64_t *bm_test_scratch(void);
 
 /* Informational line in the transcript ("# ..."), core 0 only */
 void bm_test_note(const char *fmt, ...) __attribute__((format(printf, 1, 2)));

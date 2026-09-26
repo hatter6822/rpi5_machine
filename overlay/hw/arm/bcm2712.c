@@ -243,6 +243,7 @@ static void bcm2712_init(Object *obj)
     object_initialize_child(obj, "gic", &s->gic, TYPE_ARM_GIC);
     object_initialize_child(obj, "systimer", &s->systimer,
                             TYPE_BCM2835_SYSTIMER);
+    object_initialize_child(obj, "pm", &s->pm, TYPE_BCM2835_POWERMGT);
     object_initialize_child(obj, "uart10", &s->uart10, TYPE_PL011);
 }
 
@@ -266,6 +267,23 @@ static bool bcm2712_realize_systimer(BCM2712State *s, Error **errp)
     return true;
 }
 
+/*
+ * Power management: the watchdog (with reboot and halt through it) and the
+ * reset status, the same registers as on BCM2835. The power domain
+ * registers after them stay with the placeholder mapped beneath; on
+ * BCM2712 Linux only drives them for V3D, which is not modelled.
+ */
+static bool bcm2712_realize_pm(BCM2712State *s, Error **errp)
+{
+    SysBusDevice *sbd = SYS_BUS_DEVICE(&s->pm);
+
+    if (!sysbus_realize(sbd, errp)) {
+        return false;
+    }
+    bcm2712_map(sbd, 0, BCM2712_PM);
+    return true;
+}
+
 static void bcm2712_realize(DeviceState *dev, Error **errp)
 {
     BCM2712State *s = BCM2712(dev);
@@ -277,7 +295,7 @@ static void bcm2712_realize(DeviceState *dev, Error **errp)
     }
 
     if (!bcm2712_realize_cpus(s, errp) || !bcm2712_realize_gic(s, errp) ||
-        !bcm2712_realize_systimer(s, errp)) {
+        !bcm2712_realize_systimer(s, errp) || !bcm2712_realize_pm(s, errp)) {
         return;
     }
 
@@ -293,7 +311,7 @@ static void bcm2712_realize(DeviceState *dev, Error **errp)
     /*
      * Everything not yet modelled logs its accesses under -d unimp. The
      * placeholders sit below the models, so a block whose model is smaller
-     * than its device tree node (the system timer) keeps one for the rest.
+     * than its device tree node (the system timer, PM) keeps one for the rest.
      */
     for (BCM2712Device d = 0; d < BCM2712_NUM_DEVICES; d++) {
         switch (d) {
