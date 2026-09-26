@@ -59,15 +59,15 @@ commit (or a short series) with its own tests.
 
 ## 2. Current state
 
-Delivered so far (WS0.1–WS0.3, WS0.6, WS2.1, WS2.4, WS3.6, WS9.2a):
+Delivered so far (WS0.1–WS0.3, WS0.6, WS2.1, WS2.2, WS2.4, WS3.6, WS9.2a):
 
 | Area | State |
 | --- | --- |
 | Repository | pinned QEMU v11.1.1 submodule, overlay + patch series (patches may share files, like an upstream series) managed by `scripts/qemu-tree`, CI with ccache |
 | Kconfig (WS0.6) | every BCM283x device model has its own symbol, so `bcm2712` can select just the models it reuses; a `raspi5b`-only build is tested (`make check-minimal`) |
-| SoC (`bcm2712`) | 1–4 Cortex-A76 (`MPIDR.Aff1` = core, CNTFRQ 54 MHz, optional EL3), GIC-400 with 288 SPIs, 5 priority bits and all timer/maintenance PPIs, UART10 (PL011), system timer (WS2.1), watchdog and reset status (WS2.4), complete memory map with T0 placeholders and two catch-all windows |
+| SoC (`bcm2712`) | 1–4 Cortex-A76 (`MPIDR.Aff1` = core, CNTFRQ 54 MHz, optional EL3), GIC-400 with 288 SPIs, 5 priority bits and all timer/maintenance PPIs, UART10 (PL011), system timer (WS2.1), watchdog and reset status (WS2.4), VideoCore mailbox with the BCM283x property and framebuffer channels (WS2.2), complete memory map with T0 placeholders and two catch-all windows |
 | Board (`raspi5b`) | 1/2/4/8/16 GiB RAM, board revision code, PSCI over SMC with EL2 entry (default) or guest-owned EL3 (`secure=on`), system reset and power-off through PSCI, the watchdog and the monitor (WS3.6), DTB fix-ups for unmodelled devices, `/system/linux,revision` |
-| Tests | qtest (UART IDs, GIC geometry, priority bits and security, RAM, placeholders, system timer, watchdog), bare-metal smoke guest (EL, MPIDR, CNTFRQ, PSCI CPU_ON on all cores, SYSTEM_OFF, EL3 mode), bare-metal library and suite (WS9.2a: GIC, timers, system timer, PSCI/SMP, a watchdog reset and four system resets checked against the boot state; 1–4 cores, with and without a DT, EL2 and EL3) |
+| Tests | qtest (UART IDs, GIC geometry, priority bits and security, RAM, placeholders, system timer, watchdog, mailbox), bare-metal smoke guest (EL, MPIDR, CNTFRQ, PSCI CPU_ON on all cores, SYSTEM_OFF, EL3 mode), bare-metal library and suite (WS9.2a: GIC, timers, system timer, PSCI/SMP, the mailbox, a watchdog reset and four system resets checked against the boot state; 1–4 cores, with and without a DT, EL2 and EL3) |
 | Linux | the stock Raspberry Pi OS kernel (6.18) with the firmware's `bcm2712-rpi-5-b.dtb` boots on 4 CPUs to the root-fs mount, without warnings |
 
 Known provisional values, each marked in the code: 288 SPIs
@@ -136,7 +136,7 @@ immediately exercised by the next:
 | 3 | WS9.2a bare-metal framework (done) | exception vectors and a GIC driver in the guest, needed by every later test |
 | 4 | WS2.4 PM/watchdog (done) | reset and power-off, which every test harness needs |
 | 5 | WS3.6 reset semantics (done) | makes the watchdog and PSCI `SYSTEM_RESET` trustworthy |
-| 6 | WS2.2 mailbox | the address-translation design decision, made once |
+| 6 | WS2.2 mailbox (done) | the address-translation design decision, made once |
 | 7 | WS2.3a property identity tags | first consumer of the mailbox; lets the `firmware` DT node be enabled |
 | 8 | WS2.5 RNG200 | small, standalone, upstreamable |
 | 9 | WS3.2 built-in device tree | microkernels get a DT without `-dtb`; forces the memory map to be the single source of truth |
@@ -367,7 +367,28 @@ comparators 0–3 to SPIs 64–67. The DT declares `clock-frequency =
 interrupt; the bare-metal suite takes a comparator interrupt through the
 GIC and clears it via `CS`.
 
-#### WS2.2 VideoCore mailbox and bus-address translation (M)
+#### WS2.2 VideoCore mailbox and bus-address translation (done)
+*Delivered:* the SoC maps `bcm2835-mbox` at the node's window (the
+model's registers start 0x80 earlier, as on BCM2835, so an alias maps
+just the `0x40` bytes) on SPI 33, with `bcm2835-property` and
+`bcm2835-fb` behind it, and the `vc-bus` address space of step 1
+(first GiB of RAM at `0xc000_0000` and `0x0`). One upstream-first fix
+(patch 0006): the property channel no longer answers a buffer that is
+not in that address space; before, it read zeros, wrote nowhere and
+still signalled a response. The property model needs a framebuffer and
+an OTP to link to, so both are instantiated now (WS8.1 still owns the
+framebuffer's behaviour); its VideoCore memory is the top 4 MiB of the
+first GiB (`TODO(WS0.4)`: `GET_VC_MEMORY` on hardware), which the
+machine now leaves out of the DT memory node, as the firmware does. The
+`mailbox` and `firmware` nodes stay enabled: Linux's mailbox driver
+probes, `raspberrypi-firmware` attaches ("Attached to firmware from
+..."), and none of its clients reports an error at boot.
+Tags the model does not know yet (firmware variant and hash) are
+WS2.3a. qtests cover `GET_BOARD_REVISION` through both aliases with the
+interrupt, an unreachable buffer, and the ARM/VC memory split; the
+bare-metal suite reads the revision through the mailbox and checks it
+against the DT.
+
 **Depends:** WS0.6.
 Instantiate `bcm2835-mbox` at `0x10_7c01_3880` (SPI 33) with the property
 channel behind it, and decide once how buffer addresses are interpreted.

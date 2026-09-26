@@ -36,6 +36,11 @@ MINIMAL_DTS = """
         reg = <0x10 0x7c003000 0x0 0x1000>;
     };
 
+    mailbox@107c013880 {
+        compatible = "brcm,bcm2835-mbox";
+        reg = <0x10 0x7c013880 0x0 0x40>;
+    };
+
     watchdog@107d200000 {
         compatible = "brcm,bcm2712-pm";
         reg = <0x10 0x7d200000 0x0 0x308>;
@@ -89,6 +94,19 @@ class DtbFixupTest(unittest.TestCase):
         dtb = self.fixed_up()
         self.assertIsNone(fdtget(dtb, "/timer@107c003000", "status"))
         self.assertIsNone(fdtget(dtb, "/watchdog@107d200000", "status"))
+        self.assertIsNone(fdtget(dtb, "/mailbox@107c013880", "status"))
+
+    def test_memory_leaves_out_videocore(self):
+        """The top 4 MiB of the first GiB belong to the VideoCore."""
+        for ram, reg in (("1G", "0 0 0 3fc00000"),
+                         ("4G", "0 0 0 3fc00000 0 40000000 0 c0000000")):
+            with self.subTest(ram=ram):
+                dtb = self.fixed_up("-m", ram)
+                result = subprocess.run(["fdtget", "-t", "x", str(dtb),
+                                         "/memory", "reg"],
+                                        capture_output=True, text=True,
+                                        check=True)
+                self.assertEqual(result.stdout.strip(), reg)
 
     def test_board_revision(self):
         dtb = self.fixed_up("-m", "4G")

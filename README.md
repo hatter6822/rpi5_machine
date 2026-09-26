@@ -30,7 +30,8 @@ The first milestone targets bare-metal and microkernel bring-up.
 | Firmware boot contract: EL2 entry, PSCI over SMC (`secure=off`); guest-owned EL3 (`secure=on`) | done |
 | Complete BCM2712 memory map, unmodelled blocks logged with `-d unimp` | done |
 | Linux: stock Raspberry Pi OS kernel boots to the root-fs mount with `bcm2712-rpi-5-b.dtb` | smoke-tested |
-| Mailbox/firmware, SD, PCIe, RP1, GPIO, … | see [docs/PLAN.md](docs/PLAN.md) |
+| VideoCore mailbox and firmware property channel (BCM283x tag set) | done; Pi 5 tags in progress |
+| SD, PCIe, RP1, GPIO, … | see [docs/PLAN.md](docs/PLAN.md) |
 
 ## Repository layout
 

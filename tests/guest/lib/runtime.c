@@ -22,6 +22,7 @@
 #define DEFAULT_SYSTIMER        0x107c003000ul
 #define DEFAULT_SYSTIMER_SPI    64
 #define DEFAULT_PM              0x107d200000ul
+#define DEFAULT_MBOX            0x107c013880ul
 
 /* Where QEMU places a -dtb blob for an ELF image, which gets no x0 */
 #define RAM_BASE                0x0ul
@@ -130,6 +131,19 @@ static void discover_pm(void)
     }
 }
 
+static void discover_mbox(void)
+{
+    int node = fdt_find_compatible("brcm,bcm2835-mbox");
+    uint64_t addr, size;
+
+    bm_plat.mbox = DEFAULT_MBOX;
+    if (node >= 0 && fdt_node_is_enabled(node) &&
+        fdt_reg(node, 0, &addr, &size)) {
+        bm_plat.mbox = addr;
+        bm_plat.mbox_from_dt = true;
+    }
+}
+
 /* Cores the tree describes as usable (QEMU marks absent ones "fail") */
 static void discover_cpus(void)
 {
@@ -192,6 +206,7 @@ void bm_start(uintptr_t x0)
     discover_gic();
     discover_systimer();
     discover_pm();
+    discover_mbox();
     discover_cpus();
 
     if (bm_early) {

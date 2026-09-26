@@ -80,8 +80,6 @@ static const char *const raspi5b_unmodelled_compatibles[] = {
     "brcm,bcm2712-pcie",
     "brcm,bcm2712-mip",
     "brcm,bcm2712-sdhci",
-    "brcm,bcm2835-mbox",
-    "raspberrypi,bcm2835-firmware",
     "brcm,bcm2711-rng200",
     "brcm,bcm7271-uart",
     "brcm,brcmstb-i2c",
@@ -157,6 +155,33 @@ static void raspi5b_fdt_fail_absent_cpus(void *fdt, unsigned int num_cpus)
     }
 }
 
+/*
+ * Like the firmware, leave the VideoCore's memory at the top of the first
+ * GiB out of the memory node that arm_load_dtb() wrote.
+ */
+static void raspi5b_fdt_memory(void *fdt, uint64_t ram_size)
+{
+    uint32_t acells = qemu_fdt_getprop_cell(fdt, "/", "#address-cells",
+                                            NULL, &error_fatal);
+    uint32_t scells = qemu_fdt_getprop_cell(fdt, "/", "#size-cells",
+                                            NULL, &error_fatal);
+    int rc;
+
+    if (ram_size > BCM2712_VC_RAM_WINDOW) {
+        rc = qemu_fdt_setprop_sized_cells(fdt, "/memory", "reg",
+                acells, BCM2712_RAM_BASE, scells, BCM2712_VC_RAM_BASE,
+                acells, BCM2712_RAM_BASE + BCM2712_VC_RAM_WINDOW,
+                scells, ram_size - BCM2712_VC_RAM_WINDOW);
+    } else {
+        rc = qemu_fdt_setprop_sized_cells(fdt, "/memory", "reg",
+                acells, BCM2712_RAM_BASE, scells, BCM2712_VC_RAM_BASE);
+    }
+    if (rc < 0) {
+        error_report("raspi5b: cannot set the device tree memory node");
+        exit(EXIT_FAILURE);
+    }
+}
+
 static void raspi5b_modify_dtb(const struct arm_boot_info *info, void *fdt)
 {
     const Raspi5bMachineState *s =
@@ -166,6 +191,7 @@ static void raspi5b_modify_dtb(const struct arm_boot_info *info, void *fdt)
     qemu_fdt_add_path(fdt, "/system");
     qemu_fdt_setprop_cell(fdt, "/system", "linux,revision", s->board_rev);
 
+    raspi5b_fdt_memory(fdt, info->ram_size);
     raspi5b_fdt_fail_absent_cpus(fdt, s->parent_obj.smp.cpus);
 
     /* No match yields an empty list; errors mean a corrupt blob */
@@ -205,6 +231,11 @@ static void raspi5b_machine_init(MachineState *machine)
     soc = DEVICE(&s->soc);
     qdev_prop_set_uint32(soc, "num-cpus", machine->smp.cpus);
     qdev_prop_set_bit(soc, "has-el3", s->secure);
+    object_property_set_link(OBJECT(soc), "ram", OBJECT(machine->ram),
+                             &error_abort);
+    qdev_prop_set_uint32(soc, "board-rev", s->board_rev);
+    /* The firmware passes on the command line it gives the kernel */
+    qdev_prop_set_string(soc, "command-line", machine->kernel_cmdline);
     qdev_realize(soc, NULL, &error_fatal);
 
     s->binfo = (struct arm_boot_info) {

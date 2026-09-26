@@ -54,7 +54,7 @@ void bm_test_skip(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 unsigned bm_test_resets(void);
 
 /* Words the running test keeps across its resets, zero on its first run */
-#define BM_TEST_SCRATCH_WORDS   8
+#define BM_TEST_SCRATCH_WORDS   16
 uint64_t *bm_test_scratch(void);
 
 /* Informational line in the transcript ("# ..."), core 0 only */

@@ -11,8 +11,12 @@
 
 #include "exec/hwaddr.h"
 #include "hw/char/pl011.h"
+#include "hw/display/bcm2835_fb.h"
 #include "hw/intc/arm_gic.h"
+#include "hw/misc/bcm2835_mbox.h"
 #include "hw/misc/bcm2835_powermgt.h"
+#include "hw/misc/bcm2835_property.h"
+#include "hw/nvram/bcm2835_otp.h"
 #include "hw/timer/bcm2835_systmr.h"
 #include "qemu/units.h"
 #include "qom/object.h"
@@ -38,6 +42,17 @@ OBJECT_DECLARE_SIMPLE_TYPE(BCM2712State, BCM2712)
 #define BCM2712_RAM_BASE            0x0
 #define BCM2712_RAM_SIZE_MIN        (1 * GiB)
 #define BCM2712_RAM_SIZE_MAX        (16 * GiB)
+
+/*
+ * The VideoCore reaches the first GiB of RAM only, at bus address
+ * 0xc000_0000 ("dma-ranges" of the "soc" node), and keeps the top of it
+ * for itself; the firmware leaves that out of the ARM memory node.
+ * TODO(WS0.4): check GET_VC_MEMORY on hardware.
+ */
+#define BCM2712_VC_RAM_WINDOW       (1 * GiB)
+#define BCM2712_VC_RAM_BUS_BASE     0xc0000000
+#define BCM2712_VC_RAM_SIZE         (4 * MiB)
+#define BCM2712_VC_RAM_BASE         0x3fc00000     /* top of the window */
 
 /*
  * Physical memory map. Addresses are 40-bit CPU physical addresses; the
@@ -130,12 +145,23 @@ struct BCM2712State {
     /*< public >*/
     uint32_t num_cpus;
     bool has_el3;
+    MemoryRegion *ram;
 
     ARMCPU cpu[BCM2712_NUM_CPUS];
     GICState gic;
     BCM2835SystemTimerState systimer;
     BCM2835PowerMgtState pm;
     PL011State uart10;
+
+    /* The VideoCore firmware interface, behind the mailbox */
+    BCM2835MboxState mbox;
+    MemoryRegion mbox_regs;
+    MemoryRegion mbox_chans;
+    MemoryRegion vc_bus;        /* the VideoCore's view of memory */
+    MemoryRegion vc_ram[2];     /* aliases of the first GiB of RAM in it */
+    BCM2835PropertyState property;
+    BCM2835FBState fb;
+    BCM2835OTPState otp;
 };
 
 #endif /* HW_ARM_BCM2712_H */

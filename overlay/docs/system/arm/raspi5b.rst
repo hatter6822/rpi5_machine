@@ -22,6 +22,12 @@ Implemented devices
   the machine (or powers it off, for Linux's partition 63 halt request)
   and follows ``-action watchdog=...``, and the reset status register,
   which survives the reset and reports a watchdog reset
+* VideoCore mailbox at ``0x10_7c01_3880`` (SPI 33) with the firmware's
+  property and framebuffer channels. The firmware reads requests through
+  the VideoCore's view of memory: the first GiB of RAM at bus address
+  ``0xc000_0000`` (and at ``0x0``); requests elsewhere get no answer, as
+  on hardware. The VideoCore keeps the top 4 MiB of that GiB, which the
+  device tree memory node leaves out
 * UART10: the PL011 debug UART at ``0x10_7d00_1000``, connected to the
   first ``-serial`` backend
 * 1, 2, 4, 8 or 16 GiB of RAM at physical address 0 (``-m``; default 2 GiB)
@@ -33,7 +39,8 @@ with ``-d unimp``.
 Missing devices
 ---------------
 
-* VideoCore mailbox and firmware property interface
+* Firmware property tags specific to the Pi 5 (clocks, power, RTC, GPIO
+  expander); the BCM283x set is answered
 * SD/eMMC controllers, PCIe root complexes and the RP1 south bridge
 * GPIO, pin control, the Broadcom L2 interrupt controllers, RNG
 * Power domains (only V3D's is driven by Linux on this SoC)

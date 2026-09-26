@@ -19,6 +19,7 @@
 #define SYSTIMER_BASE           0x107c003000ULL
 #define PM_BASE                 0x107d200000ULL
 #define SOC_WINDOW_BASE         0x107c000000ULL
+#define HVS_BASE                0x107c580000ULL
 
 #define PL011_PERIPHID0         0xfe0
 #define PL011_PERIPHID1         0xfe4
@@ -39,6 +40,26 @@
 #define ST_C(n)                 (0x0c + 4 * (n))
 #define ST_COUNT                4
 #define ST_SPI(n)               (64 + (n))      /* bcm2712.dtsi */
+
+/* Linux drivers/mailbox/bcm2835-mailbox.c */
+#define MBOX_READ               0x00
+#define MBOX_STATUS             0x18
+#define MBOX_CONFIG             0x1c
+#define MBOX_WRITE              0x20
+#define MBOX_STATUS_EMPTY       BIT(30)
+#define MBOX_CONFIG_DATA_IRQ    BIT(0)
+#define MBOX_SPI                33              /* bcm2712.dtsi */
+#define MBOX_CHAN_PROPERTY      8
+
+/* include/soc/bcm2835/raspberrypi-firmware.h */
+#define FW_REQUEST              0
+#define FW_SUCCESS              0x80000000
+#define FW_TAG_BOARD_REVISION   0x00010002
+#define FW_TAG_ARM_MEMORY       0x00010005
+#define FW_TAG_VC_MEMORY        0x00010006
+
+/* Where the VideoCore sees the first GiB of RAM (dma-ranges of "soc") */
+#define VC_BUS_RAM              0xc0000000u
 
 /* Linux drivers/watchdog/bcm2835_wdt.c */
 #define PM_RSTC                 0x1c
@@ -464,12 +485,115 @@ static void test_pm_migrate(void)
     unlink(file);
 }
 
+/*
+ * Post a property request for @tag, with an 8-byte value buffer, at RAM
+ * address @buf, handing the firmware bus address @bus_addr.
+ */
+static void mbox_request(QTestState *qts, uint64_t buf, uint32_t bus_addr,
+                         uint32_t tag)
+{
+    const uint32_t req[] = {
+        8 * 4, FW_REQUEST,
+        tag, 8, 0, 0, 0,
+        0,                                      /* end tag */
+    };
+
+    for (int i = 0; i < ARRAY_SIZE(req); i++) {
+        qtest_writel(qts, buf + 4 * i, req[i]);
+    }
+    qtest_writel(qts, MBOX_BASE + MBOX_WRITE, bus_addr | MBOX_CHAN_PROPERTY);
+}
+
+static bool mbox_has_response(QTestState *qts)
+{
+    return !(qtest_readl(qts, MBOX_BASE + MBOX_STATUS) & MBOX_STATUS_EMPTY);
+}
+
+/* Check the response to mbox_request() and return the value's two words */
+static void mbox_response(QTestState *qts, uint64_t buf, uint32_t bus_addr,
+                          uint32_t val[2])
+{
+    g_assert_true(mbox_has_response(qts));
+    g_assert_cmphex(qtest_readl(qts, MBOX_BASE + MBOX_READ), ==,
+                    bus_addr | MBOX_CHAN_PROPERTY);
+    g_assert_cmphex(qtest_readl(qts, buf + 4), ==, FW_SUCCESS);
+    val[0] = qtest_readl(qts, buf + 20);
+    val[1] = qtest_readl(qts, buf + 24);
+}
+
+/*
+ * The firmware reads requests through the VideoCore's view of the first
+ * GiB of RAM: at bus address 0xc000_0000, as Linux passes them, and at 0
+ * for code written for older Pis.
+ */
+static void test_mbox_board_revision(void)
+{
+    QTestState *qts = qtest_init("-machine raspi5b -m 4G");
+    const uint64_t buf = 0x10000;
+    uint32_t val[2];
+
+    qtest_writel(qts, MBOX_BASE + MBOX_CONFIG, MBOX_CONFIG_DATA_IRQ);
+    g_assert_false(mbox_has_response(qts));
+
+    mbox_request(qts, buf, VC_BUS_RAM | buf, FW_TAG_BOARD_REVISION);
+    g_assert_true(gic_spi_pending(qts, MBOX_SPI));
+    mbox_response(qts, buf, VC_BUS_RAM | buf, val);
+    g_assert_cmphex(val[0], ==, 0xc04170);
+    g_assert_false(gic_spi_pending(qts, MBOX_SPI));
+    g_assert_false(mbox_has_response(qts));
+
+    mbox_request(qts, buf, buf, FW_TAG_BOARD_REVISION);
+    mbox_response(qts, buf, buf, val);
+    g_assert_cmphex(val[0], ==, 0xc04170);
+
+    qtest_quit(qts);
+}
+
+/* A buffer the VideoCore cannot reach gets no response, as on hardware */
+static void test_mbox_unreachable(void)
+{
+    QTestState *qts = qtest_init("-machine raspi5b -m 2G");
+    /* RAM, but above the first GiB; then the same address on the bus */
+    const uint64_t high = 1 * GiB + 0x10000;
+    uint32_t val[2];
+
+    mbox_request(qts, high, high, FW_TAG_BOARD_REVISION);
+    g_assert_false(mbox_has_response(qts));
+    g_assert_cmphex(qtest_readl(qts, high + 4), ==, FW_REQUEST);
+
+    /* The channel still works afterwards */
+    mbox_request(qts, 0x10000, VC_BUS_RAM | 0x10000, FW_TAG_BOARD_REVISION);
+    mbox_response(qts, 0x10000, VC_BUS_RAM | 0x10000, val);
+
+    qtest_quit(qts);
+}
+
+/* The VideoCore keeps the top 4 MiB of the first GiB */
+static void test_mbox_memory_split(void)
+{
+    QTestState *qts = qtest_init("-machine raspi5b");
+    const uint64_t buf = 0x10000;
+    uint32_t val[2];
+
+    mbox_request(qts, buf, VC_BUS_RAM | buf, FW_TAG_ARM_MEMORY);
+    mbox_response(qts, buf, VC_BUS_RAM | buf, val);
+    g_assert_cmphex(val[0], ==, 0);
+    g_assert_cmphex(val[1], ==, 0x3fc00000);
+
+    mbox_request(qts, buf, VC_BUS_RAM | buf, FW_TAG_VC_MEMORY);
+    mbox_response(qts, buf, VC_BUS_RAM | buf, val);
+    g_assert_cmphex(val[0], ==, 0x3fc00000);
+    g_assert_cmphex(val[1], ==, 4 * MiB);
+
+    qtest_quit(qts);
+}
+
 static void test_unimplemented_regions(void)
 {
     QTestState *qts = qtest_init("-machine raspi5b");
 
     /* Named placeholder and catch-all window both read as zero */
-    g_assert_cmphex(qtest_readl(qts, MBOX_BASE), ==, 0);
+    g_assert_cmphex(qtest_readl(qts, HVS_BASE), ==, 0);
     g_assert_cmphex(qtest_readl(qts, SOC_WINDOW_BASE), ==, 0);
 
     qtest_quit(qts);
@@ -489,6 +613,9 @@ int main(int argc, char **argv)
     qtest_add_func("/raspi5b/systimer/compare", test_systimer_compare);
     qtest_add_func("/raspi5b/systimer/reset", test_systimer_reset);
     qtest_add_func("/raspi5b/systimer/migrate", test_systimer_migrate);
+    qtest_add_func("/raspi5b/mbox/board-revision", test_mbox_board_revision);
+    qtest_add_func("/raspi5b/mbox/unreachable", test_mbox_unreachable);
+    qtest_add_func("/raspi5b/mbox/memory-split", test_mbox_memory_split);
     qtest_add_func("/raspi5b/pm/registers", test_pm_registers);
     qtest_add_func("/raspi5b/pm/watchdog-countdown",
                    test_pm_watchdog_countdown);

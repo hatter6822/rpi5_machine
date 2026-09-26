@@ -49,11 +49,16 @@
 
 #define PSCI_RESETS             3       /* then one through the watchdog */
 
-enum block { GIC_DIST, GIC_CPU, SYSTIMER, PM, UART, CPU, NUM_BLOCKS };
+#define MBOX_STATUS             0x18
+#define MBOX_CONFIG             0x1c
+
+enum block {
+    GIC_DIST, GIC_CPU, SYSTIMER, PM, MBOX, UART, CPU, NUM_BLOCKS
+};
 
 static const char *const block_names[NUM_BLOCKS] = {
-    "GIC distributor", "GIC CPU interface", "system timer", "PM", "UART",
-    "CPU",
+    "GIC distributor", "GIC CPU interface", "system timer", "PM", "mailbox",
+    "UART", "CPU",
 };
 
 static uint64_t early[NUM_BLOCKS];
@@ -105,6 +110,8 @@ static void snapshot(uint64_t out[NUM_BLOCKS])
     hash(&out[PM], pm_read(PM_RSTC));
     hash(&out[PM], pm_read(PM_WDOG));
 
+    hash_regs(&out[MBOX], bm_plat.mbox, MBOX_STATUS, MBOX_CONFIG);
+
     hash_regs(&out[UART], bm_plat.uart, UART_IBRD, UART_IMSC);
 
     hash(&out[CPU], read_sysreg(cntp_ctl_el0));
@@ -132,6 +139,7 @@ static void dirty(void)
 
     mmio_write32(bm_plat.systimer + ST_C(2), 0xdeadbeef);
     pm_write(PM_WDOG, 0x12345);
+    mmio_write32(bm_plat.mbox + MBOX_CONFIG, BIT(0));
     mmio_write32(bm_plat.uart + UART_IMSC, BIT(4));
 
     write_sysreg(cntp_cval_el0, far);
@@ -151,6 +159,7 @@ static void clean(void)
     gic_set_target(SPARE_SPI, 0x1);
     mmio_write32(bm_plat.gicc + GICC_PMR, 0xff);
     mmio_write32(bm_plat.uart + UART_IMSC, 0);
+    mmio_write32(bm_plat.mbox + MBOX_CONFIG, 0);
     pm_write(PM_WDOG, 0);
     write_sysreg(cntp_ctl_el0, 0);
     write_sysreg(cntv_ctl_el0, 0);

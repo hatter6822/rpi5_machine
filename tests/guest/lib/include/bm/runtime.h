@@ -34,6 +34,8 @@ struct bm_platform {
     bool systimer_from_dt;
     uintptr_t pm;               /* power management and watchdog */
     bool pm_from_dt;
+    uintptr_t mbox;             /* VideoCore mailbox */
+    bool mbox_from_dt;
     unsigned num_cpus;          /* from the DT; BM_MAX_CPUS without one */
 };
 

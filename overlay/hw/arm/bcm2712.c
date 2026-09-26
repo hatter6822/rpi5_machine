@@ -21,6 +21,7 @@
 #include "hw/core/qdev-properties.h"
 #include "hw/core/qdev-properties-system.h"
 #include "hw/core/sysbus.h"
+#include "hw/misc/bcm2835_mbox_defs.h"
 #include "hw/misc/unimp.h"
 #include "system/address-spaces.h"
 #include "system/system.h"
@@ -244,6 +245,29 @@ static void bcm2712_init(Object *obj)
     object_initialize_child(obj, "systimer", &s->systimer,
                             TYPE_BCM2835_SYSTIMER);
     object_initialize_child(obj, "pm", &s->pm, TYPE_BCM2835_POWERMGT);
+
+    memory_region_init(&s->mbox_chans, obj, "bcm2712.mbox-channels",
+                       MBOX_CHAN_COUNT << MBOX_AS_CHAN_SHIFT);
+    memory_region_init(&s->vc_bus, obj, "bcm2712.vc-bus", 4 * GiB);
+    object_initialize_child(obj, "mbox", &s->mbox, TYPE_BCM2835_MBOX);
+    object_property_add_const_link(OBJECT(&s->mbox), "mbox-mr",
+                                   OBJECT(&s->mbox_chans));
+    object_initialize_child(obj, "fb", &s->fb, TYPE_BCM2835_FB);
+    object_property_add_const_link(OBJECT(&s->fb), "dma-mr",
+                                   OBJECT(&s->vc_bus));
+    object_initialize_child(obj, "otp", &s->otp, TYPE_BCM2835_OTP);
+    object_initialize_child(obj, "property", &s->property,
+                            TYPE_BCM2835_PROPERTY);
+    object_property_add_alias(obj, "board-rev", OBJECT(&s->property),
+                              "board-rev");
+    object_property_add_alias(obj, "command-line", OBJECT(&s->property),
+                              "command-line");
+    object_property_add_const_link(OBJECT(&s->property), "fb",
+                                   OBJECT(&s->fb));
+    object_property_add_const_link(OBJECT(&s->property), "otp",
+                                   OBJECT(&s->otp));
+    object_property_add_const_link(OBJECT(&s->property), "dma-mr",
+                                   OBJECT(&s->vc_bus));
     object_initialize_child(obj, "uart10", &s->uart10, TYPE_PL011);
 }
 
@@ -284,6 +308,80 @@ static bool bcm2712_realize_pm(BCM2712State *s, Error **errp)
     return true;
 }
 
+/* Offset of MAIL0_READ in the bcm2835-mbox MMIO region */
+#define BCM2712_MBOX_REGS_OFFSET    0x80
+
+/* A firmware device answering on mailbox channel @chan */
+static bool bcm2712_realize_mbox_client(BCM2712State *s, SysBusDevice *sbd,
+                                        int chan, Error **errp)
+{
+    if (!sysbus_realize(sbd, errp)) {
+        return false;
+    }
+    memory_region_add_subregion(&s->mbox_chans, chan << MBOX_AS_CHAN_SHIFT,
+                                sysbus_mmio_get_region(sbd, 0));
+    sysbus_connect_irq(sbd, 0, qdev_get_gpio_in(DEVICE(&s->mbox), chan));
+    return true;
+}
+
+/*
+ * The VideoCore firmware interface: the ARM mailbox, and behind it the
+ * property and framebuffer channels of the BCM283x models. Buffers are
+ * read through the VideoCore's view of memory: the first GiB of RAM at
+ * bus address 0xc000_0000, as Linux addresses it through the "soc"
+ * node's dma-ranges, and at 0x0 as well, which firmware accepts from
+ * code written for older Pis. Anything else goes unanswered.
+ */
+static bool bcm2712_realize_vc(BCM2712State *s, Error **errp)
+{
+    uint64_t window;
+    SysBusDevice *sbd = SYS_BUS_DEVICE(&s->mbox);
+
+    QEMU_BUILD_BUG_ON(BCM2712_VC_RAM_BASE + BCM2712_VC_RAM_SIZE !=
+                      BCM2712_VC_RAM_WINDOW);
+
+    if (!s->ram) {
+        error_setg(errp, "%s: the 'ram' link is not set", TYPE_BCM2712);
+        return false;
+    }
+    window = MIN(memory_region_size(s->ram), BCM2712_VC_RAM_WINDOW);
+    for (int i = 0; i < ARRAY_SIZE(s->vc_ram); i++) {
+        memory_region_init_alias(&s->vc_ram[i], OBJECT(s), "bcm2712.vc-ram",
+                                 s->ram, 0, window);
+    }
+    memory_region_add_subregion(&s->vc_bus, 0, &s->vc_ram[0]);
+    memory_region_add_subregion(&s->vc_bus, BCM2712_VC_RAM_BUS_BASE,
+                                &s->vc_ram[1]);
+
+    if (!sysbus_realize(sbd, errp)) {
+        return false;
+    }
+    /*
+     * The model's registers start 0x80 before MAIL0_READ, where the
+     * BCM2835's ARM control block puts them; map just the node's window.
+     */
+    memory_region_init_alias(&s->mbox_regs, OBJECT(s), "bcm2712.mbox",
+                             sysbus_mmio_get_region(sbd, 0),
+                             BCM2712_MBOX_REGS_OFFSET,
+                             bcm2712_memmap[BCM2712_MBOX].size);
+    memory_region_add_subregion(get_system_memory(),
+                                bcm2712_memmap[BCM2712_MBOX].base,
+                                &s->mbox_regs);
+    sysbus_connect_irq(sbd, 0, bcm2712_spi(s, BCM2712_SPI_MBOX));
+
+    if (!object_property_set_uint(OBJECT(&s->fb), "vcram-base",
+                                  BCM2712_VC_RAM_BASE, errp) ||
+        !object_property_set_uint(OBJECT(&s->fb), "vcram-size",
+                                  BCM2712_VC_RAM_SIZE, errp) ||
+        !bcm2712_realize_mbox_client(s, SYS_BUS_DEVICE(&s->fb), MBOX_CHAN_FB,
+                                     errp) ||
+        !sysbus_realize(SYS_BUS_DEVICE(&s->otp), errp)) {
+        return false;
+    }
+    return bcm2712_realize_mbox_client(s, SYS_BUS_DEVICE(&s->property),
+                                       MBOX_CHAN_PROPERTY, errp);
+}
+
 static void bcm2712_realize(DeviceState *dev, Error **errp)
 {
     BCM2712State *s = BCM2712(dev);
@@ -295,7 +393,8 @@ static void bcm2712_realize(DeviceState *dev, Error **errp)
     }
 
     if (!bcm2712_realize_cpus(s, errp) || !bcm2712_realize_gic(s, errp) ||
-        !bcm2712_realize_systimer(s, errp) || !bcm2712_realize_pm(s, errp)) {
+        !bcm2712_realize_systimer(s, errp) || !bcm2712_realize_pm(s, errp) ||
+        !bcm2712_realize_vc(s, errp)) {
         return;
     }
 
@@ -334,6 +433,8 @@ static void bcm2712_realize(DeviceState *dev, Error **errp)
 static const Property bcm2712_properties[] = {
     DEFINE_PROP_UINT32("num-cpus", BCM2712State, num_cpus, BCM2712_NUM_CPUS),
     DEFINE_PROP_BOOL("has-el3", BCM2712State, has_el3, false),
+    DEFINE_PROP_LINK("ram", BCM2712State, ram, TYPE_MEMORY_REGION,
+                     MemoryRegion *),
 };
 
 static void bcm2712_class_init(ObjectClass *oc, const void *data)

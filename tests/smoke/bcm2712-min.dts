@@ -60,6 +60,13 @@
             interrupts = <0 121 4>;
         };
 
+        mailbox@7c013880 {
+            compatible = "brcm,bcm2835-mbox";
+            reg = <0x7c013880 0x40>;
+            interrupts = <0 33 4>;
+            #mbox-cells = <0>;
+        };
+
         watchdog@7d200000 {
             compatible = "brcm,bcm2712-pm";
             reg = <0x7d200000 0x308>;
