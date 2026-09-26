@@ -59,15 +59,15 @@ commit (or a short series) with its own tests.
 
 ## 2. Current state
 
-Delivered so far (WS0.1–WS0.3, WS0.5, WS0.6, WS2.1, WS2.2, WS2.3a, WS2.4, WS2.5, WS3.2, WS3.6, WS9.2), which completes M1:
+Delivered so far: M1 (WS0.1–WS0.3, WS0.5, WS0.6, WS2.1, WS2.2, WS2.3a, WS2.4, WS2.5, WS3.2, WS3.6, WS9.2) and, towards M2, WS1.5:
 
 | Area | State |
 | --- | --- |
-| Repository | pinned QEMU v11.1.1 submodule, overlay + patch series (patches may share files, like an upstream series) managed by `scripts/qemu-tree`, which also exports the upstream series (WS0.5: 15 commits and a cover letter, checked with `git am`, checkpatch and a build of every commit), CI with ccache |
+| Repository | pinned QEMU v11.1.1 submodule, overlay + patch series (patches may share files, like an upstream series) managed by `scripts/qemu-tree`, which also exports the upstream series (WS0.5: a commit per patch and a cover letter, checked with `git am`, checkpatch and a build of every commit), CI with ccache |
 | Kconfig (WS0.6) | every BCM283x device model has its own symbol, so `bcm2712` can select just the models it reuses; a `raspi5b`-only build is tested (`make check-minimal`) |
-| SoC (`bcm2712`) | 1–4 Cortex-A76 (`MPIDR.Aff1` = core, CNTFRQ 54 MHz, optional EL3), GIC-400 with 288 SPIs, 5 priority bits and all timer/maintenance PPIs, UART10 (PL011), system timer (WS2.1), watchdog and reset status (WS2.4), RNG200 (WS2.5), VideoCore mailbox with the BCM283x property and framebuffer channels (WS2.2) and every identity tag answered (WS2.3a), complete memory map with T0 placeholders and two catch-all windows |
+| SoC (`bcm2712`) | 1–4 Cortex-A76 (`MPIDR.Aff1` = core, CNTFRQ 54 MHz, optional EL3, the IMPDEF registers firmware writes (WS1.5)), GIC-400 with 288 SPIs, 5 priority bits and all timer/maintenance PPIs, UART10 (PL011), system timer (WS2.1), watchdog and reset status (WS2.4), RNG200 (WS2.5), VideoCore mailbox with the BCM283x property and framebuffer channels (WS2.2) and every identity tag answered (WS2.3a), complete memory map with T0 placeholders and two catch-all windows |
 | Board (`raspi5b`) | 1/2/4/8/16 GiB RAM, board revision code, serial number (`serial=`), PSCI over SMC with EL2 entry (default) or guest-owned EL3 (`secure=on`), system reset and power-off through PSCI, the watchdog and the monitor (WS3.6), a built-in device tree when no `-dtb` is given (WS3.2; `builtin-dtb=off` passes none), DTB fix-ups for unmodelled devices, `/system/linux,revision` |
-| Tests | qtest (UART IDs, GIC geometry, priority bits and security, RAM, placeholders, system timer, watchdog, mailbox, identity tags, RNG), the built-in tree validated against the Linux v6.18 bindings (`make check-dt`), bare-metal smoke guest (EL, MPIDR, CNTFRQ, PSCI CPU_ON on all cores, SYSTEM_OFF, EL3 mode), and the bare-metal suite (WS9.2, 26 tests: GIC and the Secure/Non-secure group split, every timer on every core, SGIs between all core pairs, SPI routing, PSCI, the system timer, the mailbox and identity tags, the RNG, UART receive and loopback, a watchdog reset and four system resets checked against the boot state, an ID-register dump; 1–4 cores, with the built-in tree, a `-dtb` one and none, EL2 and EL3) |
+| Tests | qtest (UART IDs, GIC geometry, priority bits and security, RAM, placeholders, system timer, watchdog, mailbox, identity tags, RNG), the built-in tree validated against the Linux v6.18 bindings (`make check-dt`), bare-metal smoke guest (EL, MPIDR, CNTFRQ, PSCI CPU_ON on all cores, SYSTEM_OFF, EL3 mode), and the bare-metal suite (WS9.2, 27 tests: GIC and the Secure/Non-secure group split, every timer on every core, SGIs between all core pairs, SPI routing, PSCI, the system timer, the mailbox and identity tags, the RNG, UART receive and loopback, a watchdog reset and four system resets checked against the boot state, an ID-register dump, the A76's IMPDEF registers; 1–4 cores, with the built-in tree, a `-dtb` one and none, EL2 and EL3) |
 | Linux | the stock Raspberry Pi OS kernel (6.18) boots on 4 CPUs to the root-fs mount, without warnings, with the firmware's `bcm2712-rpi-5-b.dtb` and on the built-in tree (1, 2 and 8 GiB) |
 
 Known provisional values, each marked in the code: 288 SPIs
@@ -331,7 +331,24 @@ differs, fix the wiring and report it to the DT maintainers.
 **Done when:** a bare-metal test takes a PMU overflow interrupt on every
 core, in QEMU and on hardware; `TODO(WS1.4)` is gone.
 
-#### WS1.5 IMPDEF system registers used by firmware (S)
+#### WS1.5 IMPDEF system registers used by firmware (done)
+*Delivered:* an upstream-first patch (`target/arm`) gives the
+`cortex-a76` CPU the IMPLEMENTATION DEFINED registers QEMU already had
+for the Neoverse N1, which derives from the A76 and has the same set at
+the same encodings: `CPUACTLR{,2,3}_EL1`, `CPUECTLR_EL1`,
+`CPUPWRCTLR_EL1`, `CPUCFR_EL1`, the `CPUPSELR/CPUPOR/CPUPMR/CPUPCR_EL3`
+patch registers, `ATCR_ELx`/`AVTCR_EL2` and the RAS `ERXPFG*_EL1`
+registers, as constants whose writes are ignored. Without them TF-A's
+`rpi5` BL31 stops in its reset handler, at the patch registers of the
+erratum 1946160 workaround. The bare-metal test `cpu/impdef-registers`
+reads the ones TF-A writes, at EL2 and at EL3, and writes the values
+back. A TF-A debug build also
+reports the status of two DynamIQ Shared Unit errata, reading the DSU's
+`CLUSTERIDR_EL1` and `CLUSTERCFR_EL1`; the DSU is not modelled (as for
+the N1, `CPUCFR_EL1.SCU` reads 1, "no SCU"), and TF-A's A76 code, unlike
+its N1 code, does not check that bit first, so the supported TF-A builds
+are release builds, like the one the Pi firmware carries.
+
 TF-A's Cortex-A76 support (`lib/cpus/aarch64/cortex_a76.S`: errata
 workarounds, the `cortex_a76_core_pwr_dwn` sequence) and U-Boot touch
 `CPUACTLR_EL1`, `CPUACTLR2_EL1`, `CPUACTLR3_EL1`, `CPUECTLR_EL1`,

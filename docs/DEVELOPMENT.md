@@ -50,8 +50,8 @@ Edit it in `qemu/`, then either
 
 ```
 scripts/qemu-tree new hw-misc-add-bcm2712-foo qemu-relative/path ...   # new patch
-scripts/qemu-tree refresh 0012-hw-arm-Add-the-Broadcom-BCM2712-SoC.patch
-scripts/qemu-tree refresh 0012-hw-arm-Add-the-Broadcom-BCM2712-SoC.patch MAINTAINERS
+scripts/qemu-tree refresh 0013-hw-arm-Add-the-Broadcom-BCM2712-SoC.patch
+scripts/qemu-tree refresh 0013-hw-arm-Add-the-Broadcom-BCM2712-SoC.patch MAINTAINERS
 ```
 
 `new` appends a patch to the series and opens git's editor for a commit
