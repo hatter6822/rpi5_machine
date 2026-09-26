@@ -20,7 +20,7 @@ EXTRA_CONFIGURE_FLAGS ?=
 OVERLAY_SRCS := $(shell cd overlay && find . -name '*.[ch]' | sed 's|^\./||')
 
 .DEFAULT_GOAL := build
-.PHONY: help setup apply unapply status configure build guest check \
+.PHONY: FORCE help setup apply unapply status configure build guest check \
         check-qtest check-smoke checkpatch run-hello clean distclean
 
 help:
@@ -43,14 +43,22 @@ setup:
 apply unapply status:
 	scripts/qemu-tree $@
 
+CONFIGURE_ARGS  := $(strip $(CONFIGURE_FLAGS) $(EXTRA_CONFIGURE_FLAGS))
+CONFIGURE_STAMP := $(BUILD_DIR)/.configure-args
+
+# Holds the arguments of the last configure and is rewritten only when they
+# change, which is what makes build.ninja out of date in that case
+$(CONFIGURE_STAMP): FORCE
+	@mkdir -p $(@D)
+	@printf '%s\n' '$(CONFIGURE_ARGS)' | cmp -s - $@ || \
+		printf '%s\n' '$(CONFIGURE_ARGS)' >$@
+
 # 'apply' is idempotent and runs before every build (order-only, so it never
 # forces a reconfigure): this keeps qemu/ in sync after 'make unapply', a
 # checkout, or new overlay files. Ninja itself re-runs meson when the glue
 # changes.
-$(BUILD_DIR)/build.ninja: | apply
-	mkdir -p $(BUILD_DIR)
-	cd $(BUILD_DIR) && $(QEMU_SRC)/configure $(CONFIGURE_FLAGS) \
-		$(EXTRA_CONFIGURE_FLAGS)
+$(BUILD_DIR)/build.ninja: $(CONFIGURE_STAMP) | apply
+	cd $(BUILD_DIR) && $(QEMU_SRC)/configure $(CONFIGURE_ARGS)
 
 configure: $(BUILD_DIR)/build.ninja
 
