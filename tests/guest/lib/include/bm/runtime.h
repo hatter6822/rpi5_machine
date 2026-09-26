@@ -36,6 +36,8 @@ struct bm_platform {
     bool pm_from_dt;
     uintptr_t mbox;             /* VideoCore mailbox */
     bool mbox_from_dt;
+    uintptr_t rng;              /* RNG200 */
+    bool rng_from_dt;
     unsigned num_cpus;          /* from the DT; BM_MAX_CPUS without one */
 };
 

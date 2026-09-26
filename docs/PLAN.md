@@ -59,15 +59,15 @@ commit (or a short series) with its own tests.
 
 ## 2. Current state
 
-Delivered so far (WS0.1–WS0.3, WS0.6, WS2.1, WS2.2, WS2.3a, WS2.4, WS3.6, WS9.2a):
+Delivered so far (WS0.1–WS0.3, WS0.6, WS2.1, WS2.2, WS2.3a, WS2.4, WS2.5, WS3.6, WS9.2a):
 
 | Area | State |
 | --- | --- |
 | Repository | pinned QEMU v11.1.1 submodule, overlay + patch series (patches may share files, like an upstream series) managed by `scripts/qemu-tree`, CI with ccache |
 | Kconfig (WS0.6) | every BCM283x device model has its own symbol, so `bcm2712` can select just the models it reuses; a `raspi5b`-only build is tested (`make check-minimal`) |
-| SoC (`bcm2712`) | 1–4 Cortex-A76 (`MPIDR.Aff1` = core, CNTFRQ 54 MHz, optional EL3), GIC-400 with 288 SPIs, 5 priority bits and all timer/maintenance PPIs, UART10 (PL011), system timer (WS2.1), watchdog and reset status (WS2.4), VideoCore mailbox with the BCM283x property and framebuffer channels (WS2.2) and every identity tag answered (WS2.3a), complete memory map with T0 placeholders and two catch-all windows |
+| SoC (`bcm2712`) | 1–4 Cortex-A76 (`MPIDR.Aff1` = core, CNTFRQ 54 MHz, optional EL3), GIC-400 with 288 SPIs, 5 priority bits and all timer/maintenance PPIs, UART10 (PL011), system timer (WS2.1), watchdog and reset status (WS2.4), RNG200 (WS2.5), VideoCore mailbox with the BCM283x property and framebuffer channels (WS2.2) and every identity tag answered (WS2.3a), complete memory map with T0 placeholders and two catch-all windows |
 | Board (`raspi5b`) | 1/2/4/8/16 GiB RAM, board revision code, serial number (`serial=`), PSCI over SMC with EL2 entry (default) or guest-owned EL3 (`secure=on`), system reset and power-off through PSCI, the watchdog and the monitor (WS3.6), DTB fix-ups for unmodelled devices, `/system/linux,revision` |
-| Tests | qtest (UART IDs, GIC geometry, priority bits and security, RAM, placeholders, system timer, watchdog, mailbox, identity tags), bare-metal smoke guest (EL, MPIDR, CNTFRQ, PSCI CPU_ON on all cores, SYSTEM_OFF, EL3 mode), bare-metal library and suite (WS9.2a: GIC, timers, system timer, PSCI/SMP, the mailbox and identity tags, a watchdog reset and four system resets checked against the boot state; 1–4 cores, with and without a DT, EL2 and EL3) |
+| Tests | qtest (UART IDs, GIC geometry, priority bits and security, RAM, placeholders, system timer, watchdog, mailbox, identity tags, RNG), bare-metal smoke guest (EL, MPIDR, CNTFRQ, PSCI CPU_ON on all cores, SYSTEM_OFF, EL3 mode), bare-metal library and suite (WS9.2a: GIC, timers, system timer, PSCI/SMP, the mailbox and identity tags, 1 KiB from the RNG, a watchdog reset and four system resets checked against the boot state; 1–4 cores, with and without a DT, EL2 and EL3) |
 | Linux | the stock Raspberry Pi OS kernel (6.18) with the firmware's `bcm2712-rpi-5-b.dtb` boots on 4 CPUs to the root-fs mount, without warnings |
 
 Known provisional values, each marked in the code: 288 SPIs
@@ -139,7 +139,7 @@ immediately exercised by the next:
 | 5 | WS3.6 reset semantics (done) | makes the watchdog and PSCI `SYSTEM_RESET` trustworthy |
 | 6 | WS2.2 mailbox (done) | the address-translation design decision, made once |
 | 7 | WS2.3a property identity tags (done) | first consumer of the mailbox; lets the `firmware` DT node be enabled |
-| 8 | WS2.5 RNG200 | small, standalone, upstreamable |
+| 8 | WS2.5 RNG200 (done) | small, standalone, upstreamable |
 | 9 | WS3.2 built-in device tree | microkernels get a DT without `-dtb`; forces the memory map to be the single source of truth |
 | 10 | WS9.2b full bare-metal suite | M1 exit test |
 | 11 | WS0.5 series export | prepares the first upstream submission |
@@ -529,7 +529,30 @@ registers (`PM_GRAFX`, `PM_IMAGE`, the ASB bridges) are T1 storage.
 expire and observes the boot counter incremented and `HADWRH_SET`; Linux
 `reboot` and `poweroff` work through `bcm2835_wdt`.
 
-#### WS2.5 RNG200 (S)
+#### WS2.5 RNG200 (done)
+*Delivered:* a new model, `bcm2711-rng200` (`hw/misc/bcm2711_rng200.c`),
+with its Kconfig symbol, meson line and trace events as upstream-first
+patch 0008 (the SoC patch is now 0009). With no datasheet, it follows
+Linux's driver, including the BCM2711 path's spin until
+`TOTAL_BIT_COUNT` passes 16, which has no timeout, so the node could not
+stay enabled without a model. The generator is infinitely fast: while it
+runs, the 16-word FIFO is full, each word read is replaced at once, and
+the bit count advances by the bits that took, starting with the warm-up
+bits the guest asked to discard (`TOTAL_BIT_COUNT_THRESHOLD`). Start-up
+and crossing the threshold raise `STARTUP_TRANSITIONS_MET` and
+`TOTAL_BITS_COUNT` (write-one-to-clear); either soft reset empties the
+FIFO and restarts the count; stopped, the FIFO drains. It has an
+interrupt output (`INT_STATUS & INT_ENABLE`) for the Pi 4, whose node
+names SPI 125; the Pi 5 node has none, so it stays unconnected. Data
+comes from `qemu_guest_getrandom_nofail()`, so `-seed` reproduces it.
+qtests cover the stopped state, start-up, the counts and status, the
+drain, both soft resets, system reset and `-seed`; the bare-metal suite
+draws 1 KiB (`rng/draw`) and runs Linux's recovery sequence
+(`rng/soft-reset`), and `reset/system-reset` hashes the RNG. Linux
+registers the hwrng and seeds the CRNG from it ("crng init done" follows
+at once). Wiring it into `raspi4b` is left to the upstream series, as a
+follow-up patch once this one is accepted.
+
 `brcm,bcm2711-rng200` at `0x10_7d20_8000`, from Linux `iproc-rng200.c`:
 `RNG_CTRL` `0x00` (bit 0 `RBGEN` enable, mask `0x1fff`), `RNG_SOFT_RESET`
 `0x04`, `RBG_SOFT_RESET` `0x08`, `RNG_INT_STATUS` `0x18` (bits for

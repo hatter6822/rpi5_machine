@@ -245,6 +245,7 @@ static void bcm2712_init(Object *obj)
     object_initialize_child(obj, "systimer", &s->systimer,
                             TYPE_BCM2835_SYSTIMER);
     object_initialize_child(obj, "pm", &s->pm, TYPE_BCM2835_POWERMGT);
+    object_initialize_child(obj, "rng", &s->rng, TYPE_BCM2711_RNG200);
 
     memory_region_init(&s->mbox_chans, obj, "bcm2712.mbox-channels",
                        MBOX_CHAN_COUNT << MBOX_AS_CHAN_SHIFT);
@@ -307,6 +308,21 @@ static bool bcm2712_realize_pm(BCM2712State *s, Error **errp)
         return false;
     }
     bcm2712_map(sbd, 0, BCM2712_PM);
+    return true;
+}
+
+/*
+ * The RNG200, as on BCM2711. The device tree gives it no interrupt, so
+ * its output stays unconnected.
+ */
+static bool bcm2712_realize_rng(BCM2712State *s, Error **errp)
+{
+    SysBusDevice *sbd = SYS_BUS_DEVICE(&s->rng);
+
+    if (!sysbus_realize(sbd, errp)) {
+        return false;
+    }
+    bcm2712_map(sbd, 0, BCM2712_RNG);
     return true;
 }
 
@@ -398,7 +414,7 @@ static void bcm2712_realize(DeviceState *dev, Error **errp)
 
     if (!bcm2712_realize_cpus(s, errp) || !bcm2712_realize_gic(s, errp) ||
         !bcm2712_realize_systimer(s, errp) || !bcm2712_realize_pm(s, errp) ||
-        !bcm2712_realize_vc(s, errp)) {
+        !bcm2712_realize_rng(s, errp) || !bcm2712_realize_vc(s, errp)) {
         return;
     }
 

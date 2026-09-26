@@ -13,6 +13,7 @@
 #include "hw/char/pl011.h"
 #include "hw/display/bcm2835_fb.h"
 #include "hw/intc/arm_gic.h"
+#include "hw/misc/bcm2711_rng200.h"
 #include "hw/misc/bcm2835_mbox.h"
 #include "hw/misc/bcm2835_powermgt.h"
 #include "hw/misc/bcm2835_property.h"
@@ -158,6 +159,7 @@ struct BCM2712State {
     GICState gic;
     BCM2835SystemTimerState systimer;
     BCM2835PowerMgtState pm;
+    BCM2711Rng200State rng;
     PL011State uart10;
 
     /* The VideoCore firmware interface, behind the mailbox */

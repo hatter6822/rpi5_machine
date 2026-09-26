@@ -85,7 +85,6 @@ static const char *const raspi5b_unmodelled_compatibles[] = {
     "brcm,bcm2712-pcie",
     "brcm,bcm2712-mip",
     "brcm,bcm2712-sdhci",
-    "brcm,bcm2711-rng200",
     "brcm,bcm7271-uart",
     "brcm,brcmstb-i2c",
     "brcm,2712-v3d",

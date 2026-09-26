@@ -20,6 +20,7 @@
 #define PM_BASE                 0x107d200000ULL
 #define SOC_WINDOW_BASE         0x107c000000ULL
 #define HVS_BASE                0x107c580000ULL
+#define RNG_BASE                0x107d208000ULL
 
 #define PL011_PERIPHID0         0xfe0
 #define PL011_PERIPHID1         0xfe4
@@ -707,6 +708,155 @@ static void test_mbox_command_line(void)
     unlink(kernel);
 }
 
+/* RNG200, registers as in Linux drivers/char/hw_random/iproc-rng200.c */
+#define RNG_CTRL                0x00
+#define RNG_SOFT_RESET          0x04
+#define RBG_SOFT_RESET          0x08
+#define RNG_TOTAL_BIT_COUNT     0x0c
+#define RNG_TOTAL_BIT_COUNT_THRESHOLD 0x10
+#define RNG_INT_STATUS          0x18
+#define RNG_INT_STATUS_TOTAL_BITS_COUNT         BIT(0)
+#define RNG_INT_STATUS_STARTUP_TRANSITIONS_MET  BIT(17)
+#define RNG_INT_ENABLE          0x1c
+#define RNG_FIFO_DATA           0x20
+#define RNG_FIFO_COUNT          0x24
+#define RNG_FIFO_DEPTH          16
+#define RNG_WARMUP_BITS         0x40000
+
+static uint32_t rng_readl(QTestState *qts, uint32_t reg)
+{
+    return qtest_readl(qts, RNG_BASE + reg);
+}
+
+static void rng_writel(QTestState *qts, uint32_t reg, uint32_t val)
+{
+    qtest_writel(qts, RNG_BASE + reg, val);
+}
+
+/* Linux's bcm2711_rng200_init() */
+static void rng_start(QTestState *qts)
+{
+    rng_writel(qts, RNG_TOTAL_BIT_COUNT_THRESHOLD, RNG_WARMUP_BITS);
+    rng_writel(qts, RNG_FIFO_COUNT, 2 << 8);
+    rng_writel(qts, RNG_CTRL, (3 << 13) | 0x1fff);
+}
+
+/* Stopped at reset: nothing counted, nothing to read */
+static void test_rng_stopped(void)
+{
+    QTestState *qts = qtest_init("-machine raspi5b");
+
+    g_assert_cmphex(rng_readl(qts, RNG_CTRL), ==, 0);
+    g_assert_cmphex(rng_readl(qts, RNG_TOTAL_BIT_COUNT), ==, 0);
+    g_assert_cmphex(rng_readl(qts, RNG_INT_STATUS), ==, 0);
+    g_assert_cmphex(rng_readl(qts, RNG_FIFO_COUNT), ==, 0);
+    g_assert_cmphex(rng_readl(qts, RNG_FIFO_DATA), ==, 0);
+
+    /* The bit count is read-only */
+    rng_writel(qts, RNG_TOTAL_BIT_COUNT, 1234);
+    g_assert_cmphex(rng_readl(qts, RNG_TOTAL_BIT_COUNT), ==, 0);
+
+    qtest_quit(qts);
+}
+
+/*
+ * Once started the FIFO is full and stays full; the count includes the
+ * warm-up bits and every refill, and start-up raises both status bits,
+ * which are write-one-to-clear.
+ */
+static void test_rng_start(void)
+{
+    QTestState *qts = qtest_init("-machine raspi5b");
+    uint32_t a, b;
+
+    rng_start(qts);
+    g_assert_cmphex(rng_readl(qts, RNG_FIFO_COUNT), ==,
+                    (2 << 8) | RNG_FIFO_DEPTH);
+    g_assert_cmpuint(rng_readl(qts, RNG_TOTAL_BIT_COUNT), ==,
+                     RNG_WARMUP_BITS + RNG_FIFO_DEPTH * 32);
+    g_assert_cmphex(rng_readl(qts, RNG_INT_STATUS), ==,
+                    RNG_INT_STATUS_TOTAL_BITS_COUNT |
+                    RNG_INT_STATUS_STARTUP_TRANSITIONS_MET);
+
+    a = rng_readl(qts, RNG_FIFO_DATA);
+    b = rng_readl(qts, RNG_FIFO_DATA);
+    g_assert_cmphex(a, !=, b);
+    g_assert_cmphex(rng_readl(qts, RNG_FIFO_COUNT) & 0xff, ==,
+                    RNG_FIFO_DEPTH);
+    g_assert_cmpuint(rng_readl(qts, RNG_TOTAL_BIT_COUNT), ==,
+                     RNG_WARMUP_BITS + (RNG_FIFO_DEPTH + 2) * 32);
+
+    rng_writel(qts, RNG_INT_STATUS, RNG_INT_STATUS_TOTAL_BITS_COUNT);
+    g_assert_cmphex(rng_readl(qts, RNG_INT_STATUS), ==,
+                    RNG_INT_STATUS_STARTUP_TRANSITIONS_MET);
+
+    /* Stopped, the FIFO drains and is not refilled */
+    rng_writel(qts, RNG_CTRL, 0);
+    for (int i = RNG_FIFO_DEPTH; i > 0; i--) {
+        g_assert_cmphex(rng_readl(qts, RNG_FIFO_COUNT) & 0xff, ==, i);
+        rng_readl(qts, RNG_FIFO_DATA);
+    }
+    g_assert_cmphex(rng_readl(qts, RNG_FIFO_COUNT) & 0xff, ==, 0);
+
+    qtest_quit(qts);
+}
+
+/* Either soft reset empties the FIFO and restarts the count */
+static void test_rng_soft_reset(void)
+{
+    static const uint32_t regs[] = { RNG_SOFT_RESET, RBG_SOFT_RESET };
+    QTestState *qts = qtest_init("-machine raspi5b");
+
+    rng_start(qts);
+    for (int i = 0; i < ARRAY_SIZE(regs); i++) {
+        rng_writel(qts, regs[i], 1);
+        g_assert_cmphex(rng_readl(qts, regs[i]), ==, 1);
+        g_assert_cmphex(rng_readl(qts, RNG_FIFO_COUNT) & 0xff, ==, 0);
+        g_assert_cmphex(rng_readl(qts, RNG_TOTAL_BIT_COUNT), ==, 0);
+        rng_writel(qts, regs[i], 0);
+        g_assert_cmphex(rng_readl(qts, RNG_FIFO_COUNT) & 0xff, ==,
+                        RNG_FIFO_DEPTH);
+        g_assert_cmpuint(rng_readl(qts, RNG_TOTAL_BIT_COUNT), ==,
+                         RNG_WARMUP_BITS + RNG_FIFO_DEPTH * 32);
+    }
+
+    qtest_quit(qts);
+}
+
+/* A system reset stops the generator */
+static void test_rng_reset(void)
+{
+    QTestState *qts = qtest_init("-machine raspi5b");
+
+    rng_start(qts);
+    rng_writel(qts, RNG_INT_ENABLE, 0x21);
+    qtest_system_reset(qts);
+    for (uint32_t reg = RNG_CTRL; reg <= RNG_FIFO_COUNT; reg += 4) {
+        if (reg != 0x14) {
+            g_assert_cmphex(rng_readl(qts, reg), ==, 0);
+        }
+    }
+
+    qtest_quit(qts);
+}
+
+/* With -seed, the data is the same on every run */
+static void test_rng_seed(void)
+{
+    uint32_t words[2][4];
+
+    for (int run = 0; run < 2; run++) {
+        QTestState *qts = qtest_init("-machine raspi5b -seed 42");
+
+        rng_start(qts);
+        for (int i = 0; i < ARRAY_SIZE(words[run]); i++) {
+            words[run][i] = rng_readl(qts, RNG_FIFO_DATA);
+        }
+        qtest_quit(qts);
+    }
+    g_assert_cmpmem(words[0], sizeof(words[0]), words[1], sizeof(words[1]));
+}
+
 static void test_unimplemented_regions(void)
 {
     QTestState *qts = qtest_init("-machine raspi5b");
@@ -737,6 +887,11 @@ int main(int argc, char **argv)
     qtest_add_func("/raspi5b/mbox/memory-split", test_mbox_memory_split);
     qtest_add_func("/raspi5b/mbox/identity", test_mbox_identity);
     qtest_add_func("/raspi5b/mbox/command-line", test_mbox_command_line);
+    qtest_add_func("/raspi5b/rng/stopped", test_rng_stopped);
+    qtest_add_func("/raspi5b/rng/start", test_rng_start);
+    qtest_add_func("/raspi5b/rng/soft-reset", test_rng_soft_reset);
+    qtest_add_func("/raspi5b/rng/reset", test_rng_reset);
+    qtest_add_func("/raspi5b/rng/seed", test_rng_seed);
     qtest_add_func("/raspi5b/pm/registers", test_pm_registers);
     qtest_add_func("/raspi5b/pm/watchdog-countdown",
                    test_pm_watchdog_countdown);

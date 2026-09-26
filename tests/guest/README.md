@@ -6,7 +6,7 @@ the repository root) and booted by the smoke tests in `tests/smoke/`.
 
 | Directory | Contents |
 | --- | --- |
-| `lib/` | the runtime every guest links: entry, exception vectors, console, device-tree walker, GIC-400 driver, PSCI, watchdog and reset status (PM), firmware mailbox, generic timer helpers, test runner |
+| `lib/` | the runtime every guest links: entry, exception vectors, console, device-tree walker, GIC-400 driver, PSCI, watchdog and reset status (PM), firmware mailbox, RNG200, generic timer helpers, test runner |
 | `hello/` | the original smoke guest: boot EL, MPIDR, CNTFRQ, PSCI `CPU_ON` of every core, `SYSTEM_OFF` |
 | `suite/` | the bare-metal test suite (WS9.2), one file per area |
 
@@ -30,8 +30,9 @@ and then at physical address 0 (where QEMU places a `-dtb` blob for an ELF
 image). With a tree, the console (`/chosen/stdout-path`), the GIC
 (`arm,gic-400`), the system timer (`brcm,bcm2835-system-timer`), the
 power management block (`brcm,bcm2712-pm`), the mailbox
-(`brcm,bcm2835-mbox`) and the number of usable cores come from it, with `reg` translated through every parent's `ranges`;
-without one, built-in raspi5b addresses are used.
+(`brcm,bcm2835-mbox`), the RNG (`brcm,bcm2711-rng200`) and the number of
+usable cores come from it, with `reg` translated through every parent's
+`ranges`; without one, built-in raspi5b addresses are used.
 Secondary cores are started with `bm_start_core()` (PSCI `CPU_ON`) and turn
 themselves off when their function returns.
 
@@ -96,13 +97,13 @@ capture from hardware can be compared with QEMU's:
 ```
 # raspi5b bare-metal tests
 # EL2, 4 cores, device tree at 0x0 (177480 bytes)
-# pm 0x107d200000 (dt), boot 1, reset status 0x1000, mbox 0x107c013880 (dt)
+# pm 0x107d200000 (dt), boot 1, reset status 0x1000, mbox 0x107c013880 (dt), rng 0x107d208000 (dt)
 # uart 0x107d001000 (dt), gic 0x107fff9000/0x107fffa000 (dt), systimer 0x107c003000 intid 96-99 (dt)
-# 16 tests
+# 18 tests
 PASS: gic/geometry
 # raspi5b bare-metal tests
 # EL2, 4 cores, device tree at 0x0 (177480 bytes)
-# pm 0x107d200000 (dt), boot 2, reset status 0x464, mbox 0x107c013880 (dt)
+# pm 0x107d200000 (dt), boot 2, reset status 0x464, mbox 0x107c013880 (dt), rng 0x107d208000 (dt)
 # uart 0x107d001000 (dt), gic 0x107fff9000/0x107fffa000 (dt), systimer 0x107c003000 intid 96-99 (dt)
 # boot 2: pm/watchdog-reset reset the machine, running it again
 PASS: pm/watchdog-reset

@@ -145,10 +145,12 @@ static void describe_platform(void)
         bm_test_note("EL%u, %u cores, no device tree", current_el(),
                      p->num_cpus);
     }
-    bm_test_note("pm 0x%lx (%s), boot %u, reset status 0x%x, mbox 0x%lx (%s)",
-                 (uint64_t)p->pm, source(p->pm_from_dt), bm_boot_count(),
-                 pm_read(PM_RSTS), (uint64_t)p->mbox,
-                 source(p->mbox_from_dt));
+    bm_test_note("pm 0x%lx (%s), boot %u, reset status 0x%x, "
+                 "mbox 0x%lx (%s), rng 0x%lx (%s)",
+                 (uint64_t)p->pm, source(p->pm_from_dt),
+                 bm_boot_count(), pm_read(PM_RSTS), (uint64_t)p->mbox,
+                 source(p->mbox_from_dt), (uint64_t)p->rng,
+                 source(p->rng_from_dt));
     bm_test_note("uart 0x%lx (%s), gic 0x%lx/0x%lx (%s), systimer 0x%lx "
                  "intid %u-%u (%s)", (uint64_t)p->uart,
                  source(p->uart_from_dt), (uint64_t)p->gicd,

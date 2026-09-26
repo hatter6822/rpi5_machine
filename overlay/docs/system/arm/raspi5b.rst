@@ -28,6 +28,8 @@ Implemented devices
   ``0xc000_0000`` (and at ``0x0``); requests elsewhere get no answer, as
   on hardware. The VideoCore keeps the top 4 MiB of that GiB, which the
   device tree memory node leaves out
+* RNG200 random number generator at ``0x10_7d20_8000``, fed by QEMU's
+  random source (reproducible with ``-seed``)
 * UART10: the PL011 debug UART at ``0x10_7d00_1000``, connected to the
   first ``-serial`` backend
 * 1, 2, 4, 8 or 16 GiB of RAM at physical address 0 (``-m``; default 2 GiB)
@@ -42,7 +44,7 @@ Missing devices
 * Firmware property tags specific to the Pi 5 (clocks, power, RTC, GPIO
   expander); the BCM283x set is answered
 * SD/eMMC controllers, PCIe root complexes and the RP1 south bridge
-* GPIO, pin control, the Broadcom L2 interrupt controllers, RNG
+* GPIO, pin control, the Broadcom L2 interrupt controllers
 * Power domains (only V3D's is driven by Linux on this SoC)
 * Display (HVS, HDMI), V3D and ISP
 

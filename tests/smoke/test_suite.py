@@ -95,6 +95,7 @@ class SuiteTest(unittest.TestCase):
                       " (dt), systimer 0x107c003000 intid 96-99 (dt)", out)
         self.assertIn("# pm 0x107d200000 (dt)", out)
         self.assertIn("mbox 0x107c013880 (dt)", out)
+        self.assertIn("rng 0x107d208000 (dt)", out)
 
     def test_resets(self):
         """The resetting tests really reset the machine, and only once each

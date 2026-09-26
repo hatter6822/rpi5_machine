@@ -15,6 +15,7 @@
 #include <bm/io.h>
 #include <bm/pm.h>
 #include <bm/psci.h>
+#include <bm/rng.h>
 #include <bm/runtime.h>
 #include <bm/test.h>
 #include <bm/timer.h>
@@ -53,12 +54,12 @@
 #define MBOX_CONFIG             0x1c
 
 enum block {
-    GIC_DIST, GIC_CPU, SYSTIMER, PM, MBOX, UART, CPU, NUM_BLOCKS
+    GIC_DIST, GIC_CPU, SYSTIMER, PM, RNG, MBOX, UART, CPU, NUM_BLOCKS
 };
 
 static const char *const block_names[NUM_BLOCKS] = {
-    "GIC distributor", "GIC CPU interface", "system timer", "PM", "mailbox",
-    "UART", "CPU",
+    "GIC distributor", "GIC CPU interface", "system timer", "PM", "RNG",
+    "mailbox", "UART", "CPU",
 };
 
 static uint64_t early[NUM_BLOCKS];
@@ -110,6 +111,12 @@ static void snapshot(uint64_t out[NUM_BLOCKS])
     hash(&out[PM], pm_read(PM_RSTC));
     hash(&out[PM], pm_read(PM_WDOG));
 
+    /* The bit and FIFO counts run free while the generator does */
+    hash(&out[RNG], rng_read(RNG_CTRL));
+    hash(&out[RNG], rng_read(RNG_TOTAL_BIT_COUNT_THRESHOLD));
+    hash(&out[RNG], rng_read(RNG_INT_ENABLE));
+    hash(&out[RNG], rng_read(RNG_FIFO_COUNT) & ~RNG_FIFO_COUNT_MASK);
+
     hash_regs(&out[MBOX], bm_plat.mbox, MBOX_STATUS, MBOX_CONFIG);
 
     hash_regs(&out[UART], bm_plat.uart, UART_IBRD, UART_IMSC);
@@ -139,6 +146,8 @@ static void dirty(void)
 
     mmio_write32(bm_plat.systimer + ST_C(2), 0xdeadbeef);
     pm_write(PM_WDOG, 0x12345);
+    rng_write(RNG_INT_ENABLE, RNG_INT_STATUS_NIST_FAIL);
+    rng_write(RNG_TOTAL_BIT_COUNT_THRESHOLD, 0x1234);
     mmio_write32(bm_plat.mbox + MBOX_CONFIG, BIT(0));
     mmio_write32(bm_plat.uart + UART_IMSC, BIT(4));
 
@@ -161,6 +170,8 @@ static void clean(void)
     mmio_write32(bm_plat.uart + UART_IMSC, 0);
     mmio_write32(bm_plat.mbox + MBOX_CONFIG, 0);
     pm_write(PM_WDOG, 0);
+    rng_write(RNG_INT_ENABLE, 0);
+    rng_write(RNG_TOTAL_BIT_COUNT_THRESHOLD, 0);
     write_sysreg(cntp_ctl_el0, 0);
     write_sysreg(cntv_ctl_el0, 0);
     isb();

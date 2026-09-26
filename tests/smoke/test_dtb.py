@@ -46,6 +46,11 @@ MINIMAL_DTS = """
         reg = <0x10 0x7d200000 0x0 0x308>;
     };
 
+    rng@107d208000 {
+        compatible = "brcm,bcm2711-rng200";
+        reg = <0x10 0x7d208000 0x0 0x28>;
+    };
+
     v3d@1002000000 {
         compatible = "brcm,2712-v3d";
         reg = <0x10 0x02000000 0x0 0x4000>;
@@ -95,6 +100,7 @@ class DtbFixupTest(unittest.TestCase):
         self.assertIsNone(fdtget(dtb, "/timer@107c003000", "status"))
         self.assertIsNone(fdtget(dtb, "/watchdog@107d200000", "status"))
         self.assertIsNone(fdtget(dtb, "/mailbox@107c013880", "status"))
+        self.assertIsNone(fdtget(dtb, "/rng@107d208000", "status"))
 
     def test_memory_leaves_out_videocore(self):
         """The top 4 MiB of the first GiB belong to the VideoCore."""

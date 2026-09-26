@@ -74,6 +74,11 @@
             system-power-controller;
         };
 
+        rng@7d208000 {
+            compatible = "brcm,bcm2711-rng200";
+            reg = <0x7d208000 0x28>;
+        };
+
         gicv2: interrupt-controller@7fff9000 {
             compatible = "arm,gic-400";
             reg = <0x7fff9000 0x1000>,
