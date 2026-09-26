@@ -1,0 +1,48 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
+name: CI
+
+on:
+  push:
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      CCACHE_MAXSIZE: 1G
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+          fetch-depth: 1
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            ccache clang lld ninja-build python3-venv shellcheck \
+            libglib2.0-dev libpixman-1-dev libfdt-dev
+
+      - name: Restore compiler cache
+        uses: actions/cache@v4
+        with:
+          path: .ccache
+          key: ccache-${{ runner.os }}-${{ hashFiles('.gitmodules', 'patches/**', 'overlay/**') }}
+          restore-keys: ccache-${{ runner.os }}-
+
+      - name: Lint
+        run: |
+          shellcheck scripts/qemu-tree
+          make checkpatch
+
+      - name: Build
+        run: make build
+
+      - name: Test
+        run: make check

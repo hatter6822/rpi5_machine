@@ -1,0 +1,238 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-2.0-or-later
+#
+# Manage the pinned QEMU work tree: apply/remove this repository's patch
+# series and overlay, report their state, and create or refresh patches.
+#
+# overlay/  New files, laid out as in the QEMU tree. They are symlinked into
+#           qemu/ so that edits made from either side land in this repository.
+# patches/  Changes to existing QEMU files, as a git format-patch series
+#           applied in file name order. Patches must touch disjoint files so
+#           that each can be refreshed independently.
+
+set -euo pipefail
+
+ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+QEMU="$ROOT/qemu"
+OVERLAY="$ROOT/overlay"
+PATCHES="$ROOT/patches"
+
+die() { printf 'qemu-tree: %s\n' "$*" >&2; exit 1; }
+info() { printf '  %-8s %s\n' "$1" "$2"; }
+qgit() { git -C "$QEMU" "$@"; }
+
+usage() {
+    cat <<EOF
+usage: scripts/qemu-tree <command> [args]
+
+  apply                 apply patches/ and link overlay/ into qemu/
+  unapply               undo 'apply', restoring the pristine pinned tree
+  status                show patch, overlay and unmanaged-change state
+  new <slug> <file>...  turn current edits of existing QEMU files into a
+                        new patch (commit message opens in \$EDITOR)
+  refresh <patch>       regenerate <patch> from the qemu/ work tree
+EOF
+}
+
+patch_list() {
+    find "$PATCHES" -maxdepth 1 -name '*.patch' | LC_ALL=C sort
+}
+
+patch_files() {
+    sed -n 's|^diff --git a/\(.*\) b/.*$|\1|p' "$1"
+}
+
+overlay_list() {
+    (cd "$OVERLAY" && find . -type f | sed 's|^\./||' | LC_ALL=C sort)
+}
+
+# Relative link target from qemu/<rel> to overlay/<rel>
+link_target() {
+    realpath -m --relative-to="$(dirname "$QEMU/$1")" "$OVERLAY/$1"
+}
+
+is_applied() {
+    qgit apply --reverse --check "$1" >/dev/null 2>&1
+}
+
+check_tree() {
+    [ -e "$QEMU/.git" ] ||
+        die "qemu/ is not checked out; run 'git submodule update --init qemu'"
+
+    local pinned head
+    pinned=$(git -C "$ROOT" ls-tree HEAD qemu | awk '{ print $3 }')
+    head=$(qgit rev-parse HEAD)
+    if [ -n "$pinned" ] && [ "$pinned" != "$head" ]; then
+        printf 'qemu-tree: warning: qemu/ is at %s, pinned commit is %s\n' \
+            "${head:0:12}" "${pinned:0:12}" >&2
+    fi
+}
+
+cmd_apply() {
+    check_tree
+
+    local p rel dst
+    while IFS= read -r p; do
+        if is_applied "$p"; then
+            info applied "$(basename "$p")"
+        elif qgit apply --check "$p" 2>/dev/null; then
+            qgit apply --whitespace=error-all "$p"
+            info apply "$(basename "$p")"
+        else
+            die "$(basename "$p") does not apply; see 'git -C qemu apply -v $p'"
+        fi
+    done < <(patch_list)
+
+    while IFS= read -r rel; do
+        dst="$QEMU/$rel"
+        if [ -L "$dst" ]; then
+            [ "$(readlink "$dst")" = "$(link_target "$rel")" ] && continue
+        elif [ -e "$dst" ]; then
+            die "overlay/$rel shadows an upstream file; change it with a patch"
+        fi
+        mkdir -p "$(dirname "$dst")"
+        ln -sfn "$(link_target "$rel")" "$dst"
+        info link "$rel"
+    done < <(overlay_list)
+}
+
+# Symlinks in qemu/ that resolve into overlay/, including stale ones
+overlay_links() {
+    local link
+    while IFS= read -r -d '' link; do
+        case "$(realpath -m "$link")" in
+        "$OVERLAY"/*) printf '%s\n' "${link#"$QEMU"/}" ;;
+        esac
+    done < <(find "$QEMU" -path "$QEMU/.git" -prune -o -type l -print0)
+}
+
+cmd_unapply() {
+    check_tree
+
+    local rel p
+    while IFS= read -r rel; do
+        rm -f "$QEMU/$rel"
+        info unlink "$rel"
+    done < <(overlay_links)
+
+    while IFS= read -r p; do
+        if is_applied "$p"; then
+            qgit apply --reverse "$p"
+            info revert "$(basename "$p")"
+        fi
+    done < <(patch_list | LC_ALL=C sort -r)
+}
+
+cmd_status() {
+    check_tree
+
+    local p rel managed file
+    managed=$(mktemp)
+    trap 'rm -f "$managed"' RETURN
+
+    echo "patches:"
+    while IFS= read -r p; do
+        if is_applied "$p"; then
+            info applied "$(basename "$p")"
+        else
+            info pending "$(basename "$p")"
+        fi
+        patch_files "$p" >>"$managed"
+    done < <(patch_list)
+
+    echo "overlay:"
+    while IFS= read -r rel; do
+        if [ -L "$QEMU/$rel" ]; then
+            info linked "$rel"
+        else
+            info missing "$rel"
+        fi
+        echo "$rel" >>"$managed"
+    done < <(overlay_list)
+    while IFS= read -r rel; do
+        [ -e "$OVERLAY/$rel" ] || info stale "$rel"
+    done < <(overlay_links)
+
+    local dups
+    dups=$(LC_ALL=C sort "$managed" | uniq -d)
+    [ -z "$dups" ] || printf 'warning: files touched by several patches:\n%s\n' "$dups"
+
+    echo "unmanaged changes in qemu/:"
+    qgit status --porcelain | cut -c4- | while IFS= read -r file; do
+        grep -qxF "$file" "$managed" || info changed "$file"
+    done
+}
+
+cmd_new() {
+    [ $# -ge 2 ] || die "usage: new <slug> <file>..."
+    check_tree
+
+    local slug=$1 last num out
+    shift
+    last=$(patch_list | tail -n1)
+    last=$(basename "${last:-0000}")
+    num=$(printf '%04d' $((10#${last:0:4} + 1)))
+    out="$PATCHES/$num-$slug.patch"
+
+    local msg
+    msg=$(mktemp)
+    trap 'rm -f "$msg"' RETURN
+    printf 'subsystem: Summary in the imperative mood\n\nWhy the change is needed.\n' >"$msg"
+    "${EDITOR:-vi}" "$msg"
+
+    write_patch "$out" "$msg" "$(git -C "$ROOT" var GIT_AUTHOR_IDENT |
+        sed 's/> .*/>/')" "$@"
+    info new "$(basename "$out")"
+}
+
+cmd_refresh() {
+    [ $# -eq 1 ] || die "usage: refresh <patch>"
+    local p=$1
+    [ -f "$p" ] || p="$PATCHES/$1"
+    [ -f "$p" ] || die "no such patch: $1"
+    check_tree
+
+    local msg
+    msg=$(mktemp)
+    trap 'rm -f "$msg"' RETURN
+    # Commit message: after the Subject header, up to the '---' separator
+    sed -n '/^Subject: /,/^---$/p' "$p" | sed -e '$d' \
+        -e '1s/^Subject: \(\[PATCH[^]]*\] \)\{0,1\}//' >"$msg"
+
+    local author date
+    author=$(sed -n '0,/^From: /s/^From: //p' "$p")
+    date=$(sed -n '0,/^Date: /s/^Date: //p' "$p")
+    local -a files
+    mapfile -t files < <(patch_files "$p")
+    GIT_AUTHOR_DATE="$date" write_patch "$p" "$msg" "$author" "${files[@]}"
+    info refresh "$(basename "$p")"
+}
+
+# write_patch <out> <message-file> <author> <file>...: format the current
+# qemu/ diff of <file>... as a single git format-patch file.
+write_patch() {
+    local out=$1 msg=$2 author=$3
+    shift 3
+    [ -n "$(qgit diff --name-only -- "$@")" ] || die "no changes in: $*"
+
+    local tmp
+    tmp=$(mktemp -d)
+    # Commit into a throw-away worktree so qemu/ itself is left untouched
+    qgit worktree add -q --detach "$tmp/wt" HEAD
+    qgit diff --binary -- "$@" | git -C "$tmp/wt" apply --index
+    git -C "$tmp/wt" -c user.name=qemu-tree -c user.email=qemu-tree@localhost \
+        commit -q --author="$author" -F "$msg"
+    git -C "$tmp/wt" format-patch -q -1 --no-signature --zero-commit -N \
+        --stdout >"$out"
+    qgit worktree remove --force "$tmp/wt"
+    rm -rf "$tmp"
+}
+
+[ $# -ge 1 ] || { usage; exit 1; }
+cmd=$1
+shift
+case "$cmd" in
+apply | unapply | status | new | refresh) "cmd_$cmd" "$@" ;;
+-h | --help | help) usage ;;
+*) usage >&2; exit 1 ;;
+esac

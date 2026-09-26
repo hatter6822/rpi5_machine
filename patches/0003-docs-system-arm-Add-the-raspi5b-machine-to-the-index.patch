@@ -1,0 +1,23 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: A7om <hatter6822@gmail.com>
+Date: Sat, 26 Sep 2026 00:00:00 +0000
+Subject: [PATCH] docs/system/arm: Add the raspi5b machine to the index
+
+List the Raspberry Pi 5 documentation page next to the other
+Raspberry Pi boards.
+---
+ docs/system/target-arm.rst | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/docs/system/target-arm.rst b/docs/system/target-arm.rst
+index e344924..8974100 100644
+--- a/docs/system/target-arm.rst
++++ b/docs/system/target-arm.rst
+@@ -97,6 +97,7 @@ Board-specific documentation
+    arm/imx8m
+    arm/orangepi
+    arm/raspi
++   arm/raspi5b
+    arm/collie
+    arm/sx1
+    arm/stellaris
