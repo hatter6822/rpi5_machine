@@ -30,7 +30,8 @@ The first milestone targets bare-metal and microkernel bring-up.
 | System reset (PSCI, watchdog, monitor) and power-off | done |
 | Firmware boot contract: EL2 entry, PSCI over SMC (`secure=off`); guest-owned EL3 (`secure=on`) | done |
 | Complete BCM2712 memory map, unmodelled blocks logged with `-d unimp` | done |
-| Linux: stock Raspberry Pi OS kernel boots to the root-fs mount with `bcm2712-rpi-5-b.dtb` | smoke-tested |
+| Built-in device tree when no `-dtb` is given, validated against the Linux bindings | done |
+| Linux: stock Raspberry Pi OS kernel boots to the root-fs mount, on the built-in device tree or `bcm2712-rpi-5-b.dtb` | smoke-tested |
 | VideoCore mailbox and firmware property channel: BCM283x tag set, board and firmware identity | done; Pi 5 clock, power, RTC and GPIO tags in progress |
 | SD, PCIe, RP1, GPIO, … | see [docs/PLAN.md](docs/PLAN.md) |
 
@@ -74,6 +75,7 @@ $ sudo apt install build-essential python3-venv ninja-build \
 | `make build` | configure (aarch64-softmmu only) and build `build/qemu-system-aarch64` |
 | `make check` | run the `raspi5b` qtest and the bare-metal smoke tests |
 | `make check-minimal` | build a QEMU whose only board is `raspi5b` (in `build-minimal/`) and run the same tests on it |
+| `make check-dt` | validate the built-in device tree against the Linux bindings (needs `pip install dtschema` and network access the first time) |
 | `make checkpatch` | run QEMU's `checkpatch.pl` over our sources and patches |
 | `make status` | show overlay/patch state and any unmanaged edits in `qemu/` |
 | `make unapply` | return `qemu/` to the pristine pinned commit |
@@ -81,7 +83,8 @@ $ sudo apt install build-essential python3-venv ninja-build \
 ## Using the machine
 
 ```
-qemu-system-aarch64 -M raspi5b[,secure=on] [-smp 1-4] [-m 1G|2G|4G|8G|16G] \
+qemu-system-aarch64 -M raspi5b[,secure=on][,serial=N][,builtin-dtb=off] \
+    [-smp 1-4] [-m 1G|2G|4G|8G|16G] \
     -kernel <Image|payload.elf> [-dtb bcm2712-rpi-5-b.dtb] [-append ...]
 ```
 

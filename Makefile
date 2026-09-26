@@ -21,8 +21,8 @@ OVERLAY_SRCS := $(shell cd overlay && find . -name '*.[ch]' | sed 's|^\./||')
 
 .DEFAULT_GOAL := build
 .PHONY: FORCE help setup apply unapply status configure build guest check \
-        check-qtest check-smoke check-minimal checkpatch run-hello clean \
-        distclean
+        check-qtest check-smoke check-minimal check-dt checkpatch run-hello \
+        clean distclean
 
 help:
 	@echo 'setup        initialise the qemu submodule and apply the overlay'
@@ -34,6 +34,7 @@ help:
 	@echo 'guest        build the bare-metal test guests (clang + lld)'
 	@echo 'check        run the raspi5b qtest and the smoke tests'
 	@echo 'check-minimal build QEMU with raspi5b as its only board, run check on it'
+	@echo 'check-dt     validate the built-in device tree (needs dtschema, network)'
 	@echo 'checkpatch   run QEMU checkpatch.pl over overlay sources and patches'
 	@echo 'run-hello    boot the hello guest interactively'
 	@echo 'clean        remove guest builds; distclean also removes $$(BUILD_DIR)'
@@ -102,6 +103,30 @@ check-smoke: build guest
 		SUITE=$(GUEST_BUILD)/suite.elf \
 		$(PYTHON) -m unittest discover -s tests/smoke -v
 
+# The built-in device tree is validated against the kernel's bindings at a
+# pinned tag, fetched once (bindings only) and processed by dt-schema's
+# dt-mk-schema (pip install dtschema).
+LINUX_DT_TAG  ?= v6.18
+DT_SCHEMA_DIR ?= build-dt-schema
+DT_SCHEMA     := $(DT_SCHEMA_DIR)/linux-$(LINUX_DT_TAG).json
+
+$(DT_SCHEMA):
+	rm -rf $(DT_SCHEMA_DIR)/linux
+	git clone --quiet --depth 1 --filter=blob:none --sparse \
+		--branch $(LINUX_DT_TAG) https://github.com/torvalds/linux.git \
+		$(DT_SCHEMA_DIR)/linux
+	git -C $(DT_SCHEMA_DIR)/linux sparse-checkout set \
+		Documentation/devicetree/bindings
+	dt-mk-schema -j $(DT_SCHEMA_DIR)/linux/Documentation/devicetree/bindings \
+		> $@.tmp
+	mv $@.tmp $@
+	rm -rf $(DT_SCHEMA_DIR)/linux
+
+check-dt: build guest $(DT_SCHEMA)
+	QEMU=$(abspath $(QEMU_BIN)) GUEST=$(GUEST_BUILD)/hello.elf \
+		DT_SCHEMA=$(abspath $(DT_SCHEMA)) \
+		$(PYTHON) -m unittest discover -s tests/smoke -p test_dt_schema.py -v
+
 checkpatch:
 	@status=0; \
 	for f in $(OVERLAY_SRCS); do \
@@ -120,4 +145,4 @@ clean:
 	$(MAKE) -C $(GUEST_DIR) OUT=$(GUEST_BUILD) clean
 
 distclean: clean
-	rm -rf $(BUILD_DIR) $(MINIMAL_BUILD_DIR)
+	rm -rf $(BUILD_DIR) $(MINIMAL_BUILD_DIR) $(DT_SCHEMA_DIR)

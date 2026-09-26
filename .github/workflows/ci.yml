@@ -62,5 +62,21 @@ jobs:
       - name: Build and test with raspi5b as the only board
         run: make check-minimal
 
+      # dt-schema is pinned with the kernel tag the bindings come from
+      - name: Install dt-schema
+        run: |
+          python3 -m venv "$RUNNER_TEMP/dtschema"
+          "$RUNNER_TEMP/dtschema/bin/pip" install --quiet dtschema==2026.9
+          echo "$RUNNER_TEMP/dtschema/bin" >> "$GITHUB_PATH"
+
+      - name: Restore processed device-tree bindings
+        uses: actions/cache@v4
+        with:
+          path: build-dt-schema
+          key: dt-schema-2026.9-${{ hashFiles('Makefile') }}
+
+      - name: Validate the built-in device tree
+        run: make check-dt
+
       - name: Compiler cache statistics
         run: ccache --show-stats

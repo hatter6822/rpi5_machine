@@ -249,6 +249,31 @@ static int subnode(int node, const char *name, size_t namelen)
     }
 }
 
+/* The node starting at @off, skipping NOPs, or -1 */
+static int node_at(uint32_t off)
+{
+    while (token(off) == FDT_NOP) {
+        off = next_token(off);
+    }
+    return token(off) == FDT_BEGIN_NODE ? (int)off : -1;
+}
+
+int fdt_first_subnode(int node)
+{
+    if (!valid || node < 0 || token(node) != FDT_BEGIN_NODE) {
+        return -1;
+    }
+    return node_at(first_child_token(node));
+}
+
+int fdt_next_subnode(int child)
+{
+    if (!valid || child < 0 || token(child) != FDT_BEGIN_NODE) {
+        return -1;
+    }
+    return node_at(skip_node(child));
+}
+
 int fdt_path_offset(const char *path)
 {
     int node = 0;

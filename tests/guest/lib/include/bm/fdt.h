@@ -30,6 +30,10 @@ int fdt_find_compatible(const char *compatible);
 bool fdt_node_is_compatible(int node, const char *compatible);
 const char *fdt_node_name(int node);
 
+/* The first child of @node, or the sibling after @child; -1 if none */
+int fdt_first_subnode(int node);
+int fdt_next_subnode(int child);
+
 /* Property value and length in bytes, or NULL if absent */
 const void *fdt_getprop(int node, const char *name, uint32_t *len);
 bool fdt_node_is_enabled(int node);

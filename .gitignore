@@ -4,7 +4,9 @@
 
 # Bare-metal guest objects
 /tests/guest/build/
-/build-minimal/
+
+# Processed device-tree bindings (make check-dt)
+/build-dt-schema/
 
 __pycache__/
 *.py[co]

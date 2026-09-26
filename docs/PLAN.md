@@ -59,16 +59,16 @@ commit (or a short series) with its own tests.
 
 ## 2. Current state
 
-Delivered so far (WS0.1–WS0.3, WS0.6, WS2.1, WS2.2, WS2.3a, WS2.4, WS2.5, WS3.6, WS9.2a):
+Delivered so far (WS0.1–WS0.3, WS0.6, WS2.1, WS2.2, WS2.3a, WS2.4, WS2.5, WS3.2, WS3.6, WS9.2a):
 
 | Area | State |
 | --- | --- |
 | Repository | pinned QEMU v11.1.1 submodule, overlay + patch series (patches may share files, like an upstream series) managed by `scripts/qemu-tree`, CI with ccache |
 | Kconfig (WS0.6) | every BCM283x device model has its own symbol, so `bcm2712` can select just the models it reuses; a `raspi5b`-only build is tested (`make check-minimal`) |
 | SoC (`bcm2712`) | 1–4 Cortex-A76 (`MPIDR.Aff1` = core, CNTFRQ 54 MHz, optional EL3), GIC-400 with 288 SPIs, 5 priority bits and all timer/maintenance PPIs, UART10 (PL011), system timer (WS2.1), watchdog and reset status (WS2.4), RNG200 (WS2.5), VideoCore mailbox with the BCM283x property and framebuffer channels (WS2.2) and every identity tag answered (WS2.3a), complete memory map with T0 placeholders and two catch-all windows |
-| Board (`raspi5b`) | 1/2/4/8/16 GiB RAM, board revision code, serial number (`serial=`), PSCI over SMC with EL2 entry (default) or guest-owned EL3 (`secure=on`), system reset and power-off through PSCI, the watchdog and the monitor (WS3.6), DTB fix-ups for unmodelled devices, `/system/linux,revision` |
-| Tests | qtest (UART IDs, GIC geometry, priority bits and security, RAM, placeholders, system timer, watchdog, mailbox, identity tags, RNG), bare-metal smoke guest (EL, MPIDR, CNTFRQ, PSCI CPU_ON on all cores, SYSTEM_OFF, EL3 mode), bare-metal library and suite (WS9.2a: GIC, timers, system timer, PSCI/SMP, the mailbox and identity tags, 1 KiB from the RNG, a watchdog reset and four system resets checked against the boot state; 1–4 cores, with and without a DT, EL2 and EL3) |
-| Linux | the stock Raspberry Pi OS kernel (6.18) with the firmware's `bcm2712-rpi-5-b.dtb` boots on 4 CPUs to the root-fs mount, without warnings |
+| Board (`raspi5b`) | 1/2/4/8/16 GiB RAM, board revision code, serial number (`serial=`), PSCI over SMC with EL2 entry (default) or guest-owned EL3 (`secure=on`), system reset and power-off through PSCI, the watchdog and the monitor (WS3.6), a built-in device tree when no `-dtb` is given (WS3.2; `builtin-dtb=off` passes none), DTB fix-ups for unmodelled devices, `/system/linux,revision` |
+| Tests | qtest (UART IDs, GIC geometry, priority bits and security, RAM, placeholders, system timer, watchdog, mailbox, identity tags, RNG), the built-in tree validated against the Linux v6.18 bindings (`make check-dt`), bare-metal smoke guest (EL, MPIDR, CNTFRQ, PSCI CPU_ON on all cores, SYSTEM_OFF, EL3 mode), bare-metal library and suite (WS9.2a: GIC, timers, system timer, PSCI/SMP, the mailbox and identity tags, 1 KiB from the RNG, a watchdog reset and four system resets checked against the boot state; 1–4 cores, with the built-in tree, a `-dtb` one and none, EL2 and EL3) |
+| Linux | the stock Raspberry Pi OS kernel (6.18) boots on 4 CPUs to the root-fs mount, without warnings, with the firmware's `bcm2712-rpi-5-b.dtb` and on the built-in tree (1, 2 and 8 GiB) |
 
 Known provisional values, each marked in the code: 288 SPIs
 (`TODO(WS1.3)`), the VideoCore memory size and DMA channel mask
@@ -140,7 +140,7 @@ immediately exercised by the next:
 | 6 | WS2.2 mailbox (done) | the address-translation design decision, made once |
 | 7 | WS2.3a property identity tags (done) | first consumer of the mailbox; lets the `firmware` DT node be enabled |
 | 8 | WS2.5 RNG200 (done) | small, standalone, upstreamable |
-| 9 | WS3.2 built-in device tree | microkernels get a DT without `-dtb`; forces the memory map to be the single source of truth |
+| 9 | WS3.2 built-in device tree (done) | microkernels get a DT without `-dtb`; forces the memory map to be the single source of truth |
 | 10 | WS9.2b full bare-metal suite | M1 exit test |
 | 11 | WS0.5 series export | prepares the first upstream submission |
 | 12 | WS4.1 L2 interrupt controllers | opens the M3 chain |
@@ -612,7 +612,32 @@ it) and the `dt-blob`/firmware documentation.
 **Done when:** the fixed-up DT of a QEMU boot and a real boot differ only
 in the documented list; no "firmware out-of-date" message.
 
-#### WS3.2 Built-in device tree (M)
+#### WS3.2 Built-in device tree (done)
+*Delivered:* with no `-dtb`, `raspi5b` hands the guest a tree generated
+by `bcm2712_fdt_populate()` from the same constants that build the memory
+map: the root, `/cpus` (one `cpu@<MPIDR>` per core, PSCI), the GIC, the
+timer and PMU interrupts sized to `-smp`, the fixed clocks, and under
+`/soc@107c000000` (`ranges` from the 32-bit bus to `0x10_0000_0000`) the
+system timer, mailbox, UART10, watchdog and RNG, each named and
+compatible as in `bcm2712.dtsi`; `arm_load_dtb()` then adds `/memory`,
+`/psci` and `/chosen`, and the board adds `stdout-path` and
+`/system/linux,revision`. `builtin-dtb=off` restores the old behaviour
+(no tree, `x0` = 0) for guests that must probe without one. Three
+findings from booting Linux on it: the PL011 node needs
+`arm,primecell-periphid` (its 0x200-byte `reg` hides the ID registers;
+the value is QEMU's, `0x00141011`); the `firmware` node must sit under
+`/soc` with an empty `dma-ranges`, as mainline's
+`bcm2712-rpi-5-b-ovl-rp1.dts` has it, or Linux's mailbox buffers get the
+wrong address; and a `linux,cma` pool in the first GiB is needed because
+the VideoCore reaches only that window and the model ignores buffers
+outside it (WS2.2). The bare-metal runtime found a bug of its own: it
+counted cores by `cpu@N` names; it now walks `/cpus` by `device_type`.
+`make check-dt` fetches the Linux v6.18 bindings, runs `dt-validate`
+(dt-schema 2026.9, both pinned) over three configurations, and fails on
+any message outside a commented allowlist (the undocumented
+`/system/linux,revision`, and the firmware node's properties, which the
+mainline tree above shares); CI runs it with the bindings cached.
+
 When no `-dtb` is given, generate a DT from the model (`get_dtb`) so that
 bare-metal code and microkernels always receive a valid tree in `x0`.
 

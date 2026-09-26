@@ -161,22 +161,22 @@ static void discover_rng(void)
 /* Cores the tree describes as usable (QEMU marks absent ones "fail") */
 static void discover_cpus(void)
 {
-    static const char *const names[BM_MAX_CPUS] = {
-        "/cpus/cpu@0", "/cpus/cpu@1", "/cpus/cpu@2", "/cpus/cpu@3",
-    };
+    int cpus = fdt_path_offset("/cpus");
+    unsigned n = 0;
 
-    bm_plat.num_cpus = BM_MAX_CPUS;
-    if (fdt_path_offset("/cpus/cpu@0") < 0) {
-        return;
-    }
-    bm_plat.num_cpus = 0;
-    for (unsigned i = 0; i < BM_MAX_CPUS; i++) {
-        int node = fdt_path_offset(names[i]);
+    /*
+     * Node names vary (the firmware's tree has cpu@1 at reg 0x100, the
+     * built-in one cpu@100), so go by device_type
+     */
+    for (int node = fdt_first_subnode(cpus); node >= 0;
+         node = fdt_next_subnode(node)) {
+        const char *type = fdt_getprop(node, "device_type", NULL);
 
-        if (node >= 0 && fdt_node_is_enabled(node)) {
-            bm_plat.num_cpus++;
+        if (type && !strcmp(type, "cpu") && fdt_node_is_enabled(node)) {
+            n++;
         }
     }
+    bm_plat.num_cpus = n && n < BM_MAX_CPUS ? n : BM_MAX_CPUS;
 }
 
 static struct persist *persist(void)

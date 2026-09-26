@@ -66,7 +66,7 @@ start in EL3, and every CPU starts at the image entry point.
 
 ``-kernel`` accepts an AArch64 Linux ``Image`` (booted using the Linux boot
 protocol, with the device tree address in ``x0``) or an ELF file (entered at
-its entry point; a ``-dtb`` blob is placed at the base of RAM if it fits
+its entry point; the device tree is placed at the base of RAM if it fits
 below the image). ``-bios`` is not supported yet.
 
 Firmware property interface
@@ -99,10 +99,25 @@ watchdog reset. PSCI ``SYSTEM_OFF`` and Linux's halt request through the
 watchdog (boot partition 63 in ``RSTS``) power the machine off, and QEMU
 exits with status 0.
 
+Device tree
+-----------
+
+Without ``-dtb``, the machine generates a device tree describing what it
+models, derived from its memory map: the CPUs with PSCI, the generic timer,
+the PMU, the GIC, the system timer, the mailbox and the firmware interface,
+the PM block, the RNG, UART10 (``serial10``, the ``stdout-path``), the fixed
+clocks, and a CMA pool in the first GiB, where the VideoCore can reach
+Linux's buffers. Node names and properties follow Linux's ``bcm2712.dtsi``
+and the firmware's tree, and the result validates against the Linux
+bindings. ``-machine raspi5b,builtin-dtb=off`` gives the guest no device
+tree at all, like an empty ``device_tree=`` line in the firmware's
+``config.txt``.
+
 When a device tree is supplied with ``-dtb`` (for example
 ``bcm2712-rpi-5-b.dtb``), QEMU sets the memory node, marks nodes of devices
 that are not modelled yet as ``status = "disabled"`` and publishes the board
-revision in ``/system/linux,revision``, as the VideoCore firmware does.
+revision in ``/system/linux,revision``, as the VideoCore firmware does. The
+generated tree gets the same memory node and ``/system`` property.
 
 Examples
 --------
@@ -111,7 +126,12 @@ Bare-metal ELF payload::
 
   $ qemu-system-aarch64 -M raspi5b -nographic -kernel payload.elf
 
-Linux, with the console on UART10::
+Linux on the built-in device tree, with the console on UART10::
+
+  $ qemu-system-aarch64 -M raspi5b -m 4G -nographic -kernel Image \
+      -append "console=ttyAMA10,115200"
+
+Linux on the firmware's device tree::
 
   $ qemu-system-aarch64 -M raspi5b -m 4G -nographic \
       -kernel Image -dtb bcm2712-rpi-5-b.dtb \

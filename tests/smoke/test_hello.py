@@ -48,7 +48,9 @@ class HelloTest(unittest.TestCase):
         self.assertNotIn("SYSTEM_OFF returned", out)
 
     def test_smp2_rejects_missing_cores(self):
-        status, out = boot("-M", "raspi5b", "-smp", "2", "-m", "8G")
+        # No device tree, so the guest tries every core
+        status, out = boot("-M", "raspi5b,builtin-dtb=off", "-smp", "2",
+                           "-m", "8G")
         self.assertEqual(status, 0, out)
         self.assertIn("raspi5b: core 1 online", out)
         # PSCI_RET_INVALID_PARAMS (-2) for cores that do not exist

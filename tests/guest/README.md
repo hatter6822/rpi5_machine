@@ -26,8 +26,8 @@ off. Consequences for test code:
 
 Before `bm_main()` runs on core 0, the runtime looks for a device tree in
 `x0` (the Linux boot protocol, used by firmware and by QEMU for an `Image`)
-and then at physical address 0 (where QEMU places a `-dtb` blob for an ELF
-image). With a tree, the console (`/chosen/stdout-path`), the GIC
+and then at physical address 0 (where QEMU places the device tree for an
+ELF image). With a tree, the console (`/chosen/stdout-path`), the GIC
 (`arm,gic-400`), the system timer (`brcm,bcm2835-system-timer`), the
 power management block (`brcm,bcm2712-pm`), the mailbox
 (`brcm,bcm2835-mbox`), the RNG (`brcm,bcm2711-rng200`) and the number of
@@ -122,7 +122,8 @@ END: FAIL
 | `PANIC: <message>` | unexpected exception or interrupt; the run ends |
 | `END: PASS` / `END: FAIL` | always the last line of a completed run |
 
-`tests/smoke/test_suite.py` runs the suite on 1, 2 and 4 cores, with and
-without a device tree (`tests/smoke/bcm2712-min.dts`, which mirrors the
-structure of the firmware's `bcm2712-rpi-5-b.dtb`), and at EL3, and
-requires every test to pass or to be skipped for a stated reason.
+`tests/smoke/test_suite.py` runs the suite on 1, 2 and 4 cores, with the
+machine's built-in device tree, with `tests/smoke/bcm2712-min.dts` (which
+mirrors the structure of the firmware's `bcm2712-rpi-5-b.dtb`) and with
+none (`builtin-dtb=off`), and at EL3, and requires every test to pass or
+to be skipped for a stated reason.

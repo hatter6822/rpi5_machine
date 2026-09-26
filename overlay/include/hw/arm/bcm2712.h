@@ -173,4 +173,11 @@ struct BCM2712State {
     BCM2835OTPState otp;
 };
 
+/*
+ * Add the SoC's nodes to the device tree @fdt: CPUs, timer, PMU, fixed
+ * clocks, the "soc" bus with every modelled device, the firmware
+ * interface and the serial10 alias, and point the root at the GIC.
+ */
+void bcm2712_fdt_populate(BCM2712State *s, void *fdt);
+
 #endif /* HW_ARM_BCM2712_H */

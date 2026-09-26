@@ -42,6 +42,7 @@ struct Raspi5bMachineState {
     uint32_t board_rev;
     uint64_t serial;
     bool secure;
+    bool builtin_dtb;
 };
 
 /* An obviously made-up serial number, overridden with "serial=" */
@@ -186,6 +187,51 @@ static void raspi5b_fdt_memory(void *fdt, uint64_t ram_size)
     }
 }
 
+/*
+ * Room left in the built-in tree for what arm_load_dtb() and
+ * raspi5b_modify_dtb() add: memory, PSCI, /chosen with -append, /system.
+ * load_device_tree() leaves the same for a -dtb blob.
+ */
+#define RASPI5B_FDT_SLACK       10000
+
+/*
+ * The device tree given without -dtb: the board's own nodes, the SoC's,
+ * and the console on UART10 as on the firmware's tree. arm_load_dtb()
+ * adds the memory, PSCI and /chosen properties, then the same fix-ups as
+ * for a -dtb blob apply.
+ */
+static void *raspi5b_get_dtb(const struct arm_boot_info *info, int *size)
+{
+    static const char compat[] = "raspberrypi,5-model-b\0brcm,bcm2712";
+    Raspi5bMachineState *s = container_of(info, Raspi5bMachineState, binfo);
+    void *fdt = create_device_tree(size);
+
+    if (!fdt) {
+        return NULL;
+    }
+    qemu_fdt_setprop(fdt, "/", "compatible", compat, sizeof(compat));
+    qemu_fdt_setprop_string(fdt, "/", "model", "Raspberry Pi 5 Model B");
+    qemu_fdt_setprop_cell(fdt, "/", "#address-cells", 2);
+    qemu_fdt_setprop_cell(fdt, "/", "#size-cells", 2);
+
+    bcm2712_fdt_populate(&s->soc, fdt);
+
+    qemu_fdt_add_subnode(fdt, "/chosen");
+    qemu_fdt_setprop_string(fdt, "/chosen", "stdout-path",
+                            "serial10:115200n8");
+
+    if (fdt_pack(fdt) < 0) {
+        g_free(fdt);
+        return NULL;
+    }
+    *size = fdt_totalsize(fdt) + RASPI5B_FDT_SLACK;
+    if (fdt_open_into(fdt, fdt, *size) < 0) {
+        g_free(fdt);
+        return NULL;
+    }
+    return g_realloc(fdt, *size);
+}
+
 static void raspi5b_modify_dtb(const struct arm_boot_info *info, void *fdt)
 {
     const Raspi5bMachineState *s =
@@ -249,6 +295,7 @@ static void raspi5b_machine_init(MachineState *machine)
         /* Disabled by arm_load_kernel() if the guest itself starts in EL3 */
         .psci_conduit = QEMU_PSCI_CONDUIT_SMC,
         .modify_dtb = raspi5b_modify_dtb,
+        .get_dtb = s->builtin_dtb ? raspi5b_get_dtb : NULL,
     };
     arm_load_kernel(&s->soc.cpu[0], machine, &s->binfo);
 }
@@ -275,9 +322,22 @@ static void raspi5b_set_serial(Object *obj, Visitor *v, const char *name,
     visit_type_uint64(v, name, &RASPI5B_MACHINE(obj)->serial, errp);
 }
 
+static bool raspi5b_get_builtin_dtb(Object *obj, Error **errp)
+{
+    return RASPI5B_MACHINE(obj)->builtin_dtb;
+}
+
+static void raspi5b_set_builtin_dtb(Object *obj, bool value, Error **errp)
+{
+    RASPI5B_MACHINE(obj)->builtin_dtb = value;
+}
+
 static void raspi5b_machine_instance_init(Object *obj)
 {
-    RASPI5B_MACHINE(obj)->serial = RASPI5B_DEFAULT_SERIAL;
+    Raspi5bMachineState *s = RASPI5B_MACHINE(obj);
+
+    s->serial = RASPI5B_DEFAULT_SERIAL;
+    s->builtin_dtb = true;
 }
 
 static void raspi5b_machine_class_init(ObjectClass *oc, const void *data)
@@ -307,6 +367,14 @@ static void raspi5b_machine_class_init(ObjectClass *oc, const void *data)
         "Expose EL3 and the GIC Security Extensions to the guest. "
         "When off (the default), QEMU provides PSCI in place of the "
         "firmware's TF-A BL31");
+
+    object_class_property_add_bool(oc, "builtin-dtb",
+                                   raspi5b_get_builtin_dtb,
+                                   raspi5b_set_builtin_dtb);
+    object_class_property_set_description(oc, "builtin-dtb",
+        "Without -dtb, give the guest a device tree generated from the "
+        "model (the default); when off, give it none, like an empty "
+        "device_tree= line in the firmware's config.txt");
 
     object_class_property_add(oc, "serial", "uint64", raspi5b_get_serial,
                               raspi5b_set_serial, NULL, NULL);

@@ -18,12 +18,14 @@
 #include "qapi/error.h"
 #include "hw/arm/bcm2712.h"
 #include "hw/arm/bsa.h"
+#include "hw/arm/fdt.h"
 #include "hw/core/qdev-properties.h"
 #include "hw/core/qdev-properties-system.h"
 #include "hw/core/sysbus.h"
 #include "hw/misc/bcm2835_mbox_defs.h"
 #include "hw/misc/unimp.h"
 #include "system/address-spaces.h"
+#include "system/device_tree.h"
 #include "system/system.h"
 
 /* Sizes follow the device tree "reg" properties (spanning multi-reg nodes) */
@@ -448,6 +450,277 @@ static void bcm2712_realize(DeviceState *dev, Error **errp)
             break;
         }
     }
+}
+
+/*
+ * Device tree
+ *
+ * Node names, compatibles and properties follow bcm2712.dtsi in Linux and
+ * the firmware's bcm2712-rpi-5-b.dtb; every address comes from
+ * bcm2712_memmap. Only modelled devices get a node.
+ */
+
+/* The "soc" bus: child address 0 is CPU address 0x10_0000_0000 */
+#define BCM2712_FDT_SOC_PATH        "/soc@107c000000"
+#define BCM2712_FDT_SOC_BUS_BASE    0x1000000000ULL
+#define BCM2712_FDT_SOC_BUS_SIZE    0x80000000U
+
+/* Fixed clocks of the firmware's tree, in Hz */
+#define BCM2712_FDT_CLK_OSC         54000000
+#define BCM2712_FDT_CLK_VPU         750000000
+#define BCM2712_FDT_CLK_UART        9216000
+
+/* The firmware's default CMA pool */
+#define BCM2712_FDT_CMA_SIZE        (64 * MiB)
+
+static uint32_t bcm2712_fdt_bus_addr(hwaddr addr)
+{
+    assert(addr >= BCM2712_FDT_SOC_BUS_BASE &&
+           addr - BCM2712_FDT_SOC_BUS_BASE < BCM2712_FDT_SOC_BUS_SIZE);
+    return addr - BCM2712_FDT_SOC_BUS_BASE;
+}
+
+/*
+ * Add "<name>@<bus address>" for @dev under the "soc" bus, with a "reg"
+ * covering its memory map entry and @compat (NUL-separated, @compat_len
+ * bytes with the last NUL). Returns the node's path, to be freed.
+ */
+static char *bcm2712_fdt_soc_node(void *fdt, const char *name,
+                                  BCM2712Device dev, const char *compat,
+                                  size_t compat_len)
+{
+    uint32_t addr = bcm2712_fdt_bus_addr(bcm2712_memmap[dev].base);
+    char *path = g_strdup_printf(BCM2712_FDT_SOC_PATH "/%s@%x", name, addr);
+
+    qemu_fdt_add_subnode(fdt, path);
+    qemu_fdt_setprop(fdt, path, "compatible", compat, compat_len);
+    qemu_fdt_setprop_cells(fdt, path, "reg", addr,
+                           (uint32_t)bcm2712_memmap[dev].size);
+    return path;
+}
+
+static uint32_t bcm2712_fdt_clock(void *fdt, const char *name,
+                                  const char *output, uint32_t hz)
+{
+    g_autofree char *path = g_strdup_printf("/clocks/%s", name);
+    uint32_t phandle = qemu_fdt_alloc_phandle(fdt);
+
+    qemu_fdt_add_subnode(fdt, path);
+    qemu_fdt_setprop_string(fdt, path, "compatible", "fixed-clock");
+    qemu_fdt_setprop_cell(fdt, path, "#clock-cells", 0);
+    qemu_fdt_setprop_cell(fdt, path, "clock-frequency", hz);
+    qemu_fdt_setprop_string(fdt, path, "clock-output-names", output);
+    qemu_fdt_setprop_cell(fdt, path, "phandle", phandle);
+    return phandle;
+}
+
+static void bcm2712_fdt_cpus(BCM2712State *s, void *fdt, uint32_t *phandles)
+{
+    qemu_fdt_add_subnode(fdt, "/cpus");
+    qemu_fdt_setprop_cell(fdt, "/cpus", "#address-cells", 1);
+    qemu_fdt_setprop_cell(fdt, "/cpus", "#size-cells", 0);
+
+    /* In reverse, since libfdt adds each subnode first */
+    for (int i = s->num_cpus - 1; i >= 0; i--) {
+        uint32_t mpidr = i << ARM_AFF1_SHIFT;
+        g_autofree char *path = g_strdup_printf("/cpus/cpu@%x", mpidr);
+
+        phandles[i] = qemu_fdt_alloc_phandle(fdt);
+        qemu_fdt_add_subnode(fdt, path);
+        qemu_fdt_setprop_string(fdt, path, "device_type", "cpu");
+        qemu_fdt_setprop_string(fdt, path, "compatible", "arm,cortex-a76");
+        qemu_fdt_setprop_cell(fdt, path, "reg", mpidr);
+        qemu_fdt_setprop_string(fdt, path, "enable-method", "psci");
+        qemu_fdt_setprop_cell(fdt, path, "phandle", phandles[i]);
+    }
+}
+
+/* The generic timer and PMU interrupts, and the PMU's affinity */
+static void bcm2712_fdt_cpu_irqs(BCM2712State *s, void *fdt,
+                                 const uint32_t *cpu_phandles)
+{
+    static const int timer_ppis[] = {
+        ARCH_TIMER_S_EL1_IRQ, ARCH_TIMER_NS_EL1_IRQ, ARCH_TIMER_VIRT_IRQ,
+        ARCH_TIMER_NS_EL2_IRQ,
+    };
+    uint32_t ppi_flags = (MAKE_64BIT_MASK(0, s->num_cpus) <<
+                          GIC_FDT_IRQ_PPI_CPU_START) |
+                         GIC_FDT_IRQ_FLAGS_LEVEL_LO;
+    uint32_t timer[ARRAY_SIZE(timer_ppis) * 3];
+    uint32_t pmu[BCM2712_NUM_CPUS * 3], affinity[BCM2712_NUM_CPUS];
+
+    for (int i = 0; i < ARRAY_SIZE(timer_ppis); i++) {
+        timer[3 * i] = cpu_to_be32(GIC_FDT_IRQ_TYPE_PPI);
+        timer[3 * i + 1] = cpu_to_be32(timer_ppis[i] - GIC_NR_SGIS);
+        timer[3 * i + 2] = cpu_to_be32(ppi_flags);
+    }
+    qemu_fdt_add_subnode(fdt, "/timer");
+    qemu_fdt_setprop_string(fdt, "/timer", "compatible", "arm,armv8-timer");
+    qemu_fdt_setprop(fdt, "/timer", "interrupts", timer, sizeof(timer));
+
+    for (int i = 0; i < s->num_cpus; i++) {
+        pmu[3 * i] = cpu_to_be32(GIC_FDT_IRQ_TYPE_SPI);
+        pmu[3 * i + 1] = cpu_to_be32(BCM2712_SPI_PMU0 + i);
+        pmu[3 * i + 2] = cpu_to_be32(GIC_FDT_IRQ_FLAGS_LEVEL_HI);
+        affinity[i] = cpu_to_be32(cpu_phandles[i]);
+    }
+    qemu_fdt_add_subnode(fdt, "/arm-pmu");
+    qemu_fdt_setprop_string(fdt, "/arm-pmu", "compatible",
+                            "arm,cortex-a76-pmu");
+    qemu_fdt_setprop(fdt, "/arm-pmu", "interrupts", pmu,
+                     s->num_cpus * 3 * sizeof(uint32_t));
+    qemu_fdt_setprop(fdt, "/arm-pmu", "interrupt-affinity", affinity,
+                     s->num_cpus * sizeof(uint32_t));
+}
+
+static uint32_t bcm2712_fdt_gic(BCM2712State *s, void *fdt)
+{
+    static const char compat[] = "arm,gic-400";
+    hwaddr base = bcm2712_memmap[BCM2712_GIC].base;
+    uint32_t phandle = qemu_fdt_alloc_phandle(fdt);
+    g_autofree char *path = g_strdup_printf(
+        BCM2712_FDT_SOC_PATH "/interrupt-controller@%x",
+        bcm2712_fdt_bus_addr(base + GIC400_DIST_OFS));
+
+    qemu_fdt_add_subnode(fdt, path);
+    qemu_fdt_setprop(fdt, path, "compatible", compat, sizeof(compat));
+    qemu_fdt_setprop_cells(fdt, path, "reg",
+        bcm2712_fdt_bus_addr(base + GIC400_DIST_OFS), 0x1000,
+        bcm2712_fdt_bus_addr(base + GIC400_CPU_OFS), 0x2000,
+        bcm2712_fdt_bus_addr(base + GIC400_VIFACE_THIS_OFS), 0x2000,
+        bcm2712_fdt_bus_addr(base + GIC400_VCPU_OFS), 0x2000);
+    qemu_fdt_setprop(fdt, path, "interrupt-controller", NULL, 0);
+    qemu_fdt_setprop_cell(fdt, path, "#interrupt-cells", 3);
+    qemu_fdt_setprop_cell(fdt, path, "#address-cells", 0);
+    qemu_fdt_setprop_cells(fdt, path, "interrupts", GIC_FDT_IRQ_TYPE_PPI,
+                           ARCH_GIC_MAINT_IRQ - GIC_NR_SGIS,
+                           (MAKE_64BIT_MASK(0, s->num_cpus) <<
+                            GIC_FDT_IRQ_PPI_CPU_START) |
+                           GIC_FDT_IRQ_FLAGS_LEVEL_HI);
+    qemu_fdt_setprop_cell(fdt, path, "phandle", phandle);
+    return phandle;
+}
+
+void bcm2712_fdt_populate(BCM2712State *s, void *fdt)
+{
+    static const char uart_compat[] = "arm,pl011\0arm,primecell";
+    static const char uart_clock_names[] = "uartclk\0apb_pclk";
+    static const char firmware_compat[] =
+        "raspberrypi,bcm2835-firmware\0simple-mfd";
+    uint32_t cpu_phandles[BCM2712_NUM_CPUS];
+    uint32_t gic, clk_uart, clk_vpu, mbox;
+    g_autofree char *systimer = NULL, *mailbox = NULL, *uart = NULL;
+    g_autofree char *pm = NULL, *rng = NULL;
+    const char *firmware = BCM2712_FDT_SOC_PATH "/firmware";
+    uint32_t spi;
+
+    /* libfdt adds each subnode first: create them in reverse order */
+    qemu_fdt_add_subnode(fdt, BCM2712_FDT_SOC_PATH);
+    qemu_fdt_setprop_string(fdt, BCM2712_FDT_SOC_PATH, "compatible",
+                            "simple-bus");
+    qemu_fdt_setprop_cell(fdt, BCM2712_FDT_SOC_PATH, "#address-cells", 1);
+    qemu_fdt_setprop_cell(fdt, BCM2712_FDT_SOC_PATH, "#size-cells", 1);
+    qemu_fdt_setprop_cells(fdt, BCM2712_FDT_SOC_PATH, "ranges", 0,
+                           BCM2712_FDT_SOC_BUS_BASE >> 32,
+                           (uint32_t)BCM2712_FDT_SOC_BUS_BASE,
+                           BCM2712_FDT_SOC_BUS_SIZE);
+
+    qemu_fdt_add_subnode(fdt, "/clocks");
+    clk_uart = bcm2712_fdt_clock(fdt, "clk-uart", "uart-clock",
+                                 BCM2712_FDT_CLK_UART);
+    clk_vpu = bcm2712_fdt_clock(fdt, "clk-vpu", "vpu-clock",
+                                BCM2712_FDT_CLK_VPU);
+    bcm2712_fdt_clock(fdt, "clk-osc", "osc", BCM2712_FDT_CLK_OSC);
+
+    bcm2712_fdt_cpus(s, fdt, cpu_phandles);
+    gic = bcm2712_fdt_gic(s, fdt);
+    qemu_fdt_setprop_cell(fdt, "/", "interrupt-parent", gic);
+    bcm2712_fdt_cpu_irqs(s, fdt, cpu_phandles);
+
+    rng = bcm2712_fdt_soc_node(fdt, "rng", BCM2712_RNG,
+                               "brcm,bcm2711-rng200",
+                               sizeof("brcm,bcm2711-rng200"));
+
+    pm = bcm2712_fdt_soc_node(fdt, "watchdog", BCM2712_PM, "brcm,bcm2712-pm",
+                              sizeof("brcm,bcm2712-pm"));
+    qemu_fdt_setprop_string(fdt, pm, "reg-names", "pm");
+    qemu_fdt_setprop_cell(fdt, pm, "#power-domain-cells", 1);
+    qemu_fdt_setprop_cell(fdt, pm, "#reset-cells", 1);
+    qemu_fdt_setprop(fdt, pm, "system-power-controller", NULL, 0);
+
+    uart = bcm2712_fdt_soc_node(fdt, "serial", BCM2712_UART10, uart_compat,
+                                sizeof(uart_compat));
+    qemu_fdt_setprop_cells(fdt, uart, "interrupts", GIC_FDT_IRQ_TYPE_SPI,
+                           BCM2712_SPI_UART10, GIC_FDT_IRQ_FLAGS_LEVEL_HI);
+    qemu_fdt_setprop_cells(fdt, uart, "clocks", clk_uart, clk_vpu);
+    qemu_fdt_setprop(fdt, uart, "clock-names", uart_clock_names,
+                     sizeof(uart_clock_names));
+    /*
+     * The node covers 0x200 bytes, so Linux cannot find the ID registers
+     * at the end of it and needs them here. The firmware's tree gives
+     * the silicon's r1p5 (0x00341011); these are QEMU's PL011 ID bytes.
+     */
+    qemu_fdt_setprop_cell(fdt, uart, "arm,primecell-periphid", 0x00141011);
+
+    mbox = qemu_fdt_alloc_phandle(fdt);
+    mailbox = bcm2712_fdt_soc_node(fdt, "mailbox", BCM2712_MBOX,
+                                   "brcm,bcm2835-mbox",
+                                   sizeof("brcm,bcm2835-mbox"));
+    qemu_fdt_setprop_cells(fdt, mailbox, "interrupts", GIC_FDT_IRQ_TYPE_SPI,
+                           BCM2712_SPI_MBOX, GIC_FDT_IRQ_FLAGS_LEVEL_HI);
+    qemu_fdt_setprop_cell(fdt, mailbox, "#mbox-cells", 0);
+    qemu_fdt_setprop_cell(fdt, mailbox, "phandle", mbox);
+
+    spi = BCM2712_SPI_SYSTIMER0;
+    systimer = bcm2712_fdt_soc_node(fdt, "timer", BCM2712_SYSTIMER,
+                                    "brcm,bcm2835-system-timer",
+                                    sizeof("brcm,bcm2835-system-timer"));
+    qemu_fdt_setprop_cells(fdt, systimer, "interrupts",
+                           GIC_FDT_IRQ_TYPE_SPI, spi,
+                           GIC_FDT_IRQ_FLAGS_LEVEL_HI,
+                           GIC_FDT_IRQ_TYPE_SPI, spi + 1,
+                           GIC_FDT_IRQ_FLAGS_LEVEL_HI,
+                           GIC_FDT_IRQ_TYPE_SPI, spi + 2,
+                           GIC_FDT_IRQ_FLAGS_LEVEL_HI,
+                           GIC_FDT_IRQ_TYPE_SPI, spi + 3,
+                           GIC_FDT_IRQ_FLAGS_LEVEL_HI);
+    qemu_fdt_setprop_cell(fdt, systimer, "clock-frequency", 1000000);
+
+    /*
+     * The firmware interface, behind the mailbox, as in the firmware's
+     * tree: Linux passes it buffers by their "soc" bus address.
+     */
+    qemu_fdt_add_subnode(fdt, firmware);
+    qemu_fdt_setprop(fdt, firmware, "compatible", firmware_compat,
+                     sizeof(firmware_compat));
+    qemu_fdt_setprop_cell(fdt, firmware, "#address-cells", 1);
+    qemu_fdt_setprop_cell(fdt, firmware, "#size-cells", 1);
+    qemu_fdt_setprop(fdt, firmware, "dma-ranges", NULL, 0);
+    qemu_fdt_setprop_cell(fdt, firmware, "mboxes", mbox);
+
+    /*
+     * Keep the default CMA pool, where Linux allocates the buffers it
+     * hands the firmware, in the part of RAM the VideoCore reaches
+     */
+    qemu_fdt_add_subnode(fdt, "/reserved-memory");
+    qemu_fdt_setprop_cell(fdt, "/reserved-memory", "#address-cells", 2);
+    qemu_fdt_setprop_cell(fdt, "/reserved-memory", "#size-cells", 2);
+    qemu_fdt_setprop(fdt, "/reserved-memory", "ranges", NULL, 0);
+    qemu_fdt_add_subnode(fdt, "/reserved-memory/linux,cma");
+    qemu_fdt_setprop_string(fdt, "/reserved-memory/linux,cma", "compatible",
+                            "shared-dma-pool");
+    qemu_fdt_setprop_sized_cells(fdt, "/reserved-memory/linux,cma", "size",
+                                 2, BCM2712_FDT_CMA_SIZE);
+    qemu_fdt_setprop(fdt, "/reserved-memory/linux,cma", "reusable", NULL, 0);
+    qemu_fdt_setprop(fdt, "/reserved-memory/linux,cma", "linux,cma-default",
+                     NULL, 0);
+    qemu_fdt_setprop_sized_cells(fdt, "/reserved-memory/linux,cma",
+                                 "alloc-ranges", 2, BCM2712_RAM_BASE,
+                                 2, BCM2712_VC_RAM_WINDOW);
+
+    qemu_fdt_add_subnode(fdt, "/aliases");
+    qemu_fdt_setprop_string(fdt, "/aliases", "serial10", uart);
+    qemu_fdt_setprop_string(fdt, "/aliases", "console", uart);
 }
 
 static const Property bcm2712_properties[] = {
