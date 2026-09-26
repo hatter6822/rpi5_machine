@@ -1,13 +1,19 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 name: CI
 
+# Branches are tested through their pull request (against the merge result);
+# a push trigger on every branch as well would run CI twice per update.
 on:
   push:
+    branches: [main]
   pull_request:
+  workflow_dispatch:
 
+# A new push to a pull request supersedes its running check; every commit
+# that lands on main is tested to completion.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   build-and-test:
