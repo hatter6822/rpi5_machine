@@ -21,12 +21,12 @@ serial number and the DMA channel mask from new "board-serial" and
 and give a zero serial, so existing boards behave the same apart from
 the now defined values.
 ---
- hw/misc/bcm2835_property.c         | 63 ++++++++++++++++++++++++------
+ hw/misc/bcm2835_property.c         | 65 ++++++++++++++++++++++++------
  include/hw/misc/bcm2835_property.h |  2 +
- 2 files changed, 54 insertions(+), 11 deletions(-)
+ 2 files changed, 55 insertions(+), 12 deletions(-)
 
 diff --git a/hw/misc/bcm2835_property.c b/hw/misc/bcm2835_property.c
-index 761e365..2e412a7 100644
+index fd9dfc5..362c1a7 100644
 --- a/hw/misc/bcm2835_property.c
 +++ b/hw/misc/bcm2835_property.c
 @@ -21,8 +21,36 @@
@@ -66,7 +66,7 @@ index 761e365..2e412a7 100644
  static void bcm2835_property_mbox_push(BCM2835PropertyState *s, uint32_t value)
  {
      uint32_t tot_len;
-@@ -64,11 +92,20 @@ static void bcm2835_property_mbox_push(BCM2835PropertyState *s, uint32_t value)
+@@ -80,11 +108,20 @@ static void bcm2835_property_mbox_push(BCM2835PropertyState *s, uint32_t value)
              stl_le_phys(&s->dma_as, value + 12, 346337);
              resplen = 4;
              break;
@@ -91,7 +91,7 @@ index 761e365..2e412a7 100644
              break;
          case RPI_FWREQ_GET_BOARD_REVISION:
              stl_le_phys(&s->dma_as, value + 12, s->board_rev);
-@@ -79,12 +116,13 @@ static void bcm2835_property_mbox_push(BCM2835PropertyState *s, uint32_t value)
+@@ -95,12 +132,13 @@ static void bcm2835_property_mbox_push(BCM2835PropertyState *s, uint32_t value)
              dma_memory_write(&s->dma_as, value + 12, s->macaddr.a, resplen,
                               MEMTXATTRS_UNSPECIFIED);
              break;
@@ -110,17 +110,19 @@ index 761e365..2e412a7 100644
          case RPI_FWREQ_GET_ARM_MEMORY:
              /* base */
              stl_le_phys(&s->dma_as, value + 12, 0);
-@@ -304,8 +342,7 @@ static void bcm2835_property_mbox_push(BCM2835PropertyState *s, uint32_t value)
+@@ -320,9 +358,8 @@ static void bcm2835_property_mbox_push(BCM2835PropertyState *s, uint32_t value)
              break;
  
          case RPI_FWREQ_GET_DMA_CHANNELS:
 -            /* channels 2-5 */
 -            stl_le_phys(&s->dma_as, value + 12, 0x003C);
-+            stl_le_phys(&s->dma_as, value + 12, s->dma_channel_mask);
-             resplen = 4;
+-            resplen = 4;
++            resplen = bcm2835_property_answer32(s, value, bufsize,
++                                               s->dma_channel_mask);
              break;
  
-@@ -580,6 +617,10 @@ static void bcm2835_property_realize(DeviceState *dev, Error **errp)
+         case RPI_FWREQ_GET_COMMAND_LINE:
+@@ -599,6 +636,10 @@ static void bcm2835_property_realize(DeviceState *dev, Error **errp)
  static const Property bcm2835_property_props[] = {
      DEFINE_PROP_UINT32("board-rev", BCM2835PropertyState, board_rev, 0),
      DEFINE_PROP_STRING("command-line", BCM2835PropertyState, command_line),

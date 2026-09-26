@@ -27,6 +27,7 @@ OVERLAY="$ROOT/overlay"
 PATCHES="$ROOT/patches"
 SERIES="$ROOT/series"
 EXPORT_MARKER=.qemu-tree-export     # marks a directory export may empty
+                                    # (and 'make distclean' remove)
 
 die() { printf 'qemu-tree: %s\n' "$*" >&2; exit 1; }
 info() { printf '  %-8s %s\n' "$1" "$2"; }

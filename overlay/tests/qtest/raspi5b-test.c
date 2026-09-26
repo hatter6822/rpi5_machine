@@ -55,6 +55,7 @@
 /* include/soc/bcm2835/raspberrypi-firmware.h */
 #define FW_REQUEST              0
 #define FW_SUCCESS              0x80000000
+#define FW_ERROR                0x80000001      /* error parsing the request */
 #define FW_TAG_FIRMWARE_VARIANT 0x00000002
 #define FW_TAG_FIRMWARE_HASH    0x00000003
 #define FW_TAG_BOARD_MODEL      0x00010001
@@ -64,6 +65,8 @@
 #define FW_TAG_VC_MEMORY        0x00010006
 #define FW_TAG_DMA_CHANNELS     0x00060001
 #define FW_TAG_COMMAND_LINE     0x00050001
+#define FW_TAG_CLOCK_RATE       0x00030002
+#define FW_TAG_OVERSCAN         0x0004000a
 #define FW_TAG_RESPONSE         BIT(31)
 
 /* The alias of the first GiB of RAM that code for older Pis uses */
@@ -583,36 +586,83 @@ static void test_mbox_unreachable(void)
 }
 
 /*
- * A tag whose value buffer runs past the length the header gives is not
- * answered, and nothing past that length is written.
+ * Post the @n-word request @req at @buf, with a marker word after it, and
+ * return the buffer's response code.
  */
-static void test_mbox_tag_overrun(void)
+static uint32_t mbox_post(QTestState *qts, uint64_t buf, const uint32_t *req,
+                          unsigned n)
 {
-    QTestState *qts = qtest_init("-machine raspi5b");
-    const uint64_t buf = 0x10000;
-    const uint32_t req[] = {
-        8 * 4, FW_REQUEST,
-        FW_TAG_BOARD_SERIAL, 64, 0,
-        0xa5a5a5a5, 0xa5a5a5a5, 0xa5a5a5a5,
-    };
-
-    for (int i = 0; i < ARRAY_SIZE(req); i++) {
+    for (unsigned i = 0; i < n; i++) {
         qtest_writel(qts, buf + 4 * i, req[i]);
     }
-    qtest_writel(qts, buf + 4 * ARRAY_SIZE(req), 0x5a5a5a5a);
+    qtest_writel(qts, buf + 4 * n, 0x5a5a5a5a);
     qtest_writel(qts, MBOX_BASE + MBOX_WRITE,
                  VC_BUS_RAM | buf | MBOX_CHAN_PROPERTY);
 
     g_assert_true(mbox_has_response(qts));
     g_assert_cmphex(qtest_readl(qts, MBOX_BASE + MBOX_READ), ==,
                     VC_BUS_RAM | buf | MBOX_CHAN_PROPERTY);
-    g_assert_cmphex(qtest_readl(qts, buf + 4), ==, FW_SUCCESS);
-    g_assert_cmphex(qtest_readl(qts, buf + 16), ==, 0);
-    for (int i = 5; i < ARRAY_SIZE(req); i++) {
+    return qtest_readl(qts, buf + 4);
+}
+
+/* The words @from..@n of a request at @buf, and the marker after it */
+static void mbox_assert_untouched(QTestState *qts, uint64_t buf, unsigned from,
+                                  unsigned n)
+{
+    for (unsigned i = from; i < n; i++) {
         g_assert_cmphex(qtest_readl(qts, buf + 4 * i), ==, 0xa5a5a5a5);
     }
-    g_assert_cmphex(qtest_readl(qts, buf + 4 * ARRAY_SIZE(req)), ==,
-                    0x5a5a5a5a);
+    g_assert_cmphex(qtest_readl(qts, buf + 4 * n), ==, 0x5a5a5a5a);
+}
+
+/*
+ * A request that its own length cuts short, inside a tag's header, its
+ * value buffer or before the end tag, is neither read nor written past
+ * that length, and its response code reports the failed parse; the tags
+ * before the cut are still answered.
+ */
+static void test_mbox_malformed(void)
+{
+    QTestState *qts = qtest_init("-machine raspi5b");
+    const uint64_t buf = 0x10000;
+    /* A 64-byte value buffer in a 32-byte request */
+    const uint32_t overrun[] = {
+        8 * 4, FW_REQUEST,
+        FW_TAG_BOARD_SERIAL, 64, 0,
+        0xa5a5a5a5, 0xa5a5a5a5, 0xa5a5a5a5,
+    };
+    /* A request that ends after the tag identifier */
+    const uint32_t cut[] = {
+        3 * 4, FW_REQUEST,
+        FW_TAG_BOARD_REVISION,
+        0xa5a5a5a5, 0xa5a5a5a5, 0xa5a5a5a5,
+    };
+    /* A complete tag, then no room for the end tag */
+    const uint32_t no_end[] = {
+        6 * 4, FW_REQUEST,
+        FW_TAG_BOARD_REVISION, 4, 0, 0xa5a5a5a5,
+        0xa5a5a5a5, 0xa5a5a5a5,
+    };
+    uint32_t val[2];
+
+    g_assert_cmphex(mbox_post(qts, buf, overrun, ARRAY_SIZE(overrun)), ==,
+                    FW_ERROR);
+    g_assert_cmphex(qtest_readl(qts, buf + 16), ==, 0);
+    mbox_assert_untouched(qts, buf, 5, ARRAY_SIZE(overrun));
+
+    g_assert_cmphex(mbox_post(qts, buf, cut, ARRAY_SIZE(cut)), ==, FW_ERROR);
+    mbox_assert_untouched(qts, buf, 3, ARRAY_SIZE(cut));
+
+    g_assert_cmphex(mbox_post(qts, buf, no_end, ARRAY_SIZE(no_end)), ==,
+                    FW_ERROR);
+    g_assert_cmphex(qtest_readl(qts, buf + 16), ==, FW_TAG_RESPONSE | 4);
+    g_assert_cmphex(qtest_readl(qts, buf + 20), ==, 0xb04170);  /* 2 GiB */
+    mbox_assert_untouched(qts, buf, 6, ARRAY_SIZE(no_end));
+
+    /* The channel still works afterwards */
+    mbox_request(qts, buf, VC_BUS_RAM | buf, FW_TAG_BOARD_REVISION);
+    mbox_response(qts, buf, VC_BUS_RAM | buf, val);
+    g_assert_cmphex(val[0], ==, 0xb04170);
 
     qtest_quit(qts);
 }
@@ -717,6 +767,9 @@ static void test_mbox_identity(void)
     g_assert_cmphex(mbox_tag(qts, FW_TAG_DMA_CHANNELS, 4, val), ==,
                     FW_TAG_RESPONSE | 4);
     g_assert_cmphex(val[0], ==, 0x7ff);
+    g_assert_cmphex(mbox_tag(qts, FW_TAG_DMA_CHANNELS, 0, val), ==,
+                    FW_TAG_RESPONSE | 4);
+    g_assert_cmphex(qtest_readl(qts, 0x10000 + 20), ==, 0);
 
     qtest_quit(qts);
 
@@ -724,6 +777,44 @@ static void test_mbox_identity(void)
     mbox_tag(qts, FW_TAG_BOARD_SERIAL, 8, val);
     g_assert_cmphex(val[0], ==, 0x55667788);
     g_assert_cmphex(val[1], ==, 0x11223344);
+    qtest_quit(qts);
+}
+
+/*
+ * The tags the model answered before this series stay within the value
+ * buffer too: what fits is written, the response length says what the
+ * whole answer needs, and a request field the buffer does not hold reads
+ * as zero.
+ */
+static void test_mbox_short_buffer(void)
+{
+    QTestState *qts = qtest_init("-machine raspi5b");
+    uint32_t val[4];
+
+    /* ARM memory: the base fits, the size does not; the end tag survives */
+    g_assert_cmphex(mbox_tag(qts, FW_TAG_ARM_MEMORY, 4, val), ==,
+                    FW_TAG_RESPONSE | 8);
+    g_assert_cmphex(val[0], ==, 0);
+    g_assert_cmphex(qtest_readl(qts, 0x10000 + 24), ==, 0);
+
+    /* A clock rate: the marker is an unknown clock id, so the default */
+    g_assert_cmphex(mbox_tag(qts, FW_TAG_CLOCK_RATE, 8, val), ==,
+                    FW_TAG_RESPONSE | 8);
+    g_assert_cmphex(val[0], ==, 0xa5a5a5a5);
+    g_assert_cmphex(val[1], ==, 700000000);
+    /* With room for the id only, the rate is not written anywhere */
+    g_assert_cmphex(mbox_tag(qts, FW_TAG_CLOCK_RATE, 4, val), ==,
+                    FW_TAG_RESPONSE | 8);
+    g_assert_cmphex(val[0], ==, 0xa5a5a5a5);
+    g_assert_cmphex(qtest_readl(qts, 0x10000 + 24), ==, 0);
+
+    /* Overscan: four words, of which two fit */
+    g_assert_cmphex(mbox_tag(qts, FW_TAG_OVERSCAN, 8, val), ==,
+                    FW_TAG_RESPONSE | 16);
+    g_assert_cmphex(val[0], ==, 0);
+    g_assert_cmphex(val[1], ==, 0);
+    g_assert_cmphex(qtest_readl(qts, 0x10000 + 28), ==, 0);
+
     qtest_quit(qts);
 }
 
@@ -937,9 +1028,10 @@ int main(int argc, char **argv)
     qtest_add_func("/raspi5b/systimer/migrate", test_systimer_migrate);
     qtest_add_func("/raspi5b/mbox/board-revision", test_mbox_board_revision);
     qtest_add_func("/raspi5b/mbox/unreachable", test_mbox_unreachable);
-    qtest_add_func("/raspi5b/mbox/tag-overrun", test_mbox_tag_overrun);
+    qtest_add_func("/raspi5b/mbox/malformed", test_mbox_malformed);
     qtest_add_func("/raspi5b/mbox/memory-split", test_mbox_memory_split);
     qtest_add_func("/raspi5b/mbox/identity", test_mbox_identity);
+    qtest_add_func("/raspi5b/mbox/short-buffer", test_mbox_short_buffer);
     qtest_add_func("/raspi5b/mbox/command-line", test_mbox_command_line);
     qtest_add_func("/raspi5b/rng/stopped", test_rng_stopped);
     qtest_add_func("/raspi5b/rng/start", test_rng_start);

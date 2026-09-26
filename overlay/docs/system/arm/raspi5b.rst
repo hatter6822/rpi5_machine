@@ -90,6 +90,14 @@ the board and the firmware answer as follows:
 * DMA channels: 0 to 10, the channels of the ``dma32`` and ``dma40``
   device tree nodes.
 
+Every answer stays within the value buffer its tag declares: a buffer too
+small for it gets as much as fits, and the tag's response length says how
+much the whole answer needs (the command line is the exception, copied
+only when it fits, as the firmware does). A request that is cut short
+inside a tag, or whose tag runs past the request's own length, is answered
+with the interface's error code, ``0x80000001``; a request the VideoCore
+cannot reach is not answered at all.
+
 Reset and power-off
 -------------------
 

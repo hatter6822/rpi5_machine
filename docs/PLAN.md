@@ -63,7 +63,7 @@ Delivered so far (WS0.1–WS0.3, WS0.5, WS0.6, WS2.1, WS2.2, WS2.3a, WS2.4, WS2.
 
 | Area | State |
 | --- | --- |
-| Repository | pinned QEMU v11.1.1 submodule, overlay + patch series (patches may share files, like an upstream series) managed by `scripts/qemu-tree`, which also exports the upstream series (WS0.5: 14 commits and a cover letter, checked with `git am`, checkpatch and a build of every commit), CI with ccache |
+| Repository | pinned QEMU v11.1.1 submodule, overlay + patch series (patches may share files, like an upstream series) managed by `scripts/qemu-tree`, which also exports the upstream series (WS0.5: 15 commits and a cover letter, checked with `git am`, checkpatch and a build of every commit), CI with ccache |
 | Kconfig (WS0.6) | every BCM283x device model has its own symbol, so `bcm2712` can select just the models it reuses; a `raspi5b`-only build is tested (`make check-minimal`) |
 | SoC (`bcm2712`) | 1–4 Cortex-A76 (`MPIDR.Aff1` = core, CNTFRQ 54 MHz, optional EL3), GIC-400 with 288 SPIs, 5 priority bits and all timer/maintenance PPIs, UART10 (PL011), system timer (WS2.1), watchdog and reset status (WS2.4), RNG200 (WS2.5), VideoCore mailbox with the BCM283x property and framebuffer channels (WS2.2) and every identity tag answered (WS2.3a), complete memory map with T0 placeholders and two catch-all windows |
 | Board (`raspi5b`) | 1/2/4/8/16 GiB RAM, board revision code, serial number (`serial=`), PSCI over SMC with EL2 entry (default) or guest-owned EL3 (`secure=on`), system reset and power-off through PSCI, the watchdog and the monitor (WS3.6), a built-in device tree when no `-dtb` is given (WS3.2; `builtin-dtb=off` passes none), DTB fix-ups for unmodelled devices, `/system/linux,revision` |
@@ -241,7 +241,7 @@ make the series reviewable, the SoC patch became two (the SoC, then the
 board), the qtest and documentation patches now carry their files'
 descriptions, and `MAINTAINERS` gains the new files in the Raspberry
 Pi entry; `refresh` can now add a file to a patch. The M0+M1 series is
-14 commits. Posting it waits for the author's `Signed-off-by:` and a
+15 commits. Posting it waits for the author's `Signed-off-by:` and a
 choice of maintainer entry (WS9.7).
 
 `scripts/qemu-tree export <dir>` turns the overlay and patches into the
@@ -398,15 +398,19 @@ background below, found by tracing the mailbox: the firmware's DT gives
 plain physical addresses; the `0x0` alias is the one Linux needs, and
 `0xc000_0000` serves code written for older Pis. One upstream-first fix
 (patch 0006): the property channel no longer answers a buffer that is
-not in that address space; before, it read zeros, wrote nowhere and
-still signalled a response. The property model needs a framebuffer and
-an OTP to link to, so both are instantiated now (WS8.1 still owns the
-framebuffer's behaviour); its VideoCore memory is the top 4 MiB of the
-first GiB (`TODO(WS0.4)`: `GET_VC_MEMORY` on hardware), which the
-machine now leaves out of the DT memory node, as the firmware does. The
-`mailbox` and `firmware` nodes stay enabled: Linux's mailbox driver
-probes, `raspberrypi-firmware` attaches ("Attached to firmware from
-..."), and none of its clients reports an error at boot.
+not in that address space (before, it read zeros, wrote nowhere and
+still signalled a response), and a request cut short inside a tag gets
+the interface's error code; a second (patch 0008) keeps every tag
+within the value buffer it declares, reading missing fields as zero
+and clipping answers, as the identity tags already did. The property
+model needs a framebuffer and an OTP to link to, so both are
+instantiated now (WS8.1 still owns the framebuffer's behaviour); its
+VideoCore memory is the top 4 MiB of the first GiB (`TODO(WS0.4)`:
+`GET_VC_MEMORY` on hardware), which the machine now leaves out of the DT
+memory node, as the firmware does. The `mailbox` and `firmware` nodes
+stay enabled: Linux's mailbox driver probes, `raspberrypi-firmware`
+attaches ("Attached to firmware from ..."), and none of its clients
+reports an error at boot.
 Tags the model does not know yet (firmware variant and hash) are
 WS2.3a. qtests cover `GET_BOARD_REVISION` through both aliases with the
 interrupt, an unreachable buffer, and the ARM/VC memory split; the

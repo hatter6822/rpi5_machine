@@ -60,10 +60,21 @@ MINIMAL_DTS = """
 
 
 def fdtget(dtb, node, prop):
-    """Return a string property, or None when it is absent."""
+    """Return a string property of @node, or None when the node lacks it.
+
+    The node itself must exist: a tree the fix-ups had dropped it from
+    would otherwise read as "no status property" and pass.
+    """
+    subprocess.run(["fdtget", "-p", str(dtb), node], capture_output=True,
+                   text=True, check=True)
     result = subprocess.run(["fdtget", "-t", "s", str(dtb), node, prop],
                             capture_output=True, text=True)
-    return result.stdout.strip() if result.returncode == 0 else None
+    if result.returncode == 0:
+        return result.stdout.strip()
+    if "FDT_ERR_NOTFOUND" in result.stderr:
+        return None
+    raise subprocess.CalledProcessError(result.returncode, result.args,
+                                        result.stdout, result.stderr)
 
 
 @unittest.skipUnless(QEMU.exists() and GUEST.exists(),

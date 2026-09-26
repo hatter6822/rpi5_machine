@@ -26,8 +26,9 @@ The series is in four parts:
   The watchdog now counts down instead of resetting the machine as soon
   as it is armed, and the reset status survives the reset it reports.
   The property channel no longer answers a buffer the firmware could
-  not read, and it answers the firmware and board identity tags Linux
-  asks for.
+  not read, answers a request cut short with the interface's error
+  code, keeps every tag within the value buffer it declares, and
+  answers the firmware and board identity tags Linux asks for.
 
 - A new RNG200 model, and two fixes for bugs found by the tests:
   - with the Security Extensions, a Non-secure write to GICD_SGIR could

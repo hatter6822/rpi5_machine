@@ -154,5 +154,18 @@ run-hello: build guest
 clean:
 	$(MAKE) -C $(GUEST_DIR) OUT=$(GUEST_BUILD) clean
 
+# distclean removes a directory only when this repository made it, since
+# each of these variables can point anywhere: a build directory carries
+# configure's stamp, an export the marker scripts/qemu-tree writes, and the
+# schema directory holds nothing but the schema and its clone
+define rm_made
+@if [ -e '$(1)' ] && ! { [ -d '$(1)' ] && $(2); }; then \
+	echo "distclean: $(1) was not made here, leaving it" >&2; exit 1; \
+fi; rm -rf '$(1)'
+endef
+
 distclean: clean
-	rm -rf $(BUILD_DIR) $(MINIMAL_BUILD_DIR) $(DT_SCHEMA_DIR) $(SERIES_DIR)
+	$(call rm_made,$(BUILD_DIR),[ -f '$(BUILD_DIR)/$(notdir $(CONFIGURE_STAMP))' ])
+	$(call rm_made,$(MINIMAL_BUILD_DIR),[ -f '$(MINIMAL_BUILD_DIR)/$(notdir $(CONFIGURE_STAMP))' ])
+	$(call rm_made,$(SERIES_DIR),[ -f '$(SERIES_DIR)/.qemu-tree-export' ])
+	$(call rm_made,$(DT_SCHEMA_DIR),[ -z "$$(find '$(DT_SCHEMA_DIR)' -mindepth 1 -maxdepth 1 ! -name 'linux-*.json' ! -name 'linux-*.json.tmp' ! -name linux -print -quit)" ])
