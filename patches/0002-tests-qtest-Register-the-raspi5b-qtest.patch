@@ -1,0 +1,23 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: A7om <hatter6822@gmail.com>
+Date: Sat, 26 Sep 2026 00:00:00 +0000
+Subject: [PATCH] tests/qtest: Register the raspi5b qtest
+
+Run raspi5b-test for qemu-system-aarch64 builds that include the
+Raspberry Pi 5 machine.
+---
+ tests/qtest/meson.build | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/tests/qtest/meson.build b/tests/qtest/meson.build
+index 56ff860..624541e 100644
+--- a/tests/qtest/meson.build
++++ b/tests/qtest/meson.build
+@@ -267,6 +267,7 @@ qtests_aarch64 = \
+   (config_all_devices.has_key('CONFIG_XLNX_ZYNQMP_ARM') ? ['xlnx-can-test', 'fuzz-xlnx-dp-test'] : []) + \
+   (config_all_devices.has_key('CONFIG_XLNX_VERSAL') ? ['xlnx-canfd-test', 'xlnx-versal-trng-test'] : []) + \
+   (config_all_devices.has_key('CONFIG_RASPI') ? ['bcm2835-dma-test', 'bcm2835-i2c-test'] : []) +  \
++  (config_all_devices.has_key('CONFIG_RASPI5') ? ['raspi5b-test'] : []) +  \
+   (config_all_accel.has_key('CONFIG_TCG') and                                            \
+    config_all_devices.has_key('CONFIG_TPM_TIS_I2C') ? ['tpm-tis-i2c-test', 'tpm-tis-i2c-swtpm-test'] : []) + \
+   (config_all_devices.has_key('CONFIG_ASPEED_SOC') ? qtests_aspeed64 : []) + \

@@ -1,0 +1,8 @@
+[submodule "qemu"]
+	path = qemu
+	url = https://gitlab.com/qemu-project/qemu.git
+	shallow = true
+	# The overlay and patch series are applied into this work tree, so
+	# local modifications there are expected; only the pinned commit is
+	# tracked by this repository.
+	ignore = dirty

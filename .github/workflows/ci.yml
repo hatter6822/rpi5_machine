@@ -1,0 +1,62 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
+name: CI
+
+# Branches are tested through their pull request (against the merge result);
+# a push trigger on every branch as well would run CI twice per update.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# A new push to a pull request supersedes its running check; every commit
+# that lands on main is tested to completion.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      CCACHE_MAXSIZE: 1G
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+          fetch-depth: 1
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            ccache clang lld ninja-build python3-venv shellcheck \
+            device-tree-compiler \
+            libglib2.0-dev libpixman-1-dev libfdt-dev
+
+      - name: Restore compiler cache
+        uses: actions/cache@v4
+        with:
+          path: .ccache
+          key: ccache-${{ runner.os }}-${{ hashFiles('.gitmodules', 'patches/**', 'overlay/**') }}
+          restore-keys: ccache-${{ runner.os }}-
+
+      # QEMU's configure does not wrap the compiler in ccache by itself
+      - name: Enable ccache
+        run: echo /usr/lib/ccache >> "$GITHUB_PATH"
+
+      - name: Lint
+        run: |
+          shellcheck scripts/qemu-tree
+          make checkpatch
+
+      - name: Build
+        run: make build
+
+      - name: Test
+        run: make check
+
+      - name: Compiler cache statistics
+        run: ccache --show-stats
