@@ -43,6 +43,14 @@ extern struct bm_platform bm_plat;
 int bm_main(void);
 
 /*
+ * Optionally provided by the program: called on core 0 once the platform
+ * is known and before the runtime touches any device (console, GIC), so
+ * the program can look at the state a reset left there. Nothing can be
+ * printed yet.
+ */
+void bm_early(void) __attribute__((weak));
+
+/*
  * Leave the program: PSCI SYSTEM_OFF below EL3, semihosting SYS_EXIT with
  * @code at EL3 (QEMU, -semihosting). Where neither ends the program, as on
  * hardware at EL3, the core parks.

@@ -96,7 +96,7 @@ capture from hardware can be compared with QEMU's:
 # EL2, 4 cores, device tree at 0x0 (177480 bytes)
 # pm 0x107d200000 (dt), boot 1, reset status 0x1000
 # uart 0x107d001000 (dt), gic 0x107fff9000/0x107fffa000 (dt), systimer 0x107c003000 intid 96-99 (dt)
-# 13 tests
+# 14 tests
 PASS: gic/geometry
 # raspi5b bare-metal tests
 # EL2, 4 cores, device tree at 0x0 (177480 bytes)

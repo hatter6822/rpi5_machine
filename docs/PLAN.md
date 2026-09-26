@@ -59,15 +59,15 @@ commit (or a short series) with its own tests.
 
 ## 2. Current state
 
-Delivered so far (WS0.1–WS0.3, WS0.6, WS2.1, WS2.4, WS9.2a):
+Delivered so far (WS0.1–WS0.3, WS0.6, WS2.1, WS2.4, WS3.6, WS9.2a):
 
 | Area | State |
 | --- | --- |
 | Repository | pinned QEMU v11.1.1 submodule, overlay + patch series (patches may share files, like an upstream series) managed by `scripts/qemu-tree`, CI with ccache |
 | Kconfig (WS0.6) | every BCM283x device model has its own symbol, so `bcm2712` can select just the models it reuses; a `raspi5b`-only build is tested (`make check-minimal`) |
 | SoC (`bcm2712`) | 1–4 Cortex-A76 (`MPIDR.Aff1` = core, CNTFRQ 54 MHz, optional EL3), GIC-400 with 288 SPIs, 5 priority bits and all timer/maintenance PPIs, UART10 (PL011), system timer (WS2.1), watchdog and reset status (WS2.4), complete memory map with T0 placeholders and two catch-all windows |
-| Board (`raspi5b`) | 1/2/4/8/16 GiB RAM, board revision code, PSCI over SMC with EL2 entry (default) or guest-owned EL3 (`secure=on`), DTB fix-ups for unmodelled devices, `/system/linux,revision` |
-| Tests | qtest (UART IDs, GIC geometry, priority bits and security, RAM, placeholders, system timer, watchdog), bare-metal smoke guest (EL, MPIDR, CNTFRQ, PSCI CPU_ON on all cores, SYSTEM_OFF, EL3 mode), bare-metal library and suite (WS9.2a: GIC, timers, system timer, PSCI/SMP, a watchdog reset survived through RAM; 1–4 cores, with and without a DT, EL2 and EL3) |
+| Board (`raspi5b`) | 1/2/4/8/16 GiB RAM, board revision code, PSCI over SMC with EL2 entry (default) or guest-owned EL3 (`secure=on`), system reset and power-off through PSCI, the watchdog and the monitor (WS3.6), DTB fix-ups for unmodelled devices, `/system/linux,revision` |
+| Tests | qtest (UART IDs, GIC geometry, priority bits and security, RAM, placeholders, system timer, watchdog), bare-metal smoke guest (EL, MPIDR, CNTFRQ, PSCI CPU_ON on all cores, SYSTEM_OFF, EL3 mode), bare-metal library and suite (WS9.2a: GIC, timers, system timer, PSCI/SMP, a watchdog reset and four system resets checked against the boot state; 1–4 cores, with and without a DT, EL2 and EL3) |
 | Linux | the stock Raspberry Pi OS kernel (6.18) with the firmware's `bcm2712-rpi-5-b.dtb` boots on 4 CPUs to the root-fs mount, without warnings |
 
 Known provisional values, each marked in the code: 288 SPIs
@@ -135,7 +135,7 @@ immediately exercised by the next:
 | 2 | WS2.1 system timer (done) | first reused device; exercises the SPI wiring path |
 | 3 | WS9.2a bare-metal framework (done) | exception vectors and a GIC driver in the guest, needed by every later test |
 | 4 | WS2.4 PM/watchdog (done) | reset and power-off, which every test harness needs |
-| 5 | WS3.6 reset semantics | makes the watchdog and PSCI `SYSTEM_RESET` trustworthy |
+| 5 | WS3.6 reset semantics (done) | makes the watchdog and PSCI `SYSTEM_RESET` trustworthy |
 | 6 | WS2.2 mailbox | the address-translation design decision, made once |
 | 7 | WS2.3a property identity tags | first consumer of the mailbox; lets the `firmware` DT node be enabled |
 | 8 | WS2.5 RNG200 | small, standalone, upstreamable |
@@ -623,7 +623,24 @@ Rather than emulating the closed-source firmware, a host tool
 **Done when:** it boots an unmodified Raspberry Pi OS Lite image to the
 login prompt with one command.
 
-#### WS3.6 Reset and power semantics (S)
+#### WS3.6 Reset and power semantics (done)
+*Delivered:* the audit found every stateful child of the SoC on the main
+system bus (GIC, system timer, PM, UART10, placeholders), so the machine
+reset reaches it; the CPUs are reset by `arm_load_kernel()`'s hook, and
+the SoC object itself holds no state. PSCI `SYSTEM_RESET`, the watchdog
+and `system_reset` all end in `qemu_system_reset_request()`. The
+bare-metal suite gained `bm_early()`, a hook that runs before the
+runtime touches any device, and `reset/system-reset`, which dirties every
+block (GIC, system timer, PM, UART, CPU timers, a running secondary),
+resets three times through PSCI and once through the watchdog, and
+compares the state each reset leaves, block by block, with the state the
+boot started with, along with the entry EL, the DT and the boot count; a
+PM model that kept `WDOG` across reset fails it. `pm/halt-exit` checks
+that the halt pattern ends QEMU with status 0 (`SYSTEM_OFF` is covered by
+the hello smoke test). The stock Raspberry Pi OS kernel with `panic=1`
+reboots through PSCI in a loop (seven boots in a minute, checked by
+hand; no Linux image in CI).
+
 **Depends:** WS2.4.
 System reset must reset every device (audit `Resettable` coverage of the
 SoC's children), restore the boot handoff (`arm_load_kernel`'s reset hook

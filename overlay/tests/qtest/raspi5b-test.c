@@ -361,6 +361,18 @@ static void test_pm_halt(void)
     qtest_quit(qts);
 }
 
+/* ...and QEMU exits with status 0, as for PSCI SYSTEM_OFF */
+static void test_pm_halt_exit(void)
+{
+    QTestState *qts = qtest_init("-machine raspi5b");
+
+    pm_writel(qts, PM_RSTS, PM_RSTS_HALT);
+    pm_wdog_start(qts, 10);
+    qtest_clock_step(qts, 200 * SCALE_US);
+    qtest_wait_qemu(qts);       /* checks the exit status */
+    qtest_quit(qts);
+}
+
 static void wait_for_migration(QTestState *qts)
 {
     for (;;) {
@@ -483,6 +495,7 @@ int main(int argc, char **argv)
     qtest_add_func("/raspi5b/pm/watchdog-kick", test_pm_watchdog_kick);
     qtest_add_func("/raspi5b/pm/watchdog-reset", test_pm_watchdog_reset);
     qtest_add_func("/raspi5b/pm/halt", test_pm_halt);
+    qtest_add_func("/raspi5b/pm/halt-exit", test_pm_halt_exit);
     qtest_add_func("/raspi5b/pm/migrate", test_pm_migrate);
 
     return g_test_run();

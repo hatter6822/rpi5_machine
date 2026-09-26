@@ -60,6 +60,18 @@ protocol, with the device tree address in ``x0``) or an ELF file (entered at
 its entry point; a ``-dtb`` blob is placed at the base of RAM if it fits
 below the image). ``-bios`` is not supported yet.
 
+Reset and power-off
+-------------------
+
+PSCI ``SYSTEM_RESET``, the watchdog and the monitor's ``system_reset`` all
+reset the machine the same way: every device returns to its reset state,
+RAM is kept, the images given with ``-kernel`` and ``-dtb`` are loaded
+again and the boot starts over as from power-on, except that the PM
+block's reset status register (``RSTS``) keeps its value and records a
+watchdog reset. PSCI ``SYSTEM_OFF`` and Linux's halt request through the
+watchdog (boot partition 63 in ``RSTS``) power the machine off, and QEMU
+exits with status 0.
+
 When a device tree is supplied with ``-dtb`` (for example
 ``bcm2712-rpi-5-b.dtb``), QEMU sets the memory node, marks nodes of devices
 that are not modelled yet as ``status = "disabled"`` and publishes the board

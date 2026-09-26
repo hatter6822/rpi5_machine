@@ -194,6 +194,9 @@ void bm_start(uintptr_t x0)
     discover_pm();
     discover_cpus();
 
+    if (bm_early) {
+        bm_early();
+    }
     console_init(bm_plat.uart);
     gic_init_dist(bm_plat.gicd, bm_plat.gicc);
     gic_init_cpu();
