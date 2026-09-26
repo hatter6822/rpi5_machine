@@ -67,6 +67,24 @@ protocol, with the device tree address in ``x0``) or an ELF file (entered at
 its entry point; a ``-dtb`` blob is placed at the base of RAM if it fits
 below the image). ``-bios`` is not supported yet.
 
+Firmware property interface
+---------------------------
+
+The property channel answers the BCM283x tag set. The tags that identify
+the board and the firmware answer as follows:
+
+* board revision: the new-style code of a Pi 5 with the configured RAM;
+* board serial number: ``-machine raspi5b,serial=<n>`` (a 64-bit number;
+  the default, ``0x0123456789abcdef``, is made up);
+* firmware revision, variant and hash: a fixed revision, the standard
+  ("start") firmware and an all-zero hash, since no firmware build stands
+  behind the model;
+* ARM and VideoCore memory: the first GiB less the top 4 MiB, and those
+  4 MiB;
+* command line: the ``-append`` string;
+* DMA channels: 0 to 10, the channels of the ``dma32`` and ``dma40``
+  device tree nodes.
+
 Reset and power-off
 -------------------
 

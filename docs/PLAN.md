@@ -59,19 +59,20 @@ commit (or a short series) with its own tests.
 
 ## 2. Current state
 
-Delivered so far (WS0.1–WS0.3, WS0.6, WS2.1, WS2.2, WS2.4, WS3.6, WS9.2a):
+Delivered so far (WS0.1–WS0.3, WS0.6, WS2.1, WS2.2, WS2.3a, WS2.4, WS3.6, WS9.2a):
 
 | Area | State |
 | --- | --- |
 | Repository | pinned QEMU v11.1.1 submodule, overlay + patch series (patches may share files, like an upstream series) managed by `scripts/qemu-tree`, CI with ccache |
 | Kconfig (WS0.6) | every BCM283x device model has its own symbol, so `bcm2712` can select just the models it reuses; a `raspi5b`-only build is tested (`make check-minimal`) |
-| SoC (`bcm2712`) | 1–4 Cortex-A76 (`MPIDR.Aff1` = core, CNTFRQ 54 MHz, optional EL3), GIC-400 with 288 SPIs, 5 priority bits and all timer/maintenance PPIs, UART10 (PL011), system timer (WS2.1), watchdog and reset status (WS2.4), VideoCore mailbox with the BCM283x property and framebuffer channels (WS2.2), complete memory map with T0 placeholders and two catch-all windows |
-| Board (`raspi5b`) | 1/2/4/8/16 GiB RAM, board revision code, PSCI over SMC with EL2 entry (default) or guest-owned EL3 (`secure=on`), system reset and power-off through PSCI, the watchdog and the monitor (WS3.6), DTB fix-ups for unmodelled devices, `/system/linux,revision` |
-| Tests | qtest (UART IDs, GIC geometry, priority bits and security, RAM, placeholders, system timer, watchdog, mailbox), bare-metal smoke guest (EL, MPIDR, CNTFRQ, PSCI CPU_ON on all cores, SYSTEM_OFF, EL3 mode), bare-metal library and suite (WS9.2a: GIC, timers, system timer, PSCI/SMP, the mailbox, a watchdog reset and four system resets checked against the boot state; 1–4 cores, with and without a DT, EL2 and EL3) |
+| SoC (`bcm2712`) | 1–4 Cortex-A76 (`MPIDR.Aff1` = core, CNTFRQ 54 MHz, optional EL3), GIC-400 with 288 SPIs, 5 priority bits and all timer/maintenance PPIs, UART10 (PL011), system timer (WS2.1), watchdog and reset status (WS2.4), VideoCore mailbox with the BCM283x property and framebuffer channels (WS2.2) and every identity tag answered (WS2.3a), complete memory map with T0 placeholders and two catch-all windows |
+| Board (`raspi5b`) | 1/2/4/8/16 GiB RAM, board revision code, serial number (`serial=`), PSCI over SMC with EL2 entry (default) or guest-owned EL3 (`secure=on`), system reset and power-off through PSCI, the watchdog and the monitor (WS3.6), DTB fix-ups for unmodelled devices, `/system/linux,revision` |
+| Tests | qtest (UART IDs, GIC geometry, priority bits and security, RAM, placeholders, system timer, watchdog, mailbox, identity tags), bare-metal smoke guest (EL, MPIDR, CNTFRQ, PSCI CPU_ON on all cores, SYSTEM_OFF, EL3 mode), bare-metal library and suite (WS9.2a: GIC, timers, system timer, PSCI/SMP, the mailbox and identity tags, a watchdog reset and four system resets checked against the boot state; 1–4 cores, with and without a DT, EL2 and EL3) |
 | Linux | the stock Raspberry Pi OS kernel (6.18) with the firmware's `bcm2712-rpi-5-b.dtb` boots on 4 CPUs to the root-fs mount, without warnings |
 
 Known provisional values, each marked in the code: 288 SPIs
-(`TODO(WS1.3)`), the PMU interrupts taken from the vendor DT
+(`TODO(WS1.3)`), the VideoCore memory size and DMA channel mask
+(`TODO(WS0.4)`), the PMU interrupts taken from the vendor DT
 (`TODO(WS1.4)`), `-bios` handling
 (`TODO(WS3.3)`), and the board revision's `REVISION` field (WS9.8).
 
@@ -137,7 +138,7 @@ immediately exercised by the next:
 | 4 | WS2.4 PM/watchdog (done) | reset and power-off, which every test harness needs |
 | 5 | WS3.6 reset semantics (done) | makes the watchdog and PSCI `SYSTEM_RESET` trustworthy |
 | 6 | WS2.2 mailbox (done) | the address-translation design decision, made once |
-| 7 | WS2.3a property identity tags | first consumer of the mailbox; lets the `firmware` DT node be enabled |
+| 7 | WS2.3a property identity tags (done) | first consumer of the mailbox; lets the `firmware` DT node be enabled |
 | 8 | WS2.5 RNG200 | small, standalone, upstreamable |
 | 9 | WS3.2 built-in device tree | microkernels get a DT without `-dtb`; forces the memory map to be the single source of truth |
 | 10 | WS9.2b full bare-metal suite | M1 exit test |
@@ -424,6 +425,29 @@ allocates them from the CMA area below `0x4000_0000`, see `linux,cma` in
 `raspberrypi-firmware soc:firmware: Attached to firmware from ...`.
 
 #### WS2.3 Firmware property interface (L, split)
+*WS2.3a delivered:* one upstream-first patch (0007) answers the firmware
+variant (the standard firmware, "start") and hash (all zeroes), which
+Linux asks for at probe and got a success over its own buffer for, and
+turns the board model (0), serial and DMA-channel stubs into defined
+answers: the serial and the DMA mask are new `board-serial` and
+`dma-channel-mask` properties whose defaults leave the other boards
+unchanged. `raspi5b` takes the serial from a `serial` machine property
+(default `0x0123456789abcdef`) and reports DMA channels 0–10, the
+channels of the firmware DT's `dma32` and `dma40` nodes
+(`TODO(WS0.4)`). The rest of the 2.3a set already had correct answers
+(revision, MAC, ARM/VC memory, command line); qtests now cover every
+tag, including the command line's too-short-buffer case, and the
+bare-metal suite (`mbox/identity`) checks the answers against each
+other and against the DT memory node. Linux prints "Attached to
+firmware from ..., variant start" and the hash, and asks for no tag the
+model lacks until `SET_CLOCK_STATE` (2.3b). Deviation: the tag table
+below is deferred to 2.3b, which adds a couple of dozen tags; 2.3a
+added five cases, and a refactor of every existing handler would have
+dwarfed them in the upstream patch. The firmware revision stays the
+model's fixed value, and the MAC address QEMU's default, until the RP1
+Ethernet (WS7) owns a NIC to take it from, so there is no `mac` machine
+property yet.
+
 **Depends:** WS2.2.
 `bcm2835-property` implements the tags the Pi 3/4 models need. Rather
 than growing one `switch` further, split the tag handlers into a table

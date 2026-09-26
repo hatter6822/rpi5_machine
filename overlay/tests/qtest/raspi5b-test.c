@@ -54,9 +54,16 @@
 /* include/soc/bcm2835/raspberrypi-firmware.h */
 #define FW_REQUEST              0
 #define FW_SUCCESS              0x80000000
+#define FW_TAG_FIRMWARE_VARIANT 0x00000002
+#define FW_TAG_FIRMWARE_HASH    0x00000003
+#define FW_TAG_BOARD_MODEL      0x00010001
 #define FW_TAG_BOARD_REVISION   0x00010002
+#define FW_TAG_BOARD_SERIAL     0x00010004
 #define FW_TAG_ARM_MEMORY       0x00010005
 #define FW_TAG_VC_MEMORY        0x00010006
+#define FW_TAG_DMA_CHANNELS     0x00060001
+#define FW_TAG_COMMAND_LINE     0x00050001
+#define FW_TAG_RESPONSE         BIT(31)
 
 /* Where the VideoCore sees the first GiB of RAM (dma-ranges of "soc") */
 #define VC_BUS_RAM              0xc0000000u
@@ -588,6 +595,118 @@ static void test_mbox_memory_split(void)
     qtest_quit(qts);
 }
 
+/*
+ * Ask for @tag with a @size-byte value buffer, filled with a marker so
+ * that words the firmware leaves alone stand out, and copy the value
+ * back into @val. Returns the tag's response code and length.
+ */
+static uint32_t mbox_tag(QTestState *qts, uint32_t tag, uint32_t size,
+                         uint32_t *val)
+{
+    const uint64_t buf = 0x10000;
+    const uint32_t words = DIV_ROUND_UP(size, 4);
+
+    qtest_writel(qts, buf, (6 + words) * 4);
+    qtest_writel(qts, buf + 4, FW_REQUEST);
+    qtest_writel(qts, buf + 8, tag);
+    qtest_writel(qts, buf + 12, size);
+    qtest_writel(qts, buf + 16, 0);
+    for (int i = 0; i < words; i++) {
+        qtest_writel(qts, buf + 20 + 4 * i, 0xa5a5a5a5);
+    }
+    qtest_writel(qts, buf + 20 + 4 * words, 0);
+    qtest_writel(qts, MBOX_BASE + MBOX_WRITE,
+                 VC_BUS_RAM | buf | MBOX_CHAN_PROPERTY);
+
+    g_assert_true(mbox_has_response(qts));
+    g_assert_cmphex(qtest_readl(qts, MBOX_BASE + MBOX_READ), ==,
+                    VC_BUS_RAM | buf | MBOX_CHAN_PROPERTY);
+    g_assert_cmphex(qtest_readl(qts, buf + 4), ==, FW_SUCCESS);
+    for (int i = 0; i < words; i++) {
+        val[i] = qtest_readl(qts, buf + 20 + 4 * i);
+    }
+    return qtest_readl(qts, buf + 16);
+}
+
+/* The tags Linux's firmware driver and bare-metal code identify us by */
+static void test_mbox_identity(void)
+{
+    QTestState *qts = qtest_init("-machine raspi5b");
+    uint32_t val[5];
+
+    g_assert_cmphex(mbox_tag(qts, FW_TAG_FIRMWARE_VARIANT, 4, val), ==,
+                    FW_TAG_RESPONSE | 4);
+    g_assert_cmphex(val[0], ==, 1);                     /* "start" */
+
+    g_assert_cmphex(mbox_tag(qts, FW_TAG_FIRMWARE_HASH, 20, val), ==,
+                    FW_TAG_RESPONSE | 20);
+    for (int i = 0; i < 5; i++) {
+        g_assert_cmphex(val[i], ==, 0);
+    }
+    /* A short buffer gets the length it needs, and nothing past its end */
+    qtest_writel(qts, 0x10000 + 32, 0x5a5a5a5a);
+    g_assert_cmphex(mbox_tag(qts, FW_TAG_FIRMWARE_HASH, 8, val), ==,
+                    FW_TAG_RESPONSE | 20);
+    g_assert_cmphex(val[0], ==, 0);
+    g_assert_cmphex(val[1], ==, 0);
+    g_assert_cmphex(qtest_readl(qts, 0x10000 + 32), ==, 0x5a5a5a5a);
+
+    g_assert_cmphex(mbox_tag(qts, FW_TAG_BOARD_MODEL, 4, val), ==,
+                    FW_TAG_RESPONSE | 4);
+    g_assert_cmphex(val[0], ==, 0);
+
+    g_assert_cmphex(mbox_tag(qts, FW_TAG_BOARD_SERIAL, 8, val), ==,
+                    FW_TAG_RESPONSE | 8);
+    g_assert_cmphex(val[0], ==, 0x89abcdef);
+    g_assert_cmphex(val[1], ==, 0x01234567);
+
+    g_assert_cmphex(mbox_tag(qts, FW_TAG_DMA_CHANNELS, 4, val), ==,
+                    FW_TAG_RESPONSE | 4);
+    g_assert_cmphex(val[0], ==, 0x7ff);
+
+    qtest_quit(qts);
+
+    qts = qtest_init("-machine raspi5b,serial=0x1122334455667788");
+    mbox_tag(qts, FW_TAG_BOARD_SERIAL, 8, val);
+    g_assert_cmphex(val[0], ==, 0x55667788);
+    g_assert_cmphex(val[1], ==, 0x11223344);
+    qtest_quit(qts);
+}
+
+/*
+ * The firmware returns the command line without a terminator, and when
+ * the buffer is too small, only the length it needs.
+ */
+static void test_mbox_command_line(void)
+{
+    static const char cmdline[] = "console=ttyAMA10,115200 quiet";
+    static const uint32_t wfi_loop[] = { 0xd503207f, 0x17ffffff };
+    g_autofree char *kernel = NULL;
+    QTestState *qts;
+    uint32_t val[12];
+    int fd;
+
+    /* -append needs a -kernel; the CPU never runs it under qtest */
+    fd = g_file_open_tmp("raspi5b-kernel-XXXXXX", &kernel, NULL);
+    g_assert_cmpint(fd, >=, 0);
+    g_assert_cmpint(write(fd, wfi_loop, sizeof(wfi_loop)), ==,
+                    sizeof(wfi_loop));
+    close(fd);
+    qts = qtest_initf("-machine raspi5b -kernel %s -append '%s'",
+                      kernel, cmdline);
+
+    g_assert_cmphex(mbox_tag(qts, FW_TAG_COMMAND_LINE, sizeof(val), val),
+                    ==, FW_TAG_RESPONSE | strlen(cmdline));
+    g_assert_cmpmem(val, strlen(cmdline), cmdline, strlen(cmdline));
+
+    g_assert_cmphex(mbox_tag(qts, FW_TAG_COMMAND_LINE, 8, val), ==,
+                    FW_TAG_RESPONSE | strlen(cmdline));
+    g_assert_cmphex(val[0], ==, 0xa5a5a5a5);
+
+    qtest_quit(qts);
+    unlink(kernel);
+}
+
 static void test_unimplemented_regions(void)
 {
     QTestState *qts = qtest_init("-machine raspi5b");
@@ -616,6 +735,8 @@ int main(int argc, char **argv)
     qtest_add_func("/raspi5b/mbox/board-revision", test_mbox_board_revision);
     qtest_add_func("/raspi5b/mbox/unreachable", test_mbox_unreachable);
     qtest_add_func("/raspi5b/mbox/memory-split", test_mbox_memory_split);
+    qtest_add_func("/raspi5b/mbox/identity", test_mbox_identity);
+    qtest_add_func("/raspi5b/mbox/command-line", test_mbox_command_line);
     qtest_add_func("/raspi5b/pm/registers", test_pm_registers);
     qtest_add_func("/raspi5b/pm/watchdog-countdown",
                    test_pm_watchdog_countdown);

@@ -262,6 +262,8 @@ static void bcm2712_init(Object *obj)
                               "board-rev");
     object_property_add_alias(obj, "command-line", OBJECT(&s->property),
                               "command-line");
+    object_property_add_alias(obj, "board-serial", OBJECT(&s->property),
+                              "board-serial");
     object_property_add_const_link(OBJECT(&s->property), "fb",
                                    OBJECT(&s->fb));
     object_property_add_const_link(OBJECT(&s->property), "otp",
@@ -375,7 +377,9 @@ static bool bcm2712_realize_vc(BCM2712State *s, Error **errp)
                                   BCM2712_VC_RAM_SIZE, errp) ||
         !bcm2712_realize_mbox_client(s, SYS_BUS_DEVICE(&s->fb), MBOX_CHAN_FB,
                                      errp) ||
-        !sysbus_realize(SYS_BUS_DEVICE(&s->otp), errp)) {
+        !sysbus_realize(SYS_BUS_DEVICE(&s->otp), errp) ||
+        !object_property_set_uint(OBJECT(&s->property), "dma-channel-mask",
+                                  BCM2712_DMA_CHANNEL_MASK, errp)) {
         return false;
     }
     return bcm2712_realize_mbox_client(s, SYS_BUS_DEVICE(&s->property),

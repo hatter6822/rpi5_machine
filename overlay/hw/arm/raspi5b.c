@@ -18,6 +18,7 @@
 #include "qemu/host-utils.h"
 #include "qemu/units.h"
 #include "qapi/error.h"
+#include "qapi/visitor.h"
 #include "hw/arm/bcm2712.h"
 #include "hw/arm/boot.h"
 #include "hw/arm/machines-qom.h"
@@ -39,8 +40,12 @@ struct Raspi5bMachineState {
     BCM2712State soc;
     struct arm_boot_info binfo;
     uint32_t board_rev;
+    uint64_t serial;
     bool secure;
 };
+
+/* An obviously made-up serial number, overridden with "serial=" */
+#define RASPI5B_DEFAULT_SERIAL  0x0123456789abcdefULL
 
 /*
  * "New-style" board revision code, see
@@ -234,6 +239,7 @@ static void raspi5b_machine_init(MachineState *machine)
     object_property_set_link(OBJECT(soc), "ram", OBJECT(machine->ram),
                              &error_abort);
     qdev_prop_set_uint32(soc, "board-rev", s->board_rev);
+    qdev_prop_set_uint64(soc, "board-serial", s->serial);
     /* The firmware passes on the command line it gives the kernel */
     qdev_prop_set_string(soc, "command-line", machine->kernel_cmdline);
     qdev_realize(soc, NULL, &error_fatal);
@@ -256,6 +262,23 @@ static bool raspi5b_get_secure(Object *obj, Error **errp)
 static void raspi5b_set_secure(Object *obj, bool value, Error **errp)
 {
     RASPI5B_MACHINE(obj)->secure = value;
+}
+
+static void raspi5b_get_serial(Object *obj, Visitor *v, const char *name,
+                               void *opaque, Error **errp)
+{
+    visit_type_uint64(v, name, &RASPI5B_MACHINE(obj)->serial, errp);
+}
+
+static void raspi5b_set_serial(Object *obj, Visitor *v, const char *name,
+                               void *opaque, Error **errp)
+{
+    visit_type_uint64(v, name, &RASPI5B_MACHINE(obj)->serial, errp);
+}
+
+static void raspi5b_machine_instance_init(Object *obj)
+{
+    RASPI5B_MACHINE(obj)->serial = RASPI5B_DEFAULT_SERIAL;
 }
 
 static void raspi5b_machine_class_init(ObjectClass *oc, const void *data)
@@ -285,6 +308,11 @@ static void raspi5b_machine_class_init(ObjectClass *oc, const void *data)
         "Expose EL3 and the GIC Security Extensions to the guest. "
         "When off (the default), QEMU provides PSCI in place of the "
         "firmware's TF-A BL31");
+
+    object_class_property_add(oc, "serial", "uint64", raspi5b_get_serial,
+                              raspi5b_set_serial, NULL, NULL);
+    object_class_property_set_description(oc, "serial",
+        "The board serial number the firmware reports (GET_BOARD_SERIAL)");
 }
 
 static const TypeInfo raspi5b_machine_types[] = {
@@ -293,6 +321,7 @@ static const TypeInfo raspi5b_machine_types[] = {
         .parent         = TYPE_MACHINE,
         .instance_size  = sizeof(Raspi5bMachineState),
         .class_init     = raspi5b_machine_class_init,
+        .instance_init  = raspi5b_machine_instance_init,
         .interfaces     = aarch64_machine_interfaces,
     },
 };

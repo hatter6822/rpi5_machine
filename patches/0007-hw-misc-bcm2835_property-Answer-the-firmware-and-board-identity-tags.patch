@@ -1,0 +1,111 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: A7om <hatter6822@gmail.com>
+Date: Sat, 26 Sep 2026 00:00:00 +0000
+Subject: [PATCH] hw/misc/bcm2835_property: Answer the firmware and board
+ identity tags
+
+Linux's raspberrypi-firmware driver asks for the firmware variant and
+hash when it probes. The model does not know either tag, so the guest
+gets back a success response over whatever its buffer held.
+
+GET_BOARD_MODEL and GET_BOARD_SERIAL were stubs that also answered
+success without writing a value. GET_DMA_CHANNELS was hard-coded to
+the BCM2835 answer.
+
+Answer the variant as the standard firmware ("start") and the hash as
+all zeroes, since no firmware build stands behind the model. Answer the
+board model as 0. Take the serial number and the DMA channel mask from
+new "board-serial" and "dma-channel-mask" properties. Their defaults
+keep today's DMA answer and give a zero serial, so existing boards
+behave the same apart from the now defined values.
+---
+ hw/misc/bcm2835_property.c         | 33 ++++++++++++++++++++++--------
+ include/hw/misc/bcm2835_property.h |  2 ++
+ 2 files changed, 27 insertions(+), 8 deletions(-)
+
+diff --git a/hw/misc/bcm2835_property.c b/hw/misc/bcm2835_property.c
+index 7e0fa1d..9c61a99 100644
+--- a/hw/misc/bcm2835_property.c
++++ b/hw/misc/bcm2835_property.c
+@@ -21,6 +21,12 @@
+ 
+ #define VCHI_BUSADDR_SIZE       sizeof(uint32_t)
+ 
++/* GET_FIRMWARE_VARIANT: the standard firmware, start*.elf */
++#define FIRMWARE_VARIANT_START  1
++
++/* GET_FIRMWARE_HASH: the git hash of the firmware build */
++#define FIRMWARE_HASH_SIZE      20
++
+ /* https://github.com/raspberrypi/firmware/wiki/Mailbox-property-interface */
+ 
+ static void bcm2835_property_mbox_push(BCM2835PropertyState *s, uint32_t value)
+@@ -55,10 +61,20 @@ static void bcm2835_property_mbox_push(BCM2835PropertyState *s, uint32_t value)
+             stl_le_phys(&s->dma_as, value + 12, 346337);
+             resplen = 4;
+             break;
++        case RPI_FWREQ_GET_FIRMWARE_VARIANT:
++            stl_le_phys(&s->dma_as, value + 12, FIRMWARE_VARIANT_START);
++            resplen = 4;
++            break;
++        case RPI_FWREQ_GET_FIRMWARE_HASH:
++            /* No firmware build: an all-zero hash, clipped to the buffer */
++            resplen = FIRMWARE_HASH_SIZE;
++            address_space_set(&s->dma_as, value + 12, 0,
++                              MIN(bufsize, FIRMWARE_HASH_SIZE),
++                              MEMTXATTRS_UNSPECIFIED);
++            break;
+         case RPI_FWREQ_GET_BOARD_MODEL:
+-            qemu_log_mask(LOG_UNIMP,
+-                          "bcm2835_property: 0x%08x get board model NYI\n",
+-                          tag);
++            /* As current firmware: boards are told apart by revision */
++            stl_le_phys(&s->dma_as, value + 12, 0);
+             resplen = 4;
+             break;
+         case RPI_FWREQ_GET_BOARD_REVISION:
+@@ -71,9 +87,7 @@ static void bcm2835_property_mbox_push(BCM2835PropertyState *s, uint32_t value)
+                              MEMTXATTRS_UNSPECIFIED);
+             break;
+         case RPI_FWREQ_GET_BOARD_SERIAL:
+-            qemu_log_mask(LOG_UNIMP,
+-                          "bcm2835_property: 0x%08x get board serial NYI\n",
+-                          tag);
++            stq_le_phys(&s->dma_as, value + 12, s->board_serial);
+             resplen = 8;
+             break;
+         case RPI_FWREQ_GET_ARM_MEMORY:
+@@ -295,8 +309,7 @@ static void bcm2835_property_mbox_push(BCM2835PropertyState *s, uint32_t value)
+             break;
+ 
+         case RPI_FWREQ_GET_DMA_CHANNELS:
+-            /* channels 2-5 */
+-            stl_le_phys(&s->dma_as, value + 12, 0x003C);
++            stl_le_phys(&s->dma_as, value + 12, s->dma_channel_mask);
+             resplen = 4;
+             break;
+ 
+@@ -565,6 +578,10 @@ static void bcm2835_property_realize(DeviceState *dev, Error **errp)
+ static const Property bcm2835_property_props[] = {
+     DEFINE_PROP_UINT32("board-rev", BCM2835PropertyState, board_rev, 0),
+     DEFINE_PROP_STRING("command-line", BCM2835PropertyState, command_line),
++    DEFINE_PROP_UINT64("board-serial", BCM2835PropertyState, board_serial, 0),
++    /* The DMA channels the firmware leaves to the ARM; 2-5 by default */
++    DEFINE_PROP_UINT32("dma-channel-mask", BCM2835PropertyState,
++                       dma_channel_mask, 0x003c),
+ };
+ 
+ static void bcm2835_property_class_init(ObjectClass *klass, const void *data)
+diff --git a/include/hw/misc/bcm2835_property.h b/include/hw/misc/bcm2835_property.h
+index 53d2a92..2ca6ddf 100644
+--- a/include/hw/misc/bcm2835_property.h
++++ b/include/hw/misc/bcm2835_property.h
+@@ -31,6 +31,8 @@ struct BCM2835PropertyState {
+ 
+     MACAddr macaddr;
+     uint32_t board_rev;
++    uint64_t board_serial;
++    uint32_t dma_channel_mask;
+     uint32_t addr;
+     char *command_line;
+     bool pending;

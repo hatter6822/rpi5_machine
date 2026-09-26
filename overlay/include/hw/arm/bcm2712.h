@@ -55,6 +55,13 @@ OBJECT_DECLARE_SIMPLE_TYPE(BCM2712State, BCM2712)
 #define BCM2712_VC_RAM_BASE         0x3fc00000     /* top of the window */
 
 /*
+ * The DMA channels the ARM may use (GET_DMA_CHANNELS): those of the
+ * "dma32" (0-5) and "dma40" (6-10) nodes of the firmware's device tree.
+ * TODO(WS0.4): check the firmware's answer on hardware.
+ */
+#define BCM2712_DMA_CHANNEL_MASK    0x07ff
+
+/*
  * Physical memory map. Addresses are 40-bit CPU physical addresses; the
  * device tree describes most of them relative to the "soc" simple-bus,
  * which maps bus address 0x0 to CPU address 0x10_0000_0000.

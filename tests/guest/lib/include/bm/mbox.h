@@ -17,7 +17,15 @@
 
 #define FW_REQUEST              0
 #define FW_SUCCESS              0x80000000u
+#define FW_TAG_RESPONSE         0x80000000u     /* in a tag's code word */
+#define FW_TAG_FIRMWARE_VARIANT 0x00000002u
+#define FW_TAG_FIRMWARE_HASH    0x00000003u
+#define FW_TAG_BOARD_MODEL      0x00010001u
 #define FW_TAG_BOARD_REVISION   0x00010002u
+#define FW_TAG_BOARD_SERIAL     0x00010004u
+#define FW_TAG_ARM_MEMORY       0x00010005u
+#define FW_TAG_VC_MEMORY        0x00010006u
+#define FW_TAG_DMA_CHANNELS     0x00060001u
 
 /*
  * Send a property request: @buf is the whole message (size, code, tags,
