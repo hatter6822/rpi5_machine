@@ -225,10 +225,8 @@ TEST(reset_system, "reset/system-reset")
                 int64_t state = psci_call(PSCI_AFFINITY_INFO_64,
                                           (uint64_t)core << 8, 0, 0);
 
-                /* 1 is OFF; without a DT, absent cores are counted too */
-                ASSERT_MSG(state == 1 || (!bm_plat.has_dtb &&
-                                          state == PSCI_INVALID_PARAMS),
-                           "core %u: AFFINITY_INFO %ld", core, state);
+                ASSERT_MSG(state == 1, "core %u: AFFINITY_INFO %ld", core,
+                           state);      /* 1 is OFF */
             }
         }
     }
@@ -240,11 +238,7 @@ TEST(reset_system, "reset/system-reset")
     }
 
     if (psci && bm_plat.num_cpus > 1) {
-        int64_t ret = bm_start_core(1, spin);
-
-        /* Without a DT the number of cores is unknown: -smp 1 has one */
-        ASSERT(ret == PSCI_SUCCESS ||
-               (!bm_plat.has_dtb && ret == PSCI_INVALID_PARAMS));
+        ASSERT_EQ(bm_start_core(1, spin), PSCI_SUCCESS);
     }
     dirty();
     if (psci && resets < PSCI_RESETS) {

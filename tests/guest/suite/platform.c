@@ -47,9 +47,8 @@ static void report(unsigned core)
 }
 
 /*
- * Every core starts with PSCI CPU_ON and turns itself off again. Cores
- * the device tree marks absent (-smp) are refused; without a tree, the
- * first refusal marks the end of the cores that exist.
+ * Every core starts with PSCI CPU_ON and turns itself off again; cores
+ * that do not exist (-smp) are refused.
  */
 TEST(smp_cpu_on, "smp/cpu-on")
 {
@@ -62,14 +61,10 @@ TEST(smp_cpu_on, "smp/cpu-on")
 
         checked_in[core] = 0;
         ret = bm_start_core(core, report);
-        if (bm_plat.has_dtb && core >= bm_plat.num_cpus) {
+        if (core >= bm_plat.num_cpus) {
             ASSERT_MSG(ret == PSCI_INVALID_PARAMS,
                        "absent core %u: CPU_ON returned %ld", core, ret);
             continue;
-        }
-        if (!bm_plat.has_dtb && ret == PSCI_INVALID_PARAMS) {
-            bm_test_note("smp/cpu-on: %u cores", core);
-            break;
         }
         ASSERT_MSG(ret == PSCI_SUCCESS, "core %u: CPU_ON returned %ld", core,
                    ret);

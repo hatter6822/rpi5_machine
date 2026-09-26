@@ -48,6 +48,16 @@ void gic_clear_pending(unsigned intid);
 void gic_set_priority(unsigned intid, uint8_t prio);
 void gic_set_target(unsigned spi_intid, uint8_t cpu_mask);
 void gic_set_edge(unsigned intid, bool edge);
+
+/*
+ * With Security Extensions, from the Secure side: put @intid in Group 0
+ * (Secure) or Group 1 (Non-secure), and signal Group 0 as FIQ instead of
+ * IRQ on this core (GICC_CTLR.FIQEn). gic_read_group_reg() returns the
+ * GICD_IGROUPR word holding @intid as the caller's world sees it.
+ */
+void gic_set_group(unsigned intid, unsigned group);
+uint32_t gic_read_group_reg(unsigned intid);
+void gic_group0_fiq(bool fiq);
 void gic_send_sgi(unsigned intid, enum gic_sgi_filter filter,
                   uint8_t cpu_mask);
 

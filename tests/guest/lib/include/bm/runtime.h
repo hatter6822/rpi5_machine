@@ -26,6 +26,7 @@ struct bm_platform {
     bool has_dtb;
     uintptr_t dtb;
     uintptr_t uart;
+    unsigned uart_intid;
     bool uart_from_dt;
     uintptr_t gicd, gicc;
     bool gic_from_dt;
@@ -38,7 +39,7 @@ struct bm_platform {
     bool mbox_from_dt;
     uintptr_t rng;              /* RNG200 */
     bool rng_from_dt;
-    unsigned num_cpus;          /* from the DT; BM_MAX_CPUS without one */
+    unsigned num_cpus;          /* from the DT, else PSCI, else BM_MAX_CPUS */
 };
 
 extern struct bm_platform bm_plat;
@@ -83,10 +84,17 @@ unsigned bm_boot_count(void);
 uint64_t *bm_persistent(void);
 
 /*
- * Start @fn(core) on secondary @core with PSCI CPU_ON: the core gets its
- * stack, vectors, interrupt routing and GIC CPU interface first. Returns
- * the PSCI status.
+ * Start @fn(core) on secondary @core: the core gets its stack, vectors,
+ * interrupt routing and GIC CPU interface first, and is off again once
+ * @fn returns. Below EL3 this is PSCI CPU_ON, and the PSCI status is
+ * returned. A guest that owns EL3 has no PSCI: its secondaries wait in a
+ * spin table from reset, and the same statuses are emulated
+ * (PSCI_ALREADY_ON while the core runs, PSCI_INVALID_PARAMS for a core
+ * beyond bm_plat.num_cpus).
  */
 int64_t bm_start_core(unsigned core, void (*fn)(unsigned core));
+
+/* Whether @core is off: PSCI AFFINITY_INFO, or the spin table at EL3 */
+bool bm_core_is_off(unsigned core);
 
 #endif /* BM_RUNTIME_H */

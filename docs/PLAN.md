@@ -59,7 +59,7 @@ commit (or a short series) with its own tests.
 
 ## 2. Current state
 
-Delivered so far (WS0.1–WS0.3, WS0.6, WS2.1, WS2.2, WS2.3a, WS2.4, WS2.5, WS3.2, WS3.6, WS9.2a):
+Delivered so far (WS0.1–WS0.3, WS0.6, WS2.1, WS2.2, WS2.3a, WS2.4, WS2.5, WS3.2, WS3.6, WS9.2):
 
 | Area | State |
 | --- | --- |
@@ -67,7 +67,7 @@ Delivered so far (WS0.1–WS0.3, WS0.6, WS2.1, WS2.2, WS2.3a, WS2.4, WS2.5, WS3.
 | Kconfig (WS0.6) | every BCM283x device model has its own symbol, so `bcm2712` can select just the models it reuses; a `raspi5b`-only build is tested (`make check-minimal`) |
 | SoC (`bcm2712`) | 1–4 Cortex-A76 (`MPIDR.Aff1` = core, CNTFRQ 54 MHz, optional EL3), GIC-400 with 288 SPIs, 5 priority bits and all timer/maintenance PPIs, UART10 (PL011), system timer (WS2.1), watchdog and reset status (WS2.4), RNG200 (WS2.5), VideoCore mailbox with the BCM283x property and framebuffer channels (WS2.2) and every identity tag answered (WS2.3a), complete memory map with T0 placeholders and two catch-all windows |
 | Board (`raspi5b`) | 1/2/4/8/16 GiB RAM, board revision code, serial number (`serial=`), PSCI over SMC with EL2 entry (default) or guest-owned EL3 (`secure=on`), system reset and power-off through PSCI, the watchdog and the monitor (WS3.6), a built-in device tree when no `-dtb` is given (WS3.2; `builtin-dtb=off` passes none), DTB fix-ups for unmodelled devices, `/system/linux,revision` |
-| Tests | qtest (UART IDs, GIC geometry, priority bits and security, RAM, placeholders, system timer, watchdog, mailbox, identity tags, RNG), the built-in tree validated against the Linux v6.18 bindings (`make check-dt`), bare-metal smoke guest (EL, MPIDR, CNTFRQ, PSCI CPU_ON on all cores, SYSTEM_OFF, EL3 mode), bare-metal library and suite (WS9.2a: GIC, timers, system timer, PSCI/SMP, the mailbox and identity tags, 1 KiB from the RNG, a watchdog reset and four system resets checked against the boot state; 1–4 cores, with the built-in tree, a `-dtb` one and none, EL2 and EL3) |
+| Tests | qtest (UART IDs, GIC geometry, priority bits and security, RAM, placeholders, system timer, watchdog, mailbox, identity tags, RNG), the built-in tree validated against the Linux v6.18 bindings (`make check-dt`), bare-metal smoke guest (EL, MPIDR, CNTFRQ, PSCI CPU_ON on all cores, SYSTEM_OFF, EL3 mode), and the bare-metal suite (WS9.2, 26 tests: GIC and the Secure/Non-secure group split, every timer on every core, SGIs between all core pairs, SPI routing, PSCI, the system timer, the mailbox and identity tags, the RNG, UART receive and loopback, a watchdog reset and four system resets checked against the boot state, an ID-register dump; 1–4 cores, with the built-in tree, a `-dtb` one and none, EL2 and EL3) |
 | Linux | the stock Raspberry Pi OS kernel (6.18) boots on 4 CPUs to the root-fs mount, without warnings, with the firmware's `bcm2712-rpi-5-b.dtb` and on the built-in tree (1, 2 and 8 GiB) |
 
 Known provisional values, each marked in the code: 288 SPIs
@@ -141,7 +141,7 @@ immediately exercised by the next:
 | 7 | WS2.3a property identity tags (done) | first consumer of the mailbox; lets the `firmware` DT node be enabled |
 | 8 | WS2.5 RNG200 (done) | small, standalone, upstreamable |
 | 9 | WS3.2 built-in device tree (done) | microkernels get a DT without `-dtb`; forces the memory map to be the single source of truth |
-| 10 | WS9.2b full bare-metal suite | M1 exit test |
+| 10 | WS9.2b full bare-metal suite (done) | M1 exit test |
 | 11 | WS0.5 series export | prepares the first upstream submission |
 | 12 | WS4.1 L2 interrupt controllers | opens the M3 chain |
 
@@ -536,7 +536,7 @@ expire and observes the boot counter incremented and `HADWRH_SET`; Linux
 #### WS2.5 RNG200 (done)
 *Delivered:* a new model, `bcm2711-rng200` (`hw/misc/bcm2711_rng200.c`),
 with its Kconfig symbol, meson line and trace events as upstream-first
-patch 0008 (the SoC patch is now 0009). With no datasheet, it follows
+patch 0008, ahead of the SoC patch. With no datasheet, it follows
 Linux's driver, including the BCM2711 path's spin until
 `TOTAL_BIT_COUNT` passes 16, which has no timeout, so the node could not
 stay enabled without a model. The generator is infinitely fast: while it
@@ -1171,13 +1171,35 @@ interface init, enable/disable, priority, SGI, EOI), per-core stacks,
 `TEST()`/`ASSERT()` macros with a `PASS:`/`FAIL:` transcript format that
 the smoke runner parses, PSCI helpers, a spin-wait on the generic timer.
 
-**9.2b Tests (M).** Timer interrupt on every core (EL1 physical and
-virtual), SGIs between all core pairs, system timer comparator interrupt,
-mailbox `GET_BOARD_REVISION` round-trip, PSCI `CPU_ON`/`CPU_OFF`/
-`AFFINITY_INFO`/`SYSTEM_RESET` (with a boot counter in RAM),
-watchdog reset, RNG draw, UART loopback (QEMU `-serial` socket peer),
-`secure=on` EL3 → EL2 drop with Group 0/1 configuration, and the
-hardware-probe dump (WS0.4) as one more test.
+**9.2b Tests (M, done).** *Delivered:* the suite grew to 26 tests,
+listed by area in `tests/guest/README.md`: the EL1 physical and virtual
+timers on every core (`timer/every-core`), SGIs between every pair of
+cores and to all others with the sender checked in `GICC_IAR`
+(`smp/sgi`), a system timer SPI routed to each core in turn
+(`smp/spi-routing`), PSCI `CPU_ON`/`CPU_OFF`/`AFFINITY_INFO` statuses
+(`psci/cpu-on-off`), a line from the UART's peer (`uart/echo`, which the
+smoke test answers) and internal loopback, polled and by interrupt
+(`uart/loopback`), and an identification-register dump (`probe/dump`,
+the first slice of WS0.4). The system timer, mailbox, `SYSTEM_RESET`,
+watchdog and RNG tests came with their units. At EL3 the runtime now
+starts secondaries itself from a spin table, so the SMP tests run there
+too, and `bm_run_nonsecure_el2()` drops to Non-secure EL2 for
+`gic/security-groups`: Group 1 is an IRQ taken at EL2, Group 0 an FIQ
+taken at EL3 while EL2 runs, and the Non-secure world can neither see
+Group 0 configuration nor raise a Group 0 SGI. Without a DT the runtime
+counts cores with PSCI `AFFINITY_INFO`. The suite passes on 1, 2 and 4
+cores with every DT mode and at EL3, and with the firmware's
+`bcm2712-rpi-5-b.dtb`.
+
+Two QEMU bugs found by these tests are fixed by upstream-first patches
+ahead of the SoC patch (now 0011): with the Security Extensions,
+`GICD_SGIR` ignored `NSATT` and the security of the write, so
+Non-secure code could raise Secure SGIs (0009, `hw/intc/arm_gic`); and
+a timer whose offset exceeds the physical count, such as the virtual
+timer with `CNTVOFF_EL2` above `CNTPCT` (a virtual count below zero),
+never fired, because the deadline's wrap-around was taken for "never"
+(0010, `target/arm`). `uart/echo` does not feed input before its prompt:
+every reset, and enabling the PL011 FIFO, empties the receiver.
 
 **Done when:** `make check-smoke` runs the suite on 1, 2 and 4 cores
 with and without `-dtb`; the transcript format is documented in

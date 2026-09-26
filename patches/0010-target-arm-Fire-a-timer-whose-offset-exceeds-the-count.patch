@@ -1,0 +1,48 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: A7om <hatter6822@gmail.com>
+Date: Sat, 26 Sep 2026 00:00:00 +0000
+Subject: [PATCH] target/arm: Fire a timer whose offset exceeds the count
+
+The virtual timer compares CVAL with the virtual count, the physical
+count minus CNTVOFF_EL2 modulo 2^64. When the offset is larger than
+the physical count, the virtual count has wrapped to a large value,
+and a CVAL a little above it is reached a few ticks later.
+
+gt_recalc_timer() computed the deadline as cval + offset and treated
+an overflow of that sum as "never". In this case the sum always
+overflows, although the deadline, the sum modulo 2^64, is close, so
+the timer never fired: a guest that set CNTVOFF_EL2 above the count
+(making the virtual count start below zero) and armed the virtual
+timer waited forever.
+
+Compute the deadline as the time left to CVAL, cval - (count - offset)
+ticks, added to the count; only that sum overflowing means the
+deadline is beyond the 64-bit count. Deadlines that did not involve a
+wrapped count are unchanged.
+---
+ target/arm/helper.c | 9 ++++++---
+ 1 file changed, 6 insertions(+), 3 deletions(-)
+
+diff --git a/target/arm/helper.c b/target/arm/helper.c
+index af45234..7755c8f 100644
+--- a/target/arm/helper.c
++++ b/target/arm/helper.c
+@@ -1530,12 +1530,15 @@ static void gt_recalc_timer(ARMCPU *cpu, int timeridx)
+             }
+         } else {
+             /*
+-             * Next transition is when (count - offset) == cval, i.e.
+-             * when count == (cval + offset).
++             * Next transition is when (count - offset) == cval, which is
++             * cval - (count - offset) ticks from now: (count - offset)
++             * is below cval, but may itself have wrapped when offset >
++             * count, so count == (cval + offset) only modulo 2^64.
+              * If that would overflow, then again we set up the next interrupt
+              * for "as far in the future as possible" for the code below.
+              */
+-            if (uadd64_overflow(gt->cval, offset, &nexttick)) {
++            if (uadd64_overflow(count, gt->cval - (count - offset),
++                                &nexttick)) {
+                 nexttick = UINT64_MAX;
+             }
+         }

@@ -6,7 +6,7 @@ the repository root) and booted by the smoke tests in `tests/smoke/`.
 
 | Directory | Contents |
 | --- | --- |
-| `lib/` | the runtime every guest links: entry, exception vectors, console, device-tree walker, GIC-400 driver, PSCI, watchdog and reset status (PM), firmware mailbox, RNG200, generic timer helpers, test runner |
+| `lib/` | the runtime every guest links: entry, exception vectors, console, device-tree walker, GIC-400 driver, PSCI, watchdog and reset status (PM), firmware mailbox, RNG200, generic timer helpers, a switch to Non-secure EL2 for a guest that owns EL3, test runner |
 | `hello/` | the original smoke guest: boot EL, MPIDR, CNTFRQ, PSCI `CPU_ON` of every core, `SYSTEM_OFF` |
 | `suite/` | the bare-metal test suite (WS9.2), one file per area |
 
@@ -22,7 +22,10 @@ off. Consequences for test code:
 * only core 0 prints; secondaries report through memory;
 * physical interrupts are routed to the running exception level
   (`HCR_EL2.{IMO,FMO,AMO}` or `SCR_EL3.{IRQ,FIQ,EA}`), and the GIC delivers
-  every interrupt as Group 0 IRQ.
+  every interrupt as Group 0 IRQ;
+* at EL3, `bm_run_nonsecure_el2()` runs a function at Non-secure EL2 and
+  returns when it does (through an SMC), with the IRQ, FIQ and SError
+  routing the caller chooses; `gic/security-groups` uses it.
 
 Before `bm_main()` runs on core 0, the runtime looks for a device tree in
 `x0` (the Linux boot protocol, used by firmware and by QEMU for an `Image`)
@@ -32,9 +35,14 @@ ELF image). With a tree, the console (`/chosen/stdout-path`), the GIC
 power management block (`brcm,bcm2712-pm`), the mailbox
 (`brcm,bcm2835-mbox`), the RNG (`brcm,bcm2711-rng200`) and the number of
 usable cores come from it, with `reg` translated through every parent's
-`ranges`; without one, built-in raspi5b addresses are used.
-Secondary cores are started with `bm_start_core()` (PSCI `CPU_ON`) and turn
-themselves off when their function returns.
+`ranges`; without one, built-in raspi5b addresses are used and PSCI
+`AFFINITY_INFO` tells which cores exist.
+Secondary cores are started with `bm_start_core()` and are off again when
+their function returns. Below EL3 that is PSCI `CPU_ON` and `CPU_OFF`. A
+guest that owns EL3 has no PSCI firmware: every core enters the image at
+reset, and the secondaries wait in a spin table until `bm_start_core()`
+releases them, which returns the PSCI statuses (`ALREADY_ON`,
+`INVALID_PARAMS`) for the same cases; `bm_core_is_off()` answers for both.
 
 `bm_main()`'s return value is the exit code: below EL3 the guest ends with
 PSCI `SYSTEM_OFF`, at EL3 with semihosting `SYS_EXIT` (QEMU needs
@@ -126,4 +134,21 @@ END: FAIL
 machine's built-in device tree, with `tests/smoke/bcm2712-min.dts` (which
 mirrors the structure of the firmware's `bcm2712-rpi-5-b.dtb`) and with
 none (`builtin-dtb=off`), and at EL3, and requires every test to pass or
-to be skipped for a stated reason.
+to be skipped for a stated reason. `uart/echo` prints
+`# uart/echo: send a line` and waits half a second for the peer to answer
+with one; the smoke test answers in one run and lets it skip in the
+others.
+
+## The suite
+
+| Area | Tests |
+| --- | --- |
+| GIC | geometry, an SGI to self, Group 0 and 1 across the Secure and Non-secure worlds (EL3) |
+| Generic timers | frequency; the EL1, EL2 and Secure physical timers; the EL1 physical and virtual timers on every core, with a virtual offset above the count |
+| SMP | PSCI `CPU_ON` of every core, SGIs between every pair of cores and to all others, an SPI routed to each core in turn; `CPU_ON`/`CPU_OFF`/`AFFINITY_INFO` statuses |
+| System timer | rate against the generic counter, every comparator's interrupt |
+| Firmware | the mailbox's board revision, the identity tags |
+| PM, reset | watchdog countdown and reset, three PSCI `SYSTEM_RESET`s and a watchdog reset that must restore the boot state |
+| RNG | a 1 KiB draw, Linux's recovery sequence |
+| UART | a line from the peer, internal loopback polled and by interrupt |
+| Platform | device-tree discovery, PSCI version, an identification-register dump (`# probe: name=value`, sorted) |

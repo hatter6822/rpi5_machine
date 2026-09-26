@@ -35,6 +35,7 @@
 
 #define GICD_CTLR_ENABLE        (BIT(0) | BIT(1))       /* Group 0 and 1 */
 #define GICC_CTLR_ENABLE        (BIT(0) | BIT(1))       /* FIQEn = 0 */
+#define GICC_CTLR_FIQEN         BIT(3)
 
 static uintptr_t dist, cpuif;
 static unsigned num_irqs;
@@ -137,6 +138,27 @@ void gic_set_priority(unsigned intid, uint8_t prio)
 void gic_set_target(unsigned spi_intid, uint8_t cpu_mask)
 {
     write_byte_field(dist + GICD_ITARGETSR(0), spi_intid, cpu_mask);
+}
+
+void gic_set_group(unsigned intid, unsigned group)
+{
+    uintptr_t reg = dist + GICD_IGROUPR(intid / 32);
+    uint32_t v = mmio_read32(reg);
+
+    mmio_write32(reg, group ? v | BIT(intid % 32) : v & ~BIT(intid % 32));
+}
+
+uint32_t gic_read_group_reg(unsigned intid)
+{
+    return mmio_read32(dist + GICD_IGROUPR(intid / 32));
+}
+
+void gic_group0_fiq(bool fiq)
+{
+    uint32_t v = mmio_read32(cpuif + GICC_CTLR);
+
+    mmio_write32(cpuif + GICC_CTLR, fiq ? v | GICC_CTLR_FIQEN
+                                        : v & ~GICC_CTLR_FIQEN);
 }
 
 void gic_set_edge(unsigned intid, bool edge)

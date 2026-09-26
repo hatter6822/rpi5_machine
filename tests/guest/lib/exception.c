@@ -11,6 +11,7 @@
 #include <bm/gic.h>
 #include <bm/io.h>
 #include <bm/runtime.h>
+#include <bm/world.h>
 
 #define MAX_INTID               1020
 
@@ -20,6 +21,9 @@ static struct {
 } irq_table[MAX_INTID];
 
 static volatile sync_hook_t sync_hook;
+
+/* The GICC_IAR value of the interrupt each core is handling */
+static volatile uint32_t active_iar[BM_MAX_CPUS];
 
 void irq_register(unsigned intid, irq_handler_t fn, void *arg)
 {
@@ -72,6 +76,7 @@ static void handle_irq(void)
         if (intid >= MAX_INTID) {
             return;             /* spurious: nothing (more) pending */
         }
+        active_iar[this_core()] = iar;
         if (irq_table[intid].fn) {
             irq_table[intid].fn(intid, irq_table[intid].arg);
         } else {
@@ -82,6 +87,11 @@ static void handle_irq(void)
     }
 }
 
+unsigned irq_sgi_source(void)
+{
+    return (active_iar[this_core()] >> 10) & 7;
+}
+
 void exception_dispatch(struct exc_frame *frame, uint64_t vector);
 void exception_dispatch(struct exc_frame *frame, uint64_t vector)
 {
@@ -90,10 +100,16 @@ void exception_dispatch(struct exc_frame *frame, uint64_t vector)
     enum exc_source source = vector >> 2;
     uint64_t esr = exc_esr(), far = exc_far();
 
-    if (source == EXC_FROM_CURRENT_SPX &&
+    /* From a lower level: the code bm_run_nonsecure_el2() runs */
+    if ((source == EXC_FROM_CURRENT_SPX || source == EXC_FROM_LOWER_A64) &&
         (kind == EXC_IRQ || kind == EXC_FIQ)) {
         handle_irq();
         return;
+    }
+    if (source == EXC_FROM_LOWER_A64 && kind == EXC_SYNC &&
+        current_el() == 3 && ESR_EC(esr) == ESR_EC_SMC64 &&
+        (esr & 0xffff) == BM_WORLD_RETURN) {
+        world_resume();
     }
     if (source == EXC_FROM_CURRENT_SPX && kind == EXC_SYNC && sync_hook &&
         sync_hook(frame, esr, far)) {

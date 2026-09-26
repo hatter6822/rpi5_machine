@@ -59,6 +59,13 @@ uint64_t exc_esr(void);
 uint64_t exc_far(void);
 
 #define ESR_EC(esr)             (((esr) >> 26) & 0x3f)
+#define ESR_EC_SMC64            0x17
 #define ESR_EC_HLT              0x32
+
+/*
+ * In an SGI's handler, the core that sent it (GICC_IAR.CPUID); zero for
+ * any other interrupt
+ */
+unsigned irq_sgi_source(void);
 
 #endif /* BM_EXCEPTION_H */

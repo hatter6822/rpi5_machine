@@ -20,19 +20,25 @@
 #define HCR_IMO         (1 << 4)
 #define HCR_AMO         (1 << 5)
 
+    .data
+    .balign 8
+    .global secondary_release
+secondary_release:
+    .quad   0, 0, 0, 0              /* BM_MAX_CPUS */
+
     .section .text.boot, "ax"
 
 /*
  * Reset entry, x0 = device tree for a Linux-style entry. With PSCI only
  * core 0 arrives here; when the guest owns EL3 (secure=on) every core
- * does, and all but core 0 park.
+ * does, and all but core 0 wait in spin_table.
  */
     .global _start
 _start:
     mov     x19, x0
     mrs     x0, mpidr_el1
     ubfx    x0, x0, #8, #8          /* Aff1 is the core number */
-    cbnz    x0, park
+    cbnz    x0, spin_table
 
     ldr     x1, =__bss_start
     ldr     x2, =__bss_end
@@ -47,7 +53,12 @@ _start:
     bl      bm_start
     b       park
 
-/* PSCI CPU_ON target (bm_start_core): x0 holds the core number */
+/*
+ * Where bm_start_core() sends a secondary: PSCI CPU_ON's entry point, or
+ * spin_table's once released. x0 holds the core number. Below EL3,
+ * bm_secondary_start() ends with PSCI CPU_OFF; at EL3 it returns, and the
+ * core waits to be released again.
+ */
     .global secondary_entry
 secondary_entry:
     bl      set_stack
@@ -55,7 +66,24 @@ secondary_entry:
     bl      el_setup
     mov     x0, x19
     bl      bm_secondary_start
+    mov     x0, x19
     /* fall through */
+
+/*
+ * A secondary core the guest owns from reset (secure=on) waits here, x0
+ * holding its core number, until bm_start_core() sets its slot of
+ * secondary_release. The slots are in .data, so reloading the image on a
+ * system reset clears any release still pending.
+ */
+spin_table:
+    ldr     x1, =secondary_release
+1:  ldr     x2, [x1, x0, lsl #3]
+    cbnz    x2, 2f
+    wfe
+    b       1b
+2:  str     xzr, [x1, x0, lsl #3]
+    dsb     sy
+    b       secondary_entry
 
 park:
     wfe
@@ -73,7 +101,7 @@ set_stack:
  * interrupts and SErrors to it, so they are taken without leaving it.
  */
 el_setup:
-    adr     x1, vectors
+    adr     x1, bm_vectors
     mrs     x2, CurrentEL
     cmp     x2, #(3 << 2)
     b.eq    3f
@@ -108,7 +136,8 @@ el_setup:
 
     .text
     .balign 0x800
-vectors:
+    .global bm_vectors
+bm_vectors:
     .irp    num, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15
     ventry  \num
     .endr

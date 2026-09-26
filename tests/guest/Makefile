@@ -18,13 +18,13 @@ CFLAGS  := $(TARGET_FLAGS) -std=gnu11 -O2 -g -Wall -Wextra -Werror \
            -ffreestanding -fno-builtin -nostdlib -fno-pic -fno-stack-protector \
            -mgeneral-regs-only -mstrict-align -Ilib/include \
            -fno-delete-null-pointer-checks   # RAM starts at address 0
-ASFLAGS := $(TARGET_FLAGS) -g
+ASFLAGS := $(TARGET_FLAGS) -g -Ilib/include
 LDFLAGS := -nostdlib -static --no-dynamic-linker -T lib/link.ld
 
 # The runtime every guest links; the test runner (test.c) provides
 # bm_main() for the suite
 LIB_SRCS := start.S console.c exception.c fdt.c gic.c mbox.c pm.c psci.c \
-            rng.c runtime.c string.c
+            rng.c runtime.c string.c world.c world_entry.S
 LIB_OBJS := $(patsubst %,$(OUT)/lib/%.o,$(basename $(LIB_SRCS)))
 SUITE_OBJS := $(OUT)/lib/test.o $(patsubst %.c,$(OUT)/%.o,$(wildcard suite/*.c))
 
@@ -43,7 +43,7 @@ $(OUT)/%.o: %.c $(wildcard lib/include/bm/*.h)
 	@mkdir -p $(@D)
 	$(CC) $(CFLAGS) -c -o $@ $<
 
-$(OUT)/%.o: %.S
+$(OUT)/%.o: %.S $(wildcard lib/include/bm/*.h)
 	@mkdir -p $(@D)
 	$(CC) $(ASFLAGS) -c -o $@ $<
 

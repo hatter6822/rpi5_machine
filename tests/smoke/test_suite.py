@@ -9,6 +9,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 
@@ -19,15 +20,22 @@ DTS = Path(__file__).with_name("bcm2712-min.dts")
 
 RESULT = re.compile(r"^(PASS|FAIL|SKIP): ([^:]+)(?:: (.*))?$")
 
+# uart/echo asks for a line with this note and skips without an answer
+ECHO_PROMPT = "# uart/echo: send a line"
+
+# Skipped wherever the suite runs: uart/echo, unless answered
+ALWAYS_SKIPPED = {"uart/echo"}
+
 
 # Device trees the suite runs with: the machine's own, a -dtb blob, none
 DT_MODES = ("builtin", "file", "none")
 
 
-def run_suite(*machine_args, dtb=None, secure=False):
+def run_suite(*machine_args, dtb=None, secure=False, answer=None):
     """Boot the suite; return (results {name: (outcome, detail)}, output).
 
     @dtb is a -dtb blob, None for the built-in tree, or "none" for no tree.
+    @answer is the line to send when uart/echo asks for one.
     """
     machine = "raspi5b"
     if secure:
@@ -40,9 +48,23 @@ def run_suite(*machine_args, dtb=None, secure=False):
         cmd += ["-dtb", str(dtb)]
     if secure:
         cmd += ["-semihosting-config", "enable=on,target=native"]
-    result = subprocess.run(cmd, stdin=subprocess.DEVNULL,
-                            capture_output=True, text=True, timeout=TIMEOUT)
-    out = result.stdout.replace("\r\n", "\n")
+    proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                            stderr=subprocess.DEVNULL, text=True)
+    timer = threading.Timer(TIMEOUT, proc.kill)
+    timer.start()
+    lines = []
+    try:
+        for line in proc.stdout:
+            lines.append(line)
+            if answer is not None and line.startswith(ECHO_PROMPT):
+                proc.stdin.write(answer + "\n")
+                proc.stdin.flush()
+        proc.wait()
+    finally:
+        timer.cancel()
+        proc.stdin.close()
+        proc.stdout.close()
+    out = "".join(lines).replace("\r\n", "\n")
     results = {}
     for line in out.splitlines():
         m = RESULT.match(line)
@@ -70,6 +92,7 @@ class SuiteTest(unittest.TestCase):
 
     def check(self, results, out, skipped):
         """Every test passed except @skipped, which were skipped."""
+        skipped = set(skipped) | ALWAYS_SKIPPED
         self.assertIn("END: PASS", out, out)
         self.assertNotIn("PANIC", out, out)
         self.assertTrue(results, out)
@@ -87,24 +110,28 @@ class SuiteTest(unittest.TestCase):
                 with self.subTest(smp=smp, dt=mode):
                     results, out = run_suite("-smp", str(smp),
                                              dtb=self.suite_dtb(mode))
-                    skipped = {"timer/secure-physical"}
+                    skipped = {"timer/secure-physical",
+                               "gic/security-groups"}
+                    if smp == 1:
+                        skipped.add("psci/cpu-on-off")
                     if mode == "none":
                         skipped.add("platform/device-tree")
                     self.check(results, out, skipped)
-                    cores = 4 if mode == "none" else smp
-                    self.assertIn(f"# EL2, {cores} cores", out)
+                    self.assertIn(f"# EL2, {smp} cores", out)
+                    self.assertIn(f"# smp/sgi: {smp} cores", out)
 
     def test_el3(self):
         for mode in DT_MODES:
             with self.subTest(dt=mode):
                 results, out = run_suite(dtb=self.suite_dtb(mode),
                                          secure=True)
-                skipped = {"psci/version", "smp/cpu-on",
+                skipped = {"psci/version", "psci/cpu-on-off", "smp/cpu-on",
                            "timer/el2-physical"}
                 if mode == "none":
                     skipped.add("platform/device-tree")
                 self.check(results, out, skipped)
                 self.assertIn("# EL3, 4 cores", out)
+                self.assertIn("# smp/sgi: 4 cores", out)
 
     def test_dt_addresses_used(self):
         """Every device the runtime uses is found in both trees."""
@@ -123,6 +150,22 @@ class SuiteTest(unittest.TestCase):
         self.assertIn("no device tree", out)
         self.assertIn("uart 0x107d001000 (default)", out)
         self.assertIn("# pm 0x107d200000 (default)", out)
+
+    def test_uart_echo(self):
+        """The suite receives the line it asks for over UART10."""
+        line = "raspi5b uart/echo 0123456789"
+        results, out = run_suite(answer=line)
+        self.assertEqual(results.get("uart/echo"), ("PASS", None), out)
+        self.assertIn(f'# uart/echo: received "{line}"', out)
+
+    def test_probe(self):
+        """The identification registers are dumped, sorted by name."""
+        _, out = run_suite()
+        names = [line.split("=")[0] for line in out.splitlines()
+                 if line.startswith("# probe: ")]
+        self.assertGreater(len(names), 10, out)
+        self.assertEqual(names, sorted(names))
+        self.assertIn("# probe: midr_el1=0x414fd0b1", out)
 
     def test_resets(self):
         """The resetting tests really reset the machine, and only once each

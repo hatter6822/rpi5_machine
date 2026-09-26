@@ -17,6 +17,7 @@
 
 /* raspi5b addresses, used when there is no device tree (bcm2712.dtsi) */
 #define DEFAULT_UART10          0x107d001000ul
+#define DEFAULT_UART10_SPI      121
 #define DEFAULT_GICD            0x107fff9000ul
 #define DEFAULT_GICC            0x107fffa000ul
 #define DEFAULT_SYSTIMER        0x107c003000ul
@@ -51,6 +52,12 @@ extern char __persist_start[];
 extern char secondary_entry[];
 static void (*volatile secondary_fn[BM_MAX_CPUS])(unsigned core);
 
+/* At EL3: set to release a core from start.S's spin table */
+extern volatile uint64_t secondary_release[BM_MAX_CPUS];
+
+/* At EL3: set by bm_start_core(), cleared by the core when it is done */
+static volatile bool secondary_busy[BM_MAX_CPUS];
+
 static bool dt_pl011(int node, uintptr_t *base)
 {
     uint64_t addr, size;
@@ -65,8 +72,15 @@ static bool dt_pl011(int node, uintptr_t *base)
 
 static void discover_uart(void)
 {
+    int node = fdt_stdout_offset();
+    unsigned intid;
+
     bm_plat.uart = DEFAULT_UART10;
-    bm_plat.uart_from_dt = dt_pl011(fdt_stdout_offset(), &bm_plat.uart);
+    bm_plat.uart_intid = GIC_SPI(DEFAULT_UART10_SPI);
+    bm_plat.uart_from_dt = dt_pl011(node, &bm_plat.uart);
+    if (bm_plat.uart_from_dt && fdt_gic_intid(node, 0, &intid)) {
+        bm_plat.uart_intid = intid;
+    }
 }
 
 static void discover_gic(void)
@@ -158,11 +172,27 @@ static void discover_rng(void)
     }
 }
 
-/* Cores the tree describes as usable (QEMU marks absent ones "fail") */
+/*
+ * Cores the tree describes as usable (QEMU marks absent ones "fail").
+ * Without a tree, PSCI AFFINITY_INFO tells which exist; a guest that owns
+ * EL3 has no PSCI, and assumes BM_MAX_CPUS.
+ */
 static void discover_cpus(void)
 {
     int cpus = fdt_path_offset("/cpus");
     unsigned n = 0;
+
+    if (!bm_plat.has_dtb) {
+        n = BM_MAX_CPUS;
+        for (unsigned core = 1; current_el() < 3 && core < n; core++) {
+            if (psci_call(PSCI_AFFINITY_INFO_64, (uint64_t)core << 8, 0,
+                          0) == PSCI_INVALID_PARAMS) {
+                n = core;
+            }
+        }
+        bm_plat.num_cpus = n;
+        return;
+    }
 
     /*
      * Node names vary (the firmware's tree has cpu@1 at reg 0x100, the
@@ -234,18 +264,25 @@ void bm_start(uintptr_t x0)
     bm_exit(bm_main());
 }
 
-/* Called by start.S on a secondary core started by bm_start_core() */
+/*
+ * Called by start.S on a secondary core started by bm_start_core(). Below
+ * EL3 the core turns itself off; at EL3 it returns to the spin table.
+ */
 void bm_secondary_start(unsigned core);
 void bm_secondary_start(unsigned core)
 {
     gic_init_cpu();
     secondary_fn[core](core);
+    irq_mask();
     if (current_el() < 3) {
         psci_call(PSCI_CPU_OFF, 0, 0, 0);
+        for (;;) {
+            wfe();
+        }
     }
-    for (;;) {
-        wfe();
-    }
+    dsb_sy();
+    secondary_busy[core] = false;
+    sev();
 }
 
 int64_t bm_start_core(unsigned core, void (*fn)(unsigned core))
@@ -253,9 +290,35 @@ int64_t bm_start_core(unsigned core, void (*fn)(unsigned core))
     if (core == 0 || core >= BM_MAX_CPUS) {
         return PSCI_INVALID_PARAMS;
     }
+    if (current_el() < 3) {
+        secondary_fn[core] = fn;
+        dsb_sy();
+        return psci_cpu_on((uint64_t)core << 8, (uintptr_t)secondary_entry,
+                           core);
+    }
+
+    /* No PSCI below a guest that owns EL3: release it from the spin table */
+    if (core >= bm_plat.num_cpus) {
+        return PSCI_INVALID_PARAMS;
+    }
+    if (secondary_busy[core]) {
+        return PSCI_ALREADY_ON;
+    }
+    secondary_busy[core] = true;
     secondary_fn[core] = fn;
     dsb_sy();
-    return psci_cpu_on((uint64_t)core << 8, (uintptr_t)secondary_entry, core);
+    secondary_release[core] = 1;
+    sev();
+    return PSCI_SUCCESS;
+}
+
+bool bm_core_is_off(unsigned core)
+{
+    if (current_el() < 3) {
+        return psci_call(PSCI_AFFINITY_INFO_64, (uint64_t)core << 8, 0, 0) ==
+               1;
+    }
+    return !secondary_busy[core];
 }
 
 /* On hardware HLT is undefined unless halting debug is on: step over it */
