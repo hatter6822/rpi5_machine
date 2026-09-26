@@ -71,7 +71,39 @@ start in EL3, and every CPU starts at the image entry point.
 ``-kernel`` accepts an AArch64 Linux ``Image`` (booted using the Linux boot
 protocol, with the device tree address in ``x0``) or an ELF file (entered at
 its entry point; the device tree is placed at the base of RAM if it fits
-below the image). ``-bios`` is not supported yet.
+below the image).
+
+Booting firmware with ``-bios``
+-------------------------------
+
+With ``secure=on``, ``-bios`` loads what the VideoCore firmware runs at
+EL3 (the ``armstub=`` of its ``config.txt``; TF-A's ``rpi5`` BL31 on a
+stock Pi 5) and hands it the rest the way the firmware does:
+
+* the image is loaded at physical address 0, and every CPU starts there
+  in EL3; PSCI is left to the image;
+* ``-kernel`` is loaded at ``0x20_0000``, the firmware's
+  ``kernel_address`` for 64-bit kernels (a Linux ``Image`` at that address
+  plus its ``text_offset``, an ELF file at its own addresses);
+* ``-initrd`` goes at 128 MiB or above the kernel, whichever is higher,
+  and the device tree at the next 2 MiB boundary, or at
+  ``-machine dtb-address=<addr>``, the counterpart of
+  ``device_tree_address=``. All of it must fit in the first GiB, below
+  the VideoCore's memory;
+* an image that starts with the header of TF-A's Raspberry Pi ports (the
+  magic ``0x5afe570b`` at offset ``0xf0``) gets the magic cleared and the
+  device tree and kernel addresses written at offsets ``0xf8`` and
+  ``0xfc``; any other image is loaded as it is.
+
+The built-in device tree then describes PSCI through ``SMC`` and reserves
+the first 512 KiB of RAM for BL31 (``/reserved-memory/atf@0``), as the
+firmware's tree does. A system reset loads every image again, and the
+firmware starts over.
+
+TF-A's ``rpi5`` port counts on all four cores: with fewer (``-smp``), PSCI
+``CPU_ON`` of a missing core succeeds but the core never starts. Its
+release builds run; debug builds also read the cluster registers of the
+DynamIQ Shared Unit, which are not modelled.
 
 Firmware property interface
 ---------------------------
@@ -104,8 +136,8 @@ Reset and power-off
 
 PSCI ``SYSTEM_RESET``, the watchdog and the monitor's ``system_reset`` all
 reset the machine the same way: every device returns to its reset state,
-RAM is kept, the images given with ``-kernel`` and ``-dtb`` are loaded
-again and the boot starts over as from power-on, except that the PM
+RAM is kept, the images given with ``-bios``, ``-kernel`` and ``-dtb`` are
+loaded again and the boot starts over as from power-on, except that the PM
 block's reset status register (``RSTS``) keeps its value and records a
 watchdog reset. PSCI ``SYSTEM_OFF`` and Linux's halt request through the
 watchdog (boot partition 63 in ``RSTS``) power the machine off, and QEMU
@@ -148,3 +180,9 @@ Linux on the firmware's device tree::
   $ qemu-system-aarch64 -M raspi5b -m 4G -nographic \
       -kernel Image -dtb bcm2712-rpi-5-b.dtb \
       -append "console=ttyAMA10,115200 earlycon=pl011,mmio32,0x107d001000"
+
+Linux started by TF-A's BL31, as the firmware starts it::
+
+  $ qemu-system-aarch64 -M raspi5b,secure=on -m 4G -nographic \
+      -bios bl31.bin -kernel Image -dtb bcm2712-rpi-5-b.dtb \
+      -append "console=ttyAMA10,115200"

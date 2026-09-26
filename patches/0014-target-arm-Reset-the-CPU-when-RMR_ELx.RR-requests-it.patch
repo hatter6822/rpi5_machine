@@ -1,0 +1,113 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: A7om <hatter6822@gmail.com>
+Date: Sat, 26 Sep 2026 00:00:00 +0000
+Subject: [PATCH] target/arm: Reset the CPU when RMR_ELx.RR requests it
+
+Writing 1 to RMR_ELx.RR requests a Warm reset of the PE. QEMU ignored
+the request, which "is strictly a request", as a TODO comment put it,
+but firmware relies on it to turn a core off: TF-A's Raspberry Pi ports
+carry out PSCI CPU_OFF by requesting a Warm reset and waiting in WFI,
+so that the core comes back in the holding pen from which CPU_ON
+releases it. Without the reset the core never gets there, and a later
+CPU_ON leaves it ON_PENDING for good.
+
+Carry the request out as a reset of the CPU, which QEMU does not tell
+from a Cold reset, queued on the CPU so that it happens once the write
+has ended the TB. The registers hold no state, but they were migrated
+as constants, so they keep a raw form, which ignores writes and reads
+as before.
+---
+ target/arm/helper.c | 50 ++++++++++++++++++++++++++++++++++-----------
+ 1 file changed, 38 insertions(+), 12 deletions(-)
+
+diff --git a/target/arm/helper.c b/target/arm/helper.c
+index 40cb37c..bb8ee23 100644
+--- a/target/arm/helper.c
++++ b/target/arm/helper.c
+@@ -3014,6 +3014,35 @@ static uint64_t midr_read(CPUARMState *env, const ARMCPRegInfo *ri)
+     return raw_read(env, ri);
+ }
+ 
++/*
++ * RMR_ELx, and the AArch32 RMR, exist at the highest implemented EL only.
++ * AA64 is the Execution state the PE resets into, and QEMU always resets
++ * an AArch64 CPU into AArch64. RR requests a Warm reset, which QEMU does
++ * not tell from a Cold one: the CPU is reset once the write has ended the
++ * TB. The registers hold no state, but they used to be migrated as
++ * constants, so they keep a raw form in which writes are ignored.
++ */
++#define RMR_AA64    (1 << 0)
++#define RMR_RR      (1 << 1)
++
++static uint64_t rmr_read(CPUARMState *env, const ARMCPRegInfo *ri)
++{
++    return arm_feature(env, ARM_FEATURE_AARCH64) ? RMR_AA64 : 0;
++}
++
++static void rmr_reset_cpu(CPUState *cs, run_on_cpu_data data)
++{
++    cpu_reset(cs);
++}
++
++static void rmr_write(CPUARMState *env, const ARMCPRegInfo *ri,
++                      uint64_t value)
++{
++    if (value & RMR_RR) {
++        async_run_on_cpu(env_cpu(env), rmr_reset_cpu, RUN_ON_CPU_NULL);
++    }
++}
++
+ static uint64_t mpidr_read_val(CPUARMState *env)
+ {
+     ARMCPU *cpu = env_archcpu(env);
+@@ -6891,12 +6920,7 @@ void register_cp_regs_for_features(ARMCPU *cpu)
+         };
+         modify_arm_cp_regs(v8_idregs, v8_user_idregs);
+ #endif
+-        /*
+-         * RVBAR_EL1 and RMR_EL1 only implemented if EL1 is the highest EL.
+-         * TODO: For RMR, a write with bit 1 set should do something with
+-         * cpu_reset(). In the meantime, "the bit is strictly a request",
+-         * so we are in spec just ignoring writes.
+-         */
++        /* RVBAR_EL1 and RMR_EL1 only implemented if EL1 is the highest EL */
+         if (!arm_feature(env, ARM_FEATURE_EL3) &&
+             !arm_feature(env, ARM_FEATURE_EL2)) {
+             ARMCPRegInfo el1_reset_regs[] = {
+@@ -6906,8 +6930,8 @@ void register_cp_regs_for_features(ARMCPU *cpu)
+                   .fieldoffset = offsetof(CPUARMState, cp15.rvbar) },
+                 { .name = "RMR_EL1", .state = ARM_CP_STATE_BOTH,
+                   .opc0 = 3, .opc1 = 0, .crn = 12, .crm = 0, .opc2 = 2,
+-                  .access = PL1_RW, .type = ARM_CP_CONST,
+-                  .resetvalue = arm_feature(env, ARM_FEATURE_AARCH64) }
++                  .access = PL1_RW, .readfn = rmr_read,
++                  .writefn = rmr_write, .raw_writefn = arm_cp_write_ignore }
+             };
+             define_arm_cp_regs(cpu, el1_reset_regs);
+         }
+@@ -7014,7 +7038,8 @@ void register_cp_regs_for_features(ARMCPU *cpu)
+                   .fieldoffset = offsetof(CPUARMState, cp15.rvbar) },
+                 { .name = "RMR_EL2", .state = ARM_CP_STATE_AA64,
+                   .opc0 = 3, .opc1 = 4, .crn = 12, .crm = 0, .opc2 = 2,
+-                  .access = PL2_RW, .type = ARM_CP_CONST, .resetvalue = 1 },
++                  .access = PL2_RW, .readfn = rmr_read,
++                  .writefn = rmr_write, .raw_writefn = arm_cp_write_ignore },
+             };
+             define_arm_cp_regs(cpu, el2_reset_regs);
+         }
+@@ -7030,11 +7055,12 @@ void register_cp_regs_for_features(ARMCPU *cpu)
+               .fieldoffset = offsetof(CPUARMState, cp15.rvbar), },
+             { .name = "RMR_EL3", .state = ARM_CP_STATE_AA64,
+               .opc0 = 3, .opc1 = 6, .crn = 12, .crm = 0, .opc2 = 2,
+-              .access = PL3_RW, .type = ARM_CP_CONST, .resetvalue = 1 },
++              .access = PL3_RW, .readfn = rmr_read,
++              .writefn = rmr_write, .raw_writefn = arm_cp_write_ignore },
+             { .name = "RMR", .state = ARM_CP_STATE_AA32,
+               .cp = 15, .opc1 = 0, .crn = 12, .crm = 0, .opc2 = 2,
+-              .access = PL3_RW, .type = ARM_CP_CONST,
+-              .resetvalue = arm_feature(env, ARM_FEATURE_AARCH64) },
++              .access = PL3_RW, .readfn = rmr_read,
++              .writefn = rmr_write, .raw_writefn = arm_cp_write_ignore },
+             { .name = "SCTLR_EL3", .state = ARM_CP_STATE_AA64,
+               .opc0 = 3, .opc1 = 6, .crn = 1, .crm = 0, .opc2 = 0,
+               .access = PL3_RW,

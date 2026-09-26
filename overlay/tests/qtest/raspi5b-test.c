@@ -8,6 +8,7 @@
 
 #include "qemu/osdep.h"
 #include "qemu/bitops.h"
+#include "qemu/bswap.h"
 #include "qemu/timer.h"
 #include "qemu/units.h"
 #include "libqtest.h"
@@ -828,6 +829,18 @@ static void test_mbox_short_buffer(void)
     qtest_quit(qts);
 }
 
+/* A temporary file holding @data, for options that take a file name */
+static char *tmp_file(const char *template, const void *data, size_t size)
+{
+    char *path;
+    int fd = g_file_open_tmp(template, &path, NULL);
+
+    g_assert_cmpint(fd, >=, 0);
+    g_assert_cmpint(write(fd, data, size), ==, size);
+    close(fd);
+    return path;
+}
+
 /*
  * The firmware returns the command line without a terminator, and when
  * the buffer is too small, only the length it needs.
@@ -836,17 +849,12 @@ static void test_mbox_command_line(void)
 {
     static const char cmdline[] = "console=ttyAMA10,115200 quiet";
     static const uint32_t wfi_loop[] = { 0xd503207f, 0x17ffffff };
-    g_autofree char *kernel = NULL;
+    /* -append needs a -kernel; the CPU never runs it under qtest */
+    g_autofree char *kernel = tmp_file("raspi5b-kernel-XXXXXX", wfi_loop,
+                                       sizeof(wfi_loop));
     QTestState *qts;
     uint32_t val[12];
-    int fd;
 
-    /* -append needs a -kernel; the CPU never runs it under qtest */
-    fd = g_file_open_tmp("raspi5b-kernel-XXXXXX", &kernel, NULL);
-    g_assert_cmpint(fd, >=, 0);
-    g_assert_cmpint(write(fd, wfi_loop, sizeof(wfi_loop)), ==,
-                    sizeof(wfi_loop));
-    close(fd);
     qts = qtest_initf("-machine raspi5b -kernel %s -append '%s'",
                       kernel, cmdline);
 
@@ -1022,6 +1030,134 @@ static void test_unimplemented_regions(void)
     qtest_quit(qts);
 }
 
+/*
+ * -bios loads the armstub at 0 and, when it carries the firmware's header
+ * (TF-A's plat/rpi/common/aarch64/armstub8_header.S), clears its magic
+ * and fills in where the device tree and the kernel are
+ */
+#define ARMSTUB_MAGIC           0x5afe570b
+#define ARMSTUB_MAGIC_OFFSET    0xf0
+#define ARMSTUB_DTB_OFFSET      0xf8
+#define ARMSTUB_KERNEL_OFFSET   0xfc
+#define ARMSTUB_WORDS           64
+
+/* The firmware's kernel_address for 64-bit kernels */
+#define BIOS_KERNEL_ADDR        0x200000
+/* The first address after the kernel for the device tree, as for -kernel */
+#define BIOS_DTB_ADDR           (128 * MiB)
+
+/* The arm64 Linux Image header (Documentation/arch/arm64/booting.rst) */
+#define IMAGE_TEXT_OFFSET       8
+#define IMAGE_SIZE              16
+#define IMAGE_MAGIC             56
+
+/* An armstub whose every word holds its own offset, and maybe the magic */
+static char *armstub_file(bool header)
+{
+    uint32_t stub[ARMSTUB_WORDS];
+
+    for (int i = 0; i < ARMSTUB_WORDS; i++) {
+        stub[i] = cpu_to_le32(0xa5000000 | i * 4);
+    }
+    if (header) {
+        stub[ARMSTUB_MAGIC_OFFSET / 4] = cpu_to_le32(ARMSTUB_MAGIC);
+    }
+    return tmp_file("raspi5b-armstub-XXXXXX", stub, sizeof(stub));
+}
+
+static void assert_fdt_at(QTestState *qts, uint64_t addr)
+{
+    uint8_t magic[4];
+
+    qtest_memread(qts, addr, magic, sizeof(magic));
+    g_assert_cmpmem(magic, sizeof(magic), "\xd0\x0d\xfe\xed", 4);
+}
+
+static void test_bios_header(void)
+{
+    g_autofree char *stub = armstub_file(true);
+    QTestState *qts;
+
+    qts = qtest_initf("-machine raspi5b,secure=on -bios %s", stub);
+    g_assert_cmphex(qtest_readl(qts, 0), ==, 0xa5000000);
+    g_assert_cmphex(qtest_readl(qts, ARMSTUB_MAGIC_OFFSET - 4), ==,
+                    0xa5000000 | (ARMSTUB_MAGIC_OFFSET - 4));
+    g_assert_cmphex(qtest_readl(qts, ARMSTUB_MAGIC_OFFSET), ==, 0);
+    g_assert_cmphex(qtest_readl(qts, ARMSTUB_DTB_OFFSET), ==, BIOS_DTB_ADDR);
+    g_assert_cmphex(qtest_readl(qts, ARMSTUB_KERNEL_OFFSET), ==,
+                    BIOS_KERNEL_ADDR);
+    assert_fdt_at(qts, BIOS_DTB_ADDR);
+    qtest_quit(qts);
+
+    /* device_tree_address= */
+    qts = qtest_initf("-machine raspi5b,secure=on,dtb-address=0x1f0000 "
+                      "-bios %s", stub);
+    g_assert_cmphex(qtest_readl(qts, ARMSTUB_DTB_OFFSET), ==, 0x1f0000);
+    assert_fdt_at(qts, 0x1f0000);
+    qtest_quit(qts);
+
+    /* No device tree at all */
+    qts = qtest_initf("-machine raspi5b,secure=on,builtin-dtb=off -bios %s",
+                      stub);
+    g_assert_cmphex(qtest_readl(qts, ARMSTUB_DTB_OFFSET), ==, 0);
+    g_assert_cmphex(qtest_readl(qts, BIOS_DTB_ADDR), ==, 0);
+    qtest_quit(qts);
+
+    unlink(stub);
+}
+
+/* An image without the header is loaded as it is */
+static void test_bios_no_header(void)
+{
+    g_autofree char *stub = armstub_file(false);
+    QTestState *qts = qtest_initf("-machine raspi5b,secure=on -bios %s",
+                                  stub);
+
+    for (int i = 0; i < ARMSTUB_WORDS; i++) {
+        g_assert_cmphex(qtest_readl(qts, i * 4), ==, 0xa5000000 | i * 4);
+    }
+
+    qtest_quit(qts);
+    unlink(stub);
+}
+
+/*
+ * A Linux Image goes at the kernel address plus its text_offset, and the
+ * initrd and device tree above all the memory it declares, BSS included
+ */
+static void test_bios_kernel(void)
+{
+    const uint64_t text_offset = 0x80000, image_size = 144 * MiB;
+    const uint64_t kernel = BIOS_KERNEL_ADDR + text_offset;
+    const uint64_t initrd = kernel + image_size;
+    g_autofree char *stub = armstub_file(true);
+    g_autofree char *kernel_file = NULL, *initrd_file = NULL;
+    uint8_t image[4 * KiB] = { 0 }, ramdisk[4 * KiB];
+    QTestState *qts;
+
+    stq_le_p(image + IMAGE_TEXT_OFFSET, text_offset);
+    stq_le_p(image + IMAGE_SIZE, image_size);
+    memcpy(image + IMAGE_MAGIC, "ARM\x64", 4);
+    memset(ramdisk, 0x5a, sizeof(ramdisk));
+    kernel_file = tmp_file("raspi5b-image-XXXXXX", image, sizeof(image));
+    initrd_file = tmp_file("raspi5b-initrd-XXXXXX", ramdisk, sizeof(ramdisk));
+
+    qts = qtest_initf("-machine raspi5b,secure=on -bios %s -kernel %s "
+                      "-initrd %s", stub, kernel_file, initrd_file);
+    g_assert_cmphex(qtest_readl(qts, ARMSTUB_KERNEL_OFFSET), ==, kernel);
+    g_assert_cmphex(qtest_readl(qts, kernel + IMAGE_MAGIC), ==,
+                    ldl_le_p("ARM\x64"));
+    g_assert_cmphex(qtest_readl(qts, initrd), ==, 0x5a5a5a5a);
+    g_assert_cmphex(qtest_readl(qts, ARMSTUB_DTB_OFFSET), ==,
+                    ROUND_UP(initrd + sizeof(ramdisk), 2 * MiB));
+    assert_fdt_at(qts, ROUND_UP(initrd + sizeof(ramdisk), 2 * MiB));
+    qtest_quit(qts);
+
+    unlink(stub);
+    unlink(kernel_file);
+    unlink(initrd_file);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -1056,6 +1192,9 @@ int main(int argc, char **argv)
     qtest_add_func("/raspi5b/pm/halt", test_pm_halt);
     qtest_add_func("/raspi5b/pm/halt-exit", test_pm_halt_exit);
     qtest_add_func("/raspi5b/pm/migrate", test_pm_migrate);
+    qtest_add_func("/raspi5b/bios/header", test_bios_header);
+    qtest_add_func("/raspi5b/bios/no-header", test_bios_no_header);
+    qtest_add_func("/raspi5b/bios/kernel", test_bios_kernel);
 
     return g_test_run();
 }

@@ -59,22 +59,21 @@ commit (or a short series) with its own tests.
 
 ## 2. Current state
 
-Delivered so far: M1 (WS0.1–WS0.3, WS0.5, WS0.6, WS2.1, WS2.2, WS2.3a, WS2.4, WS2.5, WS3.2, WS3.6, WS9.2) and, towards M2, WS1.5 and WS1.2:
+Delivered so far: M1 (WS0.1–WS0.3, WS0.5, WS0.6, WS2.1, WS2.2, WS2.3a, WS2.4, WS2.5, WS3.2, WS3.6, WS9.2) and, towards M2, WS1.5, WS1.2 and WS3.3:
 
 | Area | State |
 | --- | --- |
 | Repository | pinned QEMU v11.1.1 submodule, overlay + patch series (patches may share files, like an upstream series) managed by `scripts/qemu-tree`, which also exports the upstream series (WS0.5: a commit per patch and a cover letter, checked with `git am`, checkpatch and a build of every commit), CI with ccache |
 | Kconfig (WS0.6) | every BCM283x device model has its own symbol, so `bcm2712` can select just the models it reuses; a `raspi5b`-only build is tested (`make check-minimal`) |
-| SoC (`bcm2712`) | 1–4 Cortex-A76 (`MPIDR.Aff1` = core with `MPIDR.MT` set (WS1.2), CNTFRQ 54 MHz, optional EL3, the IMPDEF registers firmware writes (WS1.5)), GIC-400 with 288 SPIs, 5 priority bits and all timer/maintenance PPIs, UART10 (PL011), system timer (WS2.1), watchdog and reset status (WS2.4), RNG200 (WS2.5), VideoCore mailbox with the BCM283x property and framebuffer channels (WS2.2) and every identity tag answered (WS2.3a), complete memory map with T0 placeholders and two catch-all windows |
-| Board (`raspi5b`) | 1/2/4/8/16 GiB RAM, board revision code, serial number (`serial=`), PSCI over SMC with EL2 entry (default) or guest-owned EL3 (`secure=on`), system reset and power-off through PSCI, the watchdog and the monitor (WS3.6), a built-in device tree when no `-dtb` is given (WS3.2; `builtin-dtb=off` passes none), DTB fix-ups for unmodelled devices, `/system/linux,revision` |
-| Tests | qtest (UART IDs, GIC geometry, priority bits and security, RAM, placeholders, system timer, watchdog, mailbox, identity tags, RNG), the built-in tree validated against the Linux v6.18 bindings (`make check-dt`), bare-metal smoke guest (EL, MPIDR, CNTFRQ, PSCI CPU_ON on all cores, SYSTEM_OFF, EL3 mode), and the bare-metal suite (WS9.2, 28 tests: GIC and the Secure/Non-secure group split, each core's MPIDR, every timer on every core, SGIs between all core pairs, SPI routing, PSCI, the system timer, the mailbox and identity tags, the RNG, UART receive and loopback, a watchdog reset and four system resets checked against the boot state, an ID-register dump, the A76's IMPDEF registers; 1–4 cores, with the built-in tree, a `-dtb` one and none, EL2 and EL3) |
+| SoC (`bcm2712`) | 1–4 Cortex-A76 (`MPIDR.Aff1` = core with `MPIDR.MT` set (WS1.2), CNTFRQ 54 MHz, optional EL3, the IMPDEF registers firmware writes (WS1.5), warm reset through `RMR_EL3` (WS3.3)), GIC-400 with 288 SPIs, 5 priority bits and all timer/maintenance PPIs, UART10 (PL011), system timer (WS2.1), watchdog and reset status (WS2.4), RNG200 (WS2.5), VideoCore mailbox with the BCM283x property and framebuffer channels (WS2.2) and every identity tag answered (WS2.3a), complete memory map with T0 placeholders and two catch-all windows |
+| Board (`raspi5b`) | 1/2/4/8/16 GiB RAM, board revision code, serial number (`serial=`), PSCI over SMC with EL2 entry (default) or guest-owned EL3 (`secure=on`), firmware such as TF-A's BL31 loaded with `-bios` and handed the kernel, initrd and device tree as the Pi's firmware does (WS3.3), system reset and power-off through PSCI, the watchdog and the monitor (WS3.6), a built-in device tree when no `-dtb` is given (WS3.2; `builtin-dtb=off` passes none), DTB fix-ups for unmodelled devices, `/system/linux,revision` |
+| Tests | qtest (UART IDs, GIC geometry, priority bits and security, RAM, placeholders, system timer, watchdog, mailbox, identity tags, RNG), the built-in tree validated against the Linux v6.18 bindings (`make check-dt`), bare-metal smoke guest (EL, MPIDR, CNTFRQ, PSCI CPU_ON on all cores, SYSTEM_OFF, EL3 mode), and the bare-metal suite (WS9.2, 28 tests: GIC and the Secure/Non-secure group split, each core's MPIDR, every timer on every core, SGIs between all core pairs, SPI routing, PSCI, the system timer, the mailbox and identity tags, the RNG, UART receive and loopback, a watchdog reset and four system resets checked against the boot state, an ID-register dump, the A76's IMPDEF registers; 1–4 cores, with the built-in tree, a `-dtb` one and none, EL2 and EL3), the `-bios` handoff (qtest), and real firmware (`make check-firmware`: the smoke guest and the suite on TF-A's `rpi5` BL31, built at a pinned release) |
 | Linux | the stock Raspberry Pi OS kernel (6.18) boots on 4 CPUs to the root-fs mount, without warnings, with the firmware's `bcm2712-rpi-5-b.dtb` and on the built-in tree (1, 2 and 8 GiB) |
 
 Known provisional values, each marked in the code: 288 SPIs
 (`TODO(WS1.3)`), the VideoCore memory size and DMA channel mask
 (`TODO(WS0.4)`), the PMU interrupts taken from the vendor DT
-(`TODO(WS1.4)`), `-bios` handling
-(`TODO(WS3.3)`), and the board revision's `REVISION` field (WS9.8).
+(`TODO(WS1.4)`), and the board revision's `REVISION` field (WS9.8).
 
 ## 3. Milestones
 
@@ -713,7 +712,44 @@ bare-metal code and microkernels always receive a valid tree in `x0`.
 root-fs mount; the bare-metal suite reads the UART and GIC addresses from
 it instead of hard-coding them.
 
-#### WS3.3 Armstub/BL31 loading (`-bios`) (M)
+#### WS3.3 Armstub/BL31 loading (`-bios`) (done)
+*Delivered:* with `secure=on`, `-bios` loads the armstub at address 0
+and every core starts there in EL3, without QEMU's PSCI, as when the
+firmware releases them. The rest goes where the firmware puts it:
+`-kernel` at `0x20_0000`, its `kernel_address` for 64-bit kernels (an
+`Image` there plus its `text_offset`, an ELF at its own addresses), the
+initrd at 128 MiB or above all the memory the kernel declares, BSS
+included, and the device tree on the next 2 MiB boundary or at
+`dtb-address` (`device_tree_address=`), all below the VideoCore's
+memory. The research step answered how the stub finds them: TF-A's
+Raspberry Pi ports (`RESET_TO_BL31`, all cores entering at 0) start with
+a header (`plat/rpi/common/aarch64/armstub8_header.S`) whose magic
+`0x5afe570b` at `0xf0` the firmware clears, writing the device tree and
+kernel addresses at `0xf8` and `0xfc`; the machine does the same, and
+loads an image without the header unchanged. The built-in tree gains
+`/psci` and `/reserved-memory/atf@0`, as in the firmware's tree. TF-A
+v2.15.0 then needed one more `target/arm` patch: its `CPU_OFF` resets
+the core with `RMR_EL3.RR` and waits in `WFI` to return to its holding
+pen, and QEMU ignored the request, so a core turned off never came back
+and `CPU_ON` left it `ON_PENDING`; the CPU now resets once the write has
+ended its translation block (the registers keep their migrated raw form).
+Running the suite on TF-A's PSCI found a race in TF-A itself: it reports
+a core off before the core has reset into its pen, where it clears its
+mailbox slot, losing a `CPU_ON` that gets there first; hardware resets
+in microseconds, and the bare-metal runtime gives a core that has run
+10 ms before starting it again. Two tests learnt the Non-secure view
+under firmware: with the Security Extensions a Non-secure access sees 4
+of the GIC's 5 priority bits, and TF-A leaves `ACTLR_EL3` clear, so the
+IMPDEF registers are written only where nothing above traps them.
+`scripts/firmware` builds TF-A's `rpi5` BL31 from its release tag, with
+the commit checked, and `make check-firmware` boots the smoke guest and
+the suite on it in all three device-tree modes, each of the suite's five
+resets starting TF-A again; CI caches the build by the script's hash.
+The qtest checks the header, the layout and `dtb-address`, and smoke
+tests the options the machine refuses. TF-A's `rpi5` port counts on all
+four cores: with a smaller `-smp`, `CPU_ON` of a missing core succeeds
+and nothing starts.
+
 **Depends:** WS1.5; the handoff record from WS0.4 step 5 when available.
 Mirror the firmware's handoff for users who bring their own secure
 firmware (TF-A, or a custom EL3 monitor).

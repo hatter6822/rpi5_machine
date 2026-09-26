@@ -17,11 +17,13 @@ from test_hello import GUEST, QEMU, TIMEOUT
 
 DT_SCHEMA = os.environ.get("DT_SCHEMA")
 
-# Configurations whose trees differ: core count, EL3, RAM above 1 GiB
+# Configurations whose trees differ: core count, EL3, RAM above 1 GiB, and
+# firmware loaded with -bios (its PSCI and reserved memory)
 CONFIGS = (
     ("raspi5b", "-smp", "1", "-m", "1G"),
     ("raspi5b", "-smp", "4", "-m", "8G"),
     ("raspi5b,secure=on", "-smp", "2", "-m", "2G"),
+    ("raspi5b,secure=on", "-smp", "4", "-m", "4G", "-bios", str(GUEST)),
 )
 
 # Messages that are expected, each with the reason. Anything else fails.

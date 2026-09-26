@@ -9,5 +9,8 @@
 /build-dt-schema/
 /build-series/
 
+# Firmware built for make check-firmware
+/build-firmware/
+
 __pycache__/
 *.py[co]

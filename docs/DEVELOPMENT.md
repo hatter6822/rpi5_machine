@@ -50,8 +50,8 @@ Edit it in `qemu/`, then either
 
 ```
 scripts/qemu-tree new hw-misc-add-bcm2712-foo qemu-relative/path ...   # new patch
-scripts/qemu-tree refresh 0014-hw-arm-Add-the-Broadcom-BCM2712-SoC.patch
-scripts/qemu-tree refresh 0014-hw-arm-Add-the-Broadcom-BCM2712-SoC.patch MAINTAINERS
+scripts/qemu-tree refresh 0015-hw-arm-Add-the-Broadcom-BCM2712-SoC.patch
+scripts/qemu-tree refresh 0015-hw-arm-Add-the-Broadcom-BCM2712-SoC.patch MAINTAINERS
 ```
 
 `new` appends a patch to the series and opens git's editor for a commit
@@ -112,7 +112,8 @@ We follow upstream QEMU conventions so the code can be submitted unchanged:
 | Bare-metal guests and test suite over UART ([format](../tests/guest/README.md)) | `tests/guest/`, `tests/smoke/` | `make check-smoke` |
 | Both, on a QEMU whose only board is `raspi5b` | `tests/configs/raspi5b-only.mak` | `make check-minimal` |
 | Built-in device tree against the Linux bindings (dt-schema) | `tests/smoke/test_dt_schema.py` | `make check-dt` |
-| Linux / firmware boots | `overlay/tests/functional/aarch64/` (planned, WS9.3) | QEMU functional test runner |
+| Real firmware with `-bios`: TF-A's `rpi5` BL31 running the bare-metal guests, built at a pinned release by `scripts/firmware` | `tests/smoke/test_firmware.py` | `make check-firmware` |
+| Linux / firmware boots, upstream | `overlay/tests/functional/aarch64/` (planned, WS9.3) | QEMU functional test runner |
 
 Each new device lands with a qtest for its registers and reset values. The
 bare-metal guests are built with `clang --target=aarch64-none-elf` and `lld`,

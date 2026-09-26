@@ -10,10 +10,14 @@
  * over SMC. By default this machine reproduces that contract with QEMU's
  * built-in PSCI emulation and hides EL3 from the guest; "secure=on"
  * exposes EL3 (and the GIC Security Extensions) so the guest may bring
- * its own secure firmware instead.
+ * its own secure firmware instead: an image that owns EL3 from reset
+ * (-kernel), or the BL31 the firmware would load (-bios), which the
+ * machine hands the kernel and device tree the way the firmware does.
  */
 
 #include "qemu/osdep.h"
+#include "qemu/bswap.h"
+#include "qemu/datadir.h"
 #include "qemu/error-report.h"
 #include "qemu/host-utils.h"
 #include "qemu/units.h"
@@ -23,10 +27,13 @@
 #include "hw/arm/boot.h"
 #include "hw/arm/machines-qom.h"
 #include "hw/core/boards.h"
+#include "hw/core/loader.h"
 #include "hw/core/qdev-properties.h"
 #include "hw/core/registerfields.h"
 #include "system/address-spaces.h"
 #include "system/device_tree.h"
+#include "system/reset.h"
+#include "elf.h"
 #include <libfdt.h>
 
 #define TYPE_RASPI5B_MACHINE MACHINE_TYPE_NAME("raspi5b")
@@ -41,12 +48,44 @@ struct Raspi5bMachineState {
     struct arm_boot_info binfo;
     uint32_t board_rev;
     uint64_t serial;
+    uint64_t dtb_addr;
     bool secure;
     bool builtin_dtb;
 };
 
 /* An obviously made-up serial number, overridden with "serial=" */
 #define RASPI5B_DEFAULT_SERIAL  0x0123456789abcdefULL
+
+/*
+ * With -bios the machine loads what the firmware runs at EL3 (config.txt's
+ * "armstub=", TF-A BL31 on a stock Pi 5) at address 0, and lays out the
+ * rest as the firmware does: the kernel at the firmware's default
+ * kernel_address for 64-bit kernels, and above it the initrd and the
+ * device tree, unless "dtb-address" (device_tree_address=) places the
+ * tree. Everything stays in the first GiB, below the VideoCore's memory.
+ */
+#define RASPI5B_KERNEL_ADDR     0x200000
+
+/* The lowest address for the initrd and the device tree, as for -kernel */
+#define RASPI5B_INITRD_ADDR     (128 * MiB)
+
+/*
+ * The header the firmware looks for in an armstub (TF-A's
+ * plat/rpi/common/aarch64/armstub8_header.S): when the magic is there, it
+ * clears it and fills in the device tree and kernel addresses.
+ */
+#define RASPI5B_ARMSTUB_MAGIC           0x5afe570b
+#define RASPI5B_ARMSTUB_MAGIC_OFFSET    0xf0
+#define RASPI5B_ARMSTUB_DTB_OFFSET      0xf8
+#define RASPI5B_ARMSTUB_KERNEL_OFFSET   0xfc
+
+/* The memory the firmware's device tree reserves for BL31 (atf@0) */
+#define RASPI5B_ARMSTUB_RESERVED        0x80000
+
+/* The arm64 Linux Image header: text_offset, image_size and magic */
+#define RASPI5B_IMAGE_TEXT_OFFSET       8
+#define RASPI5B_IMAGE_SIZE              16
+#define RASPI5B_IMAGE_MAGIC             56
 
 /*
  * "New-style" board revision code, see
@@ -222,6 +261,22 @@ static void *raspi5b_get_dtb(const struct arm_boot_info *info, int *size)
     qemu_fdt_setprop_string(fdt, "/chosen", "stdout-path",
                             "serial10:115200n8");
 
+    if (MACHINE(s)->firmware) {
+        /* BL31, as the firmware's tree describes it */
+        static const char psci_compat[] = "arm,psci-1.0\0arm,psci-0.2";
+
+        qemu_fdt_add_subnode(fdt, "/psci");
+        qemu_fdt_setprop(fdt, "/psci", "compatible", psci_compat,
+                         sizeof(psci_compat));
+        qemu_fdt_setprop_string(fdt, "/psci", "method", "smc");
+
+        qemu_fdt_add_subnode(fdt, "/reserved-memory/atf@0");
+        qemu_fdt_setprop_sized_cells(fdt, "/reserved-memory/atf@0", "reg",
+                                     2, BCM2712_RAM_BASE,
+                                     2, RASPI5B_ARMSTUB_RESERVED);
+        qemu_fdt_setprop(fdt, "/reserved-memory/atf@0", "no-map", NULL, 0);
+    }
+
     if (fdt_pack(fdt) < 0) {
         g_free(fdt);
         return NULL;
@@ -258,6 +313,141 @@ static void raspi5b_modify_dtb(const struct arm_boot_info *info, void *fdt)
     }
 }
 
+static void raspi5b_cpu_reset(void *opaque)
+{
+    cpu_reset(CPU(opaque));
+}
+
+/*
+ * Load a 64-bit kernel where the firmware does: an ELF at its own
+ * addresses, anything else, such as a Linux Image (gzipped or not), at
+ * RASPI5B_KERNEL_ADDR plus the Image's text_offset. Returns the entry
+ * point, and in *end the end of the memory the kernel uses, which for an
+ * Image includes its BSS.
+ */
+static hwaddr raspi5b_load_kernel(const char *filename, AddressSpace *as,
+                                  hwaddr *end)
+{
+    g_autofree uint8_t *buffer = NULL;
+    uint64_t entry, high, used;
+    hwaddr addr = RASPI5B_KERNEL_ADDR;
+    ssize_t size;
+
+    size = load_elf_as(filename, NULL, NULL, NULL, &entry, NULL, &high, NULL,
+                       ELFDATA2LSB, EM_AARCH64, 1, 0, as);
+    if (size > 0) {
+        *end = high;
+        return entry;
+    }
+    if (size != ELF_LOAD_NOT_ELF) {
+        error_report("could not load kernel '%s': %s", filename,
+                     load_elf_strerror(size));
+        exit(EXIT_FAILURE);
+    }
+
+    size = load_image_gzipped_buffer(filename,
+                                     LOAD_IMAGE_MAX_DECOMPRESSED_BYTES,
+                                     &buffer);
+    if (size < 0) {
+        gsize len;
+
+        if (!g_file_get_contents(filename, (char **)&buffer, &len, NULL)) {
+            error_report("could not load kernel '%s'", filename);
+            exit(EXIT_FAILURE);
+        }
+        size = len;
+    }
+
+    used = size;
+    /* image_size is 0 in the headers of kernels before Linux 3.17 */
+    if (size >= RASPI5B_IMAGE_MAGIC + 4 &&
+        !memcmp(buffer + RASPI5B_IMAGE_MAGIC, "ARM\x64", 4) &&
+        ldq_le_p(buffer + RASPI5B_IMAGE_SIZE)) {
+        addr += ldq_le_p(buffer + RASPI5B_IMAGE_TEXT_OFFSET);
+        used = MAX(ldq_le_p(buffer + RASPI5B_IMAGE_SIZE), size);
+    }
+    rom_add_blob_fixed_as(filename, buffer, size, addr, as);
+    *end = addr + used;
+    return addr;
+}
+
+/*
+ * -bios: load the armstub at address 0, the kernel, initrd and device
+ * tree where the firmware puts them, and tell the armstub where they are
+ * through its header. Every core starts in the armstub at EL3, as when
+ * the firmware releases them.
+ */
+static void raspi5b_boot_armstub(Raspi5bMachineState *s,
+                                 MachineState *machine)
+{
+    ARMCPU *cpu = &s->soc.cpu[0];
+    AddressSpace *as = arm_boot_address_space(cpu, &s->binfo);
+    g_autofree char *filename = qemu_find_file(QEMU_FILE_TYPE_BIOS,
+                                               machine->firmware);
+    g_autofree uint8_t *stub = NULL;
+    hwaddr kernel = RASPI5B_KERNEL_ADDR, next = RASPI5B_INITRD_ADDR;
+    hwaddr dtb = 0, end;
+    gsize size;
+
+    if (!filename ||
+        !g_file_get_contents(filename, (char **)&stub, &size, NULL)) {
+        error_report("could not load the armstub '%s'", machine->firmware);
+        exit(EXIT_FAILURE);
+    }
+
+    if (machine->kernel_filename) {
+        kernel = raspi5b_load_kernel(machine->kernel_filename, as, &end);
+        next = MAX(next, end);
+    }
+    if (machine->initrd_filename) {
+        ssize_t initrd_size;
+
+        next = QEMU_ALIGN_UP(next, 4 * KiB);
+        initrd_size = load_ramdisk_as(machine->initrd_filename, next,
+                                      BCM2712_VC_RAM_BASE - next, as);
+        if (initrd_size < 0) {
+            initrd_size = load_image_targphys_as(machine->initrd_filename,
+                                                 next,
+                                                 BCM2712_VC_RAM_BASE - next,
+                                                 as, &error_fatal);
+        }
+        s->binfo.initrd_start = next;
+        s->binfo.initrd_size = initrd_size;
+        next += initrd_size;
+    }
+    if (s->binfo.dtb_filename || s->binfo.get_dtb) {
+        int dtb_size;
+
+        /* As for -kernel: the kernel maps the tree's 2 MiB block early */
+        dtb = s->dtb_addr ? s->dtb_addr : QEMU_ALIGN_UP(next, 2 * MiB);
+        dtb_size = arm_load_dtb(dtb, &s->binfo, 0, as, machine, cpu);
+        if (dtb_size < 0) {
+            exit(EXIT_FAILURE);
+        }
+        next = MAX(next, dtb + dtb_size);
+    }
+    if (next > BCM2712_VC_RAM_BASE || kernel > UINT32_MAX) {
+        error_report("the kernel, initrd and device tree must fit below "
+                     "0x%x, where the VideoCore's memory starts",
+                     BCM2712_VC_RAM_BASE);
+        exit(EXIT_FAILURE);
+    }
+
+    if (size >= RASPI5B_ARMSTUB_KERNEL_OFFSET + 4 &&
+        ldl_le_p(stub + RASPI5B_ARMSTUB_MAGIC_OFFSET) ==
+        RASPI5B_ARMSTUB_MAGIC) {
+        stl_le_p(stub + RASPI5B_ARMSTUB_MAGIC_OFFSET, 0);
+        stl_le_p(stub + RASPI5B_ARMSTUB_DTB_OFFSET, dtb);
+        stl_le_p(stub + RASPI5B_ARMSTUB_KERNEL_OFFSET, kernel);
+    }
+    rom_add_blob_fixed_as(filename, stub, size, BCM2712_RAM_BASE, as);
+
+    /* No PSCI here: the cores run from their reset vector, address 0 */
+    for (unsigned int i = 0; i < machine->smp.cpus; i++) {
+        qemu_register_reset(raspi5b_cpu_reset, &s->soc.cpu[i]);
+    }
+}
+
 static void raspi5b_machine_init(MachineState *machine)
 {
     Raspi5bMachineState *s = RASPI5B_MACHINE(machine);
@@ -269,9 +459,18 @@ static void raspi5b_machine_init(MachineState *machine)
         error_report("Raspberry Pi 5 boards have 1, 2, 4, 8 or 16 GiB of RAM");
         exit(EXIT_FAILURE);
     }
-    if (machine->firmware) {
-        /* TODO(WS3.3): load an armstub/BL31 image at 0x0 like the VPU does */
-        error_report("-bios is not supported yet; use -kernel");
+    if (machine->firmware && !s->secure) {
+        error_report("-bios loads firmware that runs at EL3; "
+                     "use -M raspi5b,secure=on");
+        exit(EXIT_FAILURE);
+    }
+    if (s->dtb_addr && !machine->firmware) {
+        error_report("dtb-address places the device tree for -bios only");
+        exit(EXIT_FAILURE);
+    }
+    if (s->dtb_addr % 8 || s->dtb_addr >= BCM2712_VC_RAM_BASE) {
+        error_report("dtb-address must be a multiple of 8 below 0x%x",
+                     BCM2712_VC_RAM_BASE);
         exit(EXIT_FAILURE);
     }
     s->board_rev = raspi5b_board_rev(machine->ram_size);
@@ -299,7 +498,12 @@ static void raspi5b_machine_init(MachineState *machine)
         .modify_dtb = raspi5b_modify_dtb,
         .get_dtb = s->builtin_dtb ? raspi5b_get_dtb : NULL,
     };
-    arm_load_kernel(&s->soc.cpu[0], machine, &s->binfo);
+    if (machine->firmware) {
+        s->binfo.dtb_filename = machine->dtb;
+        raspi5b_boot_armstub(s, machine);
+    } else {
+        arm_load_kernel(&s->soc.cpu[0], machine, &s->binfo);
+    }
 }
 
 static bool raspi5b_get_secure(Object *obj, Error **errp)
@@ -322,6 +526,18 @@ static void raspi5b_set_serial(Object *obj, Visitor *v, const char *name,
                                void *opaque, Error **errp)
 {
     visit_type_uint64(v, name, &RASPI5B_MACHINE(obj)->serial, errp);
+}
+
+static void raspi5b_get_dtb_addr(Object *obj, Visitor *v, const char *name,
+                                 void *opaque, Error **errp)
+{
+    visit_type_uint64(v, name, &RASPI5B_MACHINE(obj)->dtb_addr, errp);
+}
+
+static void raspi5b_set_dtb_addr(Object *obj, Visitor *v, const char *name,
+                                 void *opaque, Error **errp)
+{
+    visit_type_uint64(v, name, &RASPI5B_MACHINE(obj)->dtb_addr, errp);
 }
 
 static bool raspi5b_get_builtin_dtb(Object *obj, Error **errp)
@@ -368,7 +584,7 @@ static void raspi5b_machine_class_init(ObjectClass *oc, const void *data)
     object_class_property_set_description(oc, "secure",
         "Expose EL3 and the GIC Security Extensions to the guest. "
         "When off (the default), QEMU provides PSCI in place of the "
-        "firmware's TF-A BL31");
+        "firmware's TF-A BL31, which -bios loads when on");
 
     object_class_property_add_bool(oc, "builtin-dtb",
                                    raspi5b_get_builtin_dtb,
@@ -377,6 +593,14 @@ static void raspi5b_machine_class_init(ObjectClass *oc, const void *data)
         "Without -dtb, give the guest a device tree generated from the "
         "model (the default); when off, give it none, like an empty "
         "device_tree= line in the firmware's config.txt");
+
+    object_class_property_add(oc, "dtb-address", "uint64",
+                              raspi5b_get_dtb_addr, raspi5b_set_dtb_addr,
+                              NULL, NULL);
+    object_class_property_set_description(oc, "dtb-address",
+        "Where -bios places the device tree, like device_tree_address= "
+        "in the firmware's config.txt; by default, above the kernel and "
+        "initrd");
 
     object_class_property_add(oc, "serial", "uint64", raspi5b_get_serial,
                               raspi5b_set_serial, NULL, NULL);

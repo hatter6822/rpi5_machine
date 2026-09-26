@@ -1,0 +1,80 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-2.0-or-later
+#
+# Build the firmware 'make check-firmware' boots on raspi5b, pinned: TF-A
+# from its release tag and commit, with the aarch64-linux-gnu- cross
+# compiler (CROSS_COMPILE overrides the prefix).
+#
+#   scripts/firmware DIR
+#
+# DIR receives bl31.bin, TF-A's rpi5 BL31. An output is made again only
+# when its pin changes (DIR/.pins records what each was made from). DIR
+# must be new, empty, or made by an earlier run, which leaves the marker
+# .check-firmware; 'make distclean' requires it too before removing DIR.
+
+set -euo pipefail
+
+TFA_URL=https://github.com/ARM-software/arm-trusted-firmware.git
+TFA_TAG=v2.15.0
+TFA_COMMIT=da738d5eae93af342fdc4995dd3c05acb4c9d757
+
+die() {
+    echo "firmware: $*" >&2
+    exit 1
+}
+
+[ $# -eq 1 ] || die "usage: scripts/firmware DIR"
+dir=$1
+if [ -e "$dir" ] && [ ! -f "$dir/.check-firmware" ] &&
+   [ -n "$(find "$dir" -mindepth 1 -maxdepth 1 -print -quit 2>&1)" ]; then
+    die "$dir exists and was not made here; use a new or empty directory"
+fi
+mkdir -p "$dir"
+touch "$dir/.check-firmware"
+dir=$(cd "$dir" && pwd -P)
+
+cross=${CROSS_COMPILE:-aarch64-linux-gnu-}
+jobs=$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 1)
+
+# made OUTPUT PIN: OUTPUT exists and was made from PIN
+made() {
+    [ -f "$dir/$1" ] && [ "$(cat "$dir/.pins/$1" 2>/dev/null)" = "$2" ]
+}
+
+# record OUTPUT PIN, once OUTPUT is complete
+record() {
+    mkdir -p "$(dirname "$dir/.pins/$1")"
+    printf '%s\n' "$2" >"$dir/.pins/$1"
+}
+
+# checkout NAME URL TAG COMMIT: TAG of URL in DIR/src/NAME, where it must
+# be COMMIT
+checkout() {
+    local src=$dir/src/$1
+
+    rm -rf "$src"
+    git clone --quiet --depth 1 --branch "$3" -c advice.detachedHead=false \
+        "$2" "$src"
+    [ "$(git -C "$src" rev-parse HEAD)" = "$4" ] ||
+        die "$2 $3 is not commit $4"
+}
+
+need_cross() {
+    command -v "${cross}gcc" >/dev/null ||
+        die "needs ${cross}gcc (Debian and Ubuntu: gcc-aarch64-linux-gnu)"
+}
+
+# TF-A's BL31 for the Pi 5: the armstub the firmware loads at 0. A
+# release build, TF-A's default: debug builds also read the DSU's
+# cluster registers, which the model does not implement.
+pin="tf-a $TFA_TAG $TFA_COMMIT"
+if ! made bl31.bin "$pin"; then
+    need_cross
+    checkout tf-a "$TFA_URL" "$TFA_TAG" "$TFA_COMMIT"
+    make -C "$dir/src/tf-a" -j"$jobs" CROSS_COMPILE="$cross" PLAT=rpi5 \
+        BUILD_BASE="$dir/src/tf-a-build" bl31
+    cp "$dir/src/tf-a-build/rpi5/release/bl31.bin" "$dir/bl31.bin"
+    record bl31.bin "$pin"
+fi
+
+rm -rf "$dir/src"

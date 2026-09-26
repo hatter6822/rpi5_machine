@@ -24,6 +24,7 @@
 #define CPUPMR_EL3              s3_6_c15_c8_3
 
 #define ESR_EC_UNKNOWN          0x00
+#define ID_AA64PFR0_EL3_SHIFT   12
 
 static volatile unsigned undefs;
 
@@ -51,20 +52,36 @@ static bool count_undef(struct exc_frame *frame, uint64_t esr, uint64_t far)
 /*
  * None of the registers TF-A's cortex_a76 support writes (errata
  * workarounds, the core power-down sequence, the errata 1946160 patch
- * slots at EL3) is undefined at the exception level we run at.
+ * slots at EL3) is undefined at EL3. Below EL3 they read; they are
+ * written there only without an EL3 (ID_AA64PFR0_EL1.EL3 = 0), since
+ * with one, whether EL2 may write them is ACTLR_EL3's to say, and TF-A
+ * leaves it clear.
  */
 TEST(cpu_impdef_registers, "cpu/impdef-registers")
 {
+    bool writable = current_el() == 3 ||
+                    !((read_sysreg(id_aa64pfr0_el1) >> ID_AA64PFR0_EL3_SHIFT) &
+                      0xf);
+
     undefs = 0;
     exc_set_sync_hook(count_undef);
 
     (void)READ(CPUCFR_EL1);
-    TOUCH(CPUACTLR_EL1);
-    TOUCH(CPUACTLR2_EL1);
-    TOUCH(CPUACTLR3_EL1);
-    TOUCH(CPUECTLR_EL1);
-    TOUCH(CPUPWRCTLR_EL1);
+    (void)READ(CPUACTLR_EL1);
+    (void)READ(CPUACTLR2_EL1);
+    (void)READ(CPUACTLR3_EL1);
+    (void)READ(CPUECTLR_EL1);
+    (void)READ(CPUPWRCTLR_EL1);
     ASSERT_EQ(undefs, 0);
+
+    if (writable) {
+        TOUCH(CPUACTLR_EL1);
+        TOUCH(CPUACTLR2_EL1);
+        TOUCH(CPUACTLR3_EL1);
+        TOUCH(CPUECTLR_EL1);
+        TOUCH(CPUPWRCTLR_EL1);
+        ASSERT_EQ(undefs, 0);
+    }
 
     if (current_el() == 3) {
         uint64_t slot = READ(CPUPSELR_EL3);

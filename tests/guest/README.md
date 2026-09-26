@@ -13,8 +13,9 @@ the repository root) and booted by the smoke tests in `tests/smoke/`.
 ## Runtime
 
 `lib/start.S` runs at the exception level the machine enters at (EL2 by
-default, EL3 with `secure=on`) and stays there, with the MMU and caches
-off. Consequences for test code:
+default, EL3 with `secure=on`, EL2 again when TF-A loaded with `-bios`
+starts it) and stays there, with the MMU and caches off. Consequences for
+test code:
 
 * every data access is to Device memory: naturally aligned accesses only
   (the guests are built with `-mstrict-align`), no exclusives, so cores
@@ -22,7 +23,8 @@ off. Consequences for test code:
 * only core 0 prints; secondaries report through memory;
 * physical interrupts are routed to the running exception level
   (`HCR_EL2.{IMO,FMO,AMO}` or `SCR_EL3.{IRQ,FIQ,EA}`), and the GIC delivers
-  every interrupt as Group 0 IRQ;
+  every interrupt as IRQ: in Group 0, or under TF-A in the Non-secure
+  Group 1 it assigns;
 * at EL3, `bm_run_nonsecure_el2()` runs a function at Non-secure EL2 and
   returns when it does (through an SMC), with the IRQ, FIQ and SError
   routing the caller chooses; `gic/security-groups` uses it.
@@ -38,7 +40,10 @@ usable cores come from it, with `reg` translated through every parent's
 `ranges`; without one, built-in raspi5b addresses are used and PSCI
 `AFFINITY_INFO` tells which cores exist.
 Secondary cores are started with `bm_start_core()` and are off again when
-their function returns. Below EL3 that is PSCI `CPU_ON` and `CPU_OFF`. A
+their function returns. Below EL3 that is PSCI `CPU_ON` and `CPU_OFF`;
+TF-A's Raspberry Pi port reports a core off before the core is back in
+its holding pen and ready for another `CPU_ON`, so a core that has run
+gets 10 ms before it is started again. A
 guest that owns EL3 has no PSCI firmware: every core enters the image at
 reset, and the secondaries wait in a spin table until `bm_start_core()`
 releases them, which returns the PSCI statuses (`ALREADY_ON`,

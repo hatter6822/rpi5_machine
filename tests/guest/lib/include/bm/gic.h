@@ -40,6 +40,7 @@ void gic_init_cpu(void);
 
 unsigned gic_num_irqs(void);
 unsigned gic_priority_bits(void);
+bool gic_has_security_extensions(void);
 
 void gic_enable(unsigned intid);
 void gic_disable(unsigned intid);
