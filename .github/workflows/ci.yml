@@ -36,6 +36,10 @@ jobs:
           key: ccache-${{ runner.os }}-${{ hashFiles('.gitmodules', 'patches/**', 'overlay/**') }}
           restore-keys: ccache-${{ runner.os }}-
 
+      # QEMU's configure does not wrap the compiler in ccache by itself
+      - name: Enable ccache
+        run: echo /usr/lib/ccache >> "$GITHUB_PATH"
+
       - name: Lint
         run: |
           shellcheck scripts/qemu-tree
@@ -46,3 +50,6 @@ jobs:
 
       - name: Test
         run: make check
+
+      - name: Compiler cache statistics
+        run: ccache --show-stats

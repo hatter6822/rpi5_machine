@@ -21,6 +21,7 @@
 #define PL011_PCELLID1          0xff4
 
 #define GICD_TYPER              0x004
+#define GICD_IPRIORITYR         0x400
 #define GICD_TYPER_ITLINES(v)   ((v) & 0x1f)
 #define GICD_TYPER_CPUNUM(v)    (((v) >> 5) & 0x7)
 #define GICD_TYPER_SECEXT       (1u << 10)
@@ -53,6 +54,18 @@ static void check_gicd_typer(const char *args, uint32_t cpus, bool secext)
 static void test_gic_default(void)
 {
     check_gicd_typer("-machine raspi5b", 4, false);
+}
+
+/* GIC-400 implements 5 priority bits: the low 3 bits of IPRIORITYR are RAZ */
+static void test_gic_priority_bits(void)
+{
+    QTestState *qts = qtest_init("-machine raspi5b");
+
+    qtest_writel(qts, GICD_BASE + GICD_IPRIORITYR + 4 * 8, 0xffffffff);
+    g_assert_cmphex(qtest_readl(qts, GICD_BASE + GICD_IPRIORITYR + 4 * 8),
+                    ==, 0xf8f8f8f8);
+
+    qtest_quit(qts);
 }
 
 static void test_gic_smp2_secure(void)
@@ -90,6 +103,7 @@ int main(int argc, char **argv)
 
     qtest_add_func("/raspi5b/uart10/ids", test_uart10_ids);
     qtest_add_func("/raspi5b/gic/default", test_gic_default);
+    qtest_add_func("/raspi5b/gic/priority-bits", test_gic_priority_bits);
     qtest_add_func("/raspi5b/gic/smp2-secure", test_gic_smp2_secure);
     qtest_add_func("/raspi5b/ram", test_ram);
     qtest_add_func("/raspi5b/unimplemented", test_unimplemented_regions);

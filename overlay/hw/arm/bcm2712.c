@@ -110,6 +110,7 @@ static const char *const bcm2712_device_names[BCM2712_NUM_DEVICES] = {
 #define GIC400_VIFACE_THIS_OFS      0x4000
 #define GIC400_VIFACE_CPU_OFS(cpu)  (0x5000 + (cpu) * 0x200)
 #define GIC400_VCPU_OFS             0x6000
+#define GIC400_PRIORITY_BITS        5
 
 /*
  * Catch-all windows sit below the named unimplemented regions (which
@@ -192,6 +193,8 @@ static bool bcm2712_realize_gic(BCM2712State *s, Error **errp)
     qdev_prop_set_uint32(gicdev, "revision", 2);
     qdev_prop_set_uint32(gicdev, "num-cpu", n);
     qdev_prop_set_uint32(gicdev, "num-irq", BCM2712_NUM_SPIS + GIC_INTERNAL);
+    /* GIC-400 implements 32 priority levels (GIC-400 TRM, section 3.1) */
+    qdev_prop_set_uint32(gicdev, "num-priority-bits", GIC400_PRIORITY_BITS);
     qdev_prop_set_bit(gicdev, "has-security-extensions", s->has_el3);
     qdev_prop_set_bit(gicdev, "has-virtualization-extensions", true);
     if (!sysbus_realize(gicsbd, errp)) {

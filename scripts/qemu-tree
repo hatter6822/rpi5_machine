@@ -192,20 +192,26 @@ cmd_refresh() {
     [ -f "$p" ] || die "no such patch: $1"
     check_tree
 
-    local msg
-    msg=$(mktemp)
-    trap 'rm -f "$msg"' RETURN
-    # Commit message: after the Subject header, up to the '---' separator
-    sed -n '/^Subject: /,/^---$/p' "$p" | sed -e '$d' \
-        -e '1s/^Subject: \(\[PATCH[^]]*\] \)\{0,1\}//' >"$msg"
+    # git mailinfo splits the mail into headers (stdout), body and diff,
+    # unfolding wrapped Subject lines and stripping the [PATCH] prefix.
+    local tmp headers author date subject
+    tmp=$(mktemp -d)
+    trap 'rm -rf "$tmp"' RETURN
+    headers=$(git mailinfo "$tmp/body" "$tmp/diff" <"$p")
+    author="$(header Author "$headers") <$(header Email "$headers")>"
+    date=$(header Date "$headers")
+    subject=$(header Subject "$headers")
+    { printf '%s\n\n' "$subject"; cat "$tmp/body"; } >"$tmp/msg"
 
-    local author date
-    author=$(sed -n '0,/^From: /s/^From: //p' "$p")
-    date=$(sed -n '0,/^Date: /s/^Date: //p' "$p")
     local -a files
     mapfile -t files < <(patch_files "$p")
-    GIT_AUTHOR_DATE="$date" write_patch "$p" "$msg" "$author" "${files[@]}"
+    GIT_AUTHOR_DATE="$date" write_patch "$p" "$tmp/msg" "$author" "${files[@]}"
     info refresh "$(basename "$p")"
+}
+
+# header <name> <mailinfo-output>: the value of one "Name: value" line
+header() {
+    sed -n "s/^$1: //p" <<<"$2"
 }
 
 # write_patch <out> <message-file> <author> <file>...: format the current
@@ -215,17 +221,20 @@ write_patch() {
     shift 3
     [ -n "$(qgit diff --name-only -- "$@")" ] || die "no changes in: $*"
 
-    local tmp
-    tmp=$(mktemp -d)
-    # Commit into a throw-away worktree so qemu/ itself is left untouched
-    qgit worktree add -q --detach "$tmp/wt" HEAD
-    qgit diff --binary -- "$@" | git -C "$tmp/wt" apply --index
-    git -C "$tmp/wt" -c user.name=qemu-tree -c user.email=qemu-tree@localhost \
+    # Commit into a throw-away worktree so qemu/ itself is left untouched.
+    # The EXIT trap also covers failures part-way through (set -e).
+    local wt
+    wt=$(mktemp -d)
+    trap 'qgit worktree remove --force "$wt" 2>/dev/null; rm -rf "$wt"' EXIT
+    qgit worktree add -q --detach "$wt" HEAD
+    qgit diff --binary -- "$@" | git -C "$wt" apply --index
+    git -C "$wt" -c user.name=qemu-tree -c user.email=qemu-tree@localhost \
         commit -q --author="$author" -F "$msg"
-    git -C "$tmp/wt" format-patch -q -1 --no-signature --zero-commit -N \
+    git -C "$wt" format-patch -q -1 --no-signature --zero-commit -N \
         --stdout >"$out"
-    qgit worktree remove --force "$tmp/wt"
-    rm -rf "$tmp"
+    qgit worktree remove --force "$wt"
+    rm -rf "$wt"
+    trap - EXIT
 }
 
 [ $# -ge 1 ] || { usage; exit 1; }

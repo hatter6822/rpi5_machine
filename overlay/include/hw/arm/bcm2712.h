@@ -111,9 +111,10 @@ enum {
     BCM2712_SPI_AON_INTR        = 239,
     BCM2712_SPI_BSC             = 242,
     BCM2712_SPI_MAIN_IRQ        = 244,
-    BCM2712_SPI_L2_INTC         = 247,  /* also the base of MIP1's range */
+    BCM2712_SPI_L2_INTC         = 247,
     BCM2712_SPI_V3D_HUB         = 249,
     BCM2712_SPI_V3D_CORE0       = 250,
+    BCM2712_SPI_MIP1_BASE       = 255,  /* 255..262: MSIs from PCIe1 */
     BCM2712_SPI_SDIO1           = 273,
     BCM2712_SPI_SDIO2           = 274,
     BCM2712_SPI_UARTA           = 276,

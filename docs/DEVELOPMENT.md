@@ -42,7 +42,9 @@ scripts/qemu-tree refresh 0001-hw-arm-Build-the-BCM2712-SoC-and-raspi5b-machine.
 `new` opens `$EDITOR` for a commit message in QEMU style
 (`subsystem: Imperative summary`, then the why). `refresh` regenerates an
 existing patch from the files it touches, keeping its message, author and
-date, so an unchanged tree reproduces the patch byte for byte.
+date (parsed with `git mailinfo`), so an unchanged tree reproduces the patch
+byte for byte. The script needs bash 4 and GNU coreutils (`realpath
+--relative-to`); on macOS install `coreutils` from Homebrew.
 
 `make status` lists edits in `qemu/` that belong to no patch or overlay file;
 they are not tracked by this repository and will be lost by `make unapply`.

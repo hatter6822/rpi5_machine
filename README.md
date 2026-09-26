@@ -22,7 +22,7 @@ The first milestone targets bare-metal and microkernel bring-up.
 | Area | State |
 | --- | --- |
 | 4 × Cortex-A76, `MPIDR.Aff1` = core, 54 MHz generic timer | done |
-| GIC-400 (GICv2 + virtualization extensions), timer/maintenance PPIs | done |
+| GIC-400 (GICv2 + virtualization extensions, 5 priority bits), timer/maintenance PPIs | done |
 | UART10 (PL011 debug UART) | done |
 | Firmware boot contract: EL2 entry, PSCI over SMC (`secure=off`); guest-owned EL3 (`secure=on`) | done |
 | Complete BCM2712 memory map, unmodelled blocks logged with `-d unimp` | done |
