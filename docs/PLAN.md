@@ -59,11 +59,11 @@ commit (or a short series) with its own tests.
 
 ## 2. Current state
 
-Delivered so far (WS0.1–WS0.3, WS0.6, WS2.1, WS2.2, WS2.3a, WS2.4, WS2.5, WS3.2, WS3.6, WS9.2):
+Delivered so far (WS0.1–WS0.3, WS0.5, WS0.6, WS2.1, WS2.2, WS2.3a, WS2.4, WS2.5, WS3.2, WS3.6, WS9.2), which completes M1:
 
 | Area | State |
 | --- | --- |
-| Repository | pinned QEMU v11.1.1 submodule, overlay + patch series (patches may share files, like an upstream series) managed by `scripts/qemu-tree`, CI with ccache |
+| Repository | pinned QEMU v11.1.1 submodule, overlay + patch series (patches may share files, like an upstream series) managed by `scripts/qemu-tree`, which also exports the upstream series (WS0.5: 14 commits and a cover letter, checked with `git am`, checkpatch and a build of every commit), CI with ccache |
 | Kconfig (WS0.6) | every BCM283x device model has its own symbol, so `bcm2712` can select just the models it reuses; a `raspi5b`-only build is tested (`make check-minimal`) |
 | SoC (`bcm2712`) | 1–4 Cortex-A76 (`MPIDR.Aff1` = core, CNTFRQ 54 MHz, optional EL3), GIC-400 with 288 SPIs, 5 priority bits and all timer/maintenance PPIs, UART10 (PL011), system timer (WS2.1), watchdog and reset status (WS2.4), RNG200 (WS2.5), VideoCore mailbox with the BCM283x property and framebuffer channels (WS2.2) and every identity tag answered (WS2.3a), complete memory map with T0 placeholders and two catch-all windows |
 | Board (`raspi5b`) | 1/2/4/8/16 GiB RAM, board revision code, serial number (`serial=`), PSCI over SMC with EL2 entry (default) or guest-owned EL3 (`secure=on`), system reset and power-off through PSCI, the watchdog and the monitor (WS3.6), a built-in device tree when no `-dtb` is given (WS3.2; `builtin-dtb=off` passes none), DTB fix-ups for unmodelled devices, `/system/linux,revision` |
@@ -87,7 +87,7 @@ and turns provisional values into verified ones. H never gates a milestone.
 | Milestone | Capability | Units | Exit test |
 | --- | --- | --- | --- |
 | **M0** Skeleton | machine boots bare-metal payloads | WS0.1–0.3 | done: `make check` |
-| **M1** Bare-metal platform | everything a microkernel needs: timers, IPIs, mailbox/property, watchdog reset, RNG, a device tree | WS0.5, WS0.6, WS2.1, WS2.2, WS2.3a, WS2.4, WS2.5, WS3.2, WS3.6, WS9.2 | the bare-metal suite (WS9.2) passes on 1–4 cores with and without `-dtb`; PSCI `SYSTEM_RESET` and the watchdog reboot the guest three times |
+| **M1** Bare-metal platform | everything a microkernel needs: timers, IPIs, mailbox/property, watchdog reset, RNG, a device tree | WS0.5, WS0.6, WS2.1, WS2.2, WS2.3a, WS2.4, WS2.5, WS3.2, WS3.6, WS9.2 | done: the bare-metal suite (WS9.2) passes on 1–4 cores with and without `-dtb`; PSCI `SYSTEM_RESET` and the watchdog reboot the guest three times |
 | **M2** Firmware-faithful boot | real TF-A, U-Boot and UEFI run unmodified | WS1.5, WS3.1, WS3.3, WS3.4 | upstream TF-A `rpi5` BL31 (`secure=on`) → U-Boot → Linux to the root-fs mount; EDK2 to the UEFI shell |
 | **M3** Linux on SD card | Raspberry Pi OS boots to a login prompt | WS2.3b–e, WS2.6, WS4.1–4.6, WS5.1, WS5.2, WS3.5 | unmodified Raspberry Pi OS Lite image boots from `-drive if=sd` with `scripts/rpi5-boot`; `reboot` and `poweroff` work |
 | **M4** PCIe | PCIe root complexes and MSI | WS6.1–6.5 | NVMe root and virtio-net on the external PCIe1 port under Linux |
@@ -142,7 +142,7 @@ immediately exercised by the next:
 | 8 | WS2.5 RNG200 (done) | small, standalone, upstreamable |
 | 9 | WS3.2 built-in device tree (done) | microkernels get a DT without `-dtb`; forces the memory map to be the single source of truth |
 | 10 | WS9.2b full bare-metal suite (done) | M1 exit test |
-| 11 | WS0.5 series export | prepares the first upstream submission |
+| 11 | WS0.5 series export (done) | prepares the first upstream submission |
 | 12 | WS4.1 L2 interrupt controllers | opens the M3 chain |
 
 ## 5. Unit conventions
@@ -224,7 +224,26 @@ prints a machine-readable dump over UART10.
 the diff in CI; every difference is either fixed by a WS1 unit or listed
 in the allow-list with a reason.
 
-#### WS0.5 Upstream series export (M)
+#### WS0.5 Upstream series export (done)
+*Delivered:* `scripts/qemu-tree export` (`make export-series`). Each
+patch in `patches/` is one upstream commit, and `series/series.map`
+names the overlay files that go with it, keyed by the patch's name
+without its number so renumbering needs no edit; commit messages stay in
+the patches, a single source instead of the planned `series/NN-*.txt`.
+The export commits onto the pinned revision in a temporary worktree,
+refuses an overlay file that is in no patch or in two, writes the
+series with `git format-patch --cover-letter --base` and the cover
+letter from `series/cover.txt`, checks that it applies with `git am`
+and reproduces the tree, and runs checkpatch (`--no-signoff` unless
+`--signoff` adds the user's own). `--build` builds every commit; CI
+exports on every change and builds every commit in a separate job. To
+make the series reviewable, the SoC patch became two (the SoC, then the
+board), the qtest and documentation patches now carry their files'
+descriptions, and `MAINTAINERS` gains the new files in the Raspberry
+Pi entry; `refresh` can now add a file to a patch. The M0+M1 series is
+14 commits. Posting it waits for the author's `Signed-off-by:` and a
+choice of maintainer entry (WS9.7).
+
 `scripts/qemu-tree export <dir>` turns the overlay and patches into the
 series a maintainer will review.
 

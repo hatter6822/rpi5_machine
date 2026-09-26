@@ -46,8 +46,11 @@ overlay/       new files, laid out exactly as in the QEMU tree
   include/hw/arm/bcm2712.h
   tests/qtest/raspi5b-test.c
   docs/system/arm/raspi5b.rst
+  hw/misc/bcm2711_rng200.c      RNG200 random number generator
 patches/       changes to existing QEMU files (git format-patch series)
-scripts/       qemu-tree: applies the overlay and patches, creates/refreshes patches
+series/        how patches and overlay files form the upstream series, cover letter
+scripts/       qemu-tree: applies the overlay and patches, creates/refreshes
+               patches, exports the upstream series
 tests/guest/   bare-metal runtime, smoke guest and test suite (clang + lld, no GCC)
 tests/smoke/   end-to-end tests that boot the guests
 tests/configs/ QEMU device configurations for test builds
@@ -75,6 +78,7 @@ $ sudo apt install build-essential python3-venv ninja-build \
 | `make setup` | fetch the pinned QEMU and apply the overlay |
 | `make build` | configure (aarch64-softmmu only) and build `build/qemu-system-aarch64` |
 | `make check` | run the `raspi5b` qtest and the bare-metal smoke tests |
+| `make export-series` | write the upstream patch series to `build-series/` and check it (applies, checkpatch; `SERIES_FLAGS=--build` builds every commit) |
 | `make check-minimal` | build a QEMU whose only board is `raspi5b` (in `build-minimal/`) and run the same tests on it |
 | `make check-dt` | validate the built-in device tree against the Linux bindings (needs `pip install dtschema` and network access the first time) |
 | `make checkpatch` | run QEMU's `checkpatch.pl` over our sources and patches |

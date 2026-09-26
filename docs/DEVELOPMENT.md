@@ -40,7 +40,9 @@ Editing `qemu/hw/arm/bcm2712.c` is equivalent: it is a symlink to the overlay.
 ### Adding a file
 
 Create it under `overlay/` at its QEMU path, then `make apply` to link it.
-New sources also need build glue (`meson.build`, `Kconfig`), which is a patch.
+New sources also need build glue (`meson.build`, `Kconfig`), which is a patch,
+and a line in `series/series.map` naming the patch the file goes upstream
+with (see Upstreaming).
 
 ### Changing an existing QEMU file
 
@@ -48,14 +50,18 @@ Edit it in `qemu/`, then either
 
 ```
 scripts/qemu-tree new hw-misc-add-bcm2712-foo qemu-relative/path ...   # new patch
-scripts/qemu-tree refresh 0011-hw-arm-Build-the-BCM2712-SoC-and-raspi5b-machine.patch
+scripts/qemu-tree refresh 0011-hw-arm-Add-the-Broadcom-BCM2712-SoC.patch
+scripts/qemu-tree refresh 0011-hw-arm-Add-the-Broadcom-BCM2712-SoC.patch MAINTAINERS
 ```
 
 `new` appends a patch to the series and opens git's editor for a commit
 message in QEMU style (`subsystem: Imperative summary`, then the why).
 `refresh` regenerates an existing patch from the files it touches, keeping
 its message, author and date (parsed with `git mailinfo`), so an unchanged
-tree reproduces the patch byte for byte. The script needs bash 4 and GNU coreutils (`realpath
+tree reproduces the patch byte for byte. Files named after the patch are
+added to it. When several patches change the same file, make each change
+and refresh its patch in series order: a patch takes every change to its
+files that no later patch holds. The script needs bash 4 and GNU coreutils (`realpath
 --relative-to`); on macOS install `coreutils` from Homebrew.
 
 `make status` lists edits in `qemu/` that belong to no patch or overlay file;
@@ -137,12 +143,32 @@ Without storage the boot currently ends at the root-fs mount (expected).
 
 ## Upstreaming
 
-The end state is a patch series on qemu-devel. The overlay/patch split maps
-onto it directly: each device model is one commit (overlay files plus its
-glue), followed by tests and documentation. Before submitting:
+The end state is a patch series on qemu-devel. Each patch in `patches/`
+becomes one commit, carrying the overlay files `series/series.map` assigns
+to it: a device model is its glue patch plus its sources, followed by
+tests and documentation. `series/cover.txt` is the cover letter (its first
+line is the subject).
+
+```
+make export-series                           # build-series/, checked
+make export-series SERIES_FLAGS='--build'    # also build every commit
+make export-series SERIES_FLAGS='-v 2 --signoff'
+```
+
+`scripts/qemu-tree export` commits the series onto the pinned revision in
+a temporary worktree (refusing an overlay file that is in no patch, or in
+two), writes it with `git format-patch --cover-letter --base`, and checks
+that the result applies with `git am`, reproduces the tree, and passes
+checkpatch. CI runs it on every change, and builds every commit in a
+separate job. Before submitting:
 
 * every commit needs a `Signed-off-by:` from its human author (the DCO,
-  `docs/devel/submitting-a-patch.rst`); the patches here deliberately carry
-  none, so `make checkpatch` passes `--no-signoff`;
-* add a `MAINTAINERS` entry for the new files;
-* run the full `make check` of QEMU, not only ours.
+  `docs/devel/submitting-a-patch.rst`). The patches here deliberately
+  carry none, so checkpatch runs with `--no-signoff`; `--signoff` adds
+  yours (`git config user.name` and `user.email`) to every commit;
+* checkpatch warns that the SoC and board commits add files without
+  touching `MAINTAINERS`: the entries the RNG commit adds, and the
+  Raspberry Pi entry's `hw/arm/raspi*.c`, already cover them;
+* run the full `make check` of QEMU, not only ours;
+* send with `git send-email --to=qemu-devel@nongnu.org
+  --cc=qemu-arm@nongnu.org` plus `scripts/get_maintainer.pl`'s list.

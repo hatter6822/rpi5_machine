@@ -25,6 +25,7 @@ ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 QEMU="$ROOT/qemu"
 OVERLAY="$ROOT/overlay"
 PATCHES="$ROOT/patches"
+SERIES="$ROOT/series"
 
 die() { printf 'qemu-tree: %s\n' "$*" >&2; exit 1; }
 info() { printf '  %-8s %s\n' "$1" "$2"; }
@@ -39,7 +40,17 @@ usage: scripts/qemu-tree <command> [args]
   status                show patch, overlay and unmanaged-change state
   new <slug> <file>...  turn current edits of existing QEMU files into a
                         new patch (commit message opens in \$EDITOR)
-  refresh <patch>       regenerate <patch> from the qemu/ work tree
+  refresh <patch> [<file>...]
+                        regenerate <patch> from the qemu/ work tree, from
+                        the files it changes plus any <file> named
+  export [-v <n>] [--signoff] [--build] <dir>
+                        write the upstream series to <dir>: each patch
+                        with the overlay files series/series.map assigns
+                        to it, as one commit on the pinned revision, plus
+                        a cover letter from series/cover.txt; check that
+                        it applies with git am and passes checkpatch.
+                        --build builds every commit, --signoff adds your
+                        Signed-off-by (git config user.name and .email)
 EOF
 }
 
@@ -359,10 +370,11 @@ cmd_new() {
 }
 
 cmd_refresh() {
-    [ $# -eq 1 ] || die "usage: refresh <patch>"
+    [ $# -ge 1 ] || die "usage: refresh <patch> [<file>...]"
     local p=$1
-    [ -f "$p" ] || p="$PATCHES/$1"
-    [ -f "$p" ] || die "no such patch: $1"
+    shift
+    [ -f "$p" ] || p="$PATCHES/$p"
+    [ -f "$p" ] || die "no such patch: $p"
     check_tree
 
     # git mailinfo splits the mail into headers (stdout), body and diff,
@@ -377,7 +389,8 @@ cmd_refresh() {
     { printf '%s\n\n' "$subject"; cat "$tmp/body"; } >"$tmp/msg"
 
     local -a files
-    mapfile -t files < <(patch_files "$p")
+    mapfile -t files < <({ patch_files "$p"; [ $# -eq 0 ] ||
+                           printf '%s\n' "$@"; } | LC_ALL=C sort -u)
     GIT_AUTHOR_DATE="$date" write_patch "$p" "$tmp/msg" "$author" "${files[@]}"
     record "$p"
     info refresh "$(basename "$p")"
@@ -413,11 +426,156 @@ write_patch() {
         "$commit" >"$out"
 }
 
+# patch_slug <patch>: its file name without the number and extension
+patch_slug() {
+    local n
+    n=$(basename "$1" .patch)
+    printf '%s\n' "${n#[0-9][0-9][0-9][0-9]-}"
+}
+
+cmd_export() {
+    local version=1 signoff='' build='' out
+    while [ $# -gt 0 ]; do
+        case $1 in
+        -v) [ $# -ge 2 ] || die "-v needs a number"
+            version=$2; shift 2 ;;
+        --signoff) signoff=1; shift ;;
+        --build) build=1; shift ;;
+        -*) die "export: unknown option $1" ;;
+        *) break ;;
+        esac
+    done
+    [ $# -eq 1 ] || die "usage: export [-v <n>] [--signoff] [--build] <dir>"
+    [[ $version =~ ^[1-9][0-9]*$ ]] || die "-v needs a number"
+    out=$(realpath -m "$1")
+    local map="$SERIES/series.map" cover="$SERIES/cover.txt"
+    [ -f "$map" ] || die "needs $map"
+    [ -f "$cover" ] || die "needs $cover"
+
+    # Which overlay files each patch brings; each file exactly once
+    local -A files_of=() owner=() slugs=()
+    local line slug f p
+    while IFS= read -r line; do
+        line=${line%%#*}
+        [ -n "${line//[[:space:]]/}" ] || continue
+        [[ $line == *:* ]] || die "series.map: no ':' in: $line"
+        slug=${line%%:*}
+        slug=${slug//[[:space:]]/}
+        [ -z "${files_of[$slug]+x}" ] || die "series.map: $slug listed twice"
+        files_of[$slug]=${line#*:}
+        for f in ${files_of[$slug]}; do
+            [ -f "$OVERLAY/$f" ] || die "series.map: no overlay/$f"
+            [ -z "${owner[$f]:-}" ] ||
+                die "series.map: $f is in both ${owner[$f]} and $slug"
+            owner[$f]=$slug
+        done
+    done <"$map"
+    while IFS= read -r f; do
+        [ -n "${owner[$f]:-}" ] || die "series.map: overlay/$f is in no patch"
+    done < <(overlay_list)
+    while IFS= read -r p; do
+        slugs[$(patch_slug "$p")]=1
+    done < <(patch_list)
+    for slug in "${!files_of[@]}"; do
+        [ -n "${slugs[$slug]:-}" ] || die "series.map: no patch named $slug"
+    done
+
+    # Commits need a committer; a Signed-off-by must be the user's own
+    if [ -n "$signoff" ]; then
+        { git config user.name && git config user.email; } >/dev/null ||
+            die "--signoff needs git config user.name and user.email"
+    elif ! git var GIT_COMMITTER_IDENT >/dev/null 2>&1; then
+        export GIT_COMMITTER_NAME=qemu-tree
+        export GIT_COMMITTER_EMAIL=qemu-tree@localhost
+    fi
+
+    local base tmp tree
+    base=$(qgit rev-parse HEAD)
+    tmp=$(mktemp -d)
+    tree="$tmp/tree"
+    # shellcheck disable=SC2064 # expand now: $tmp is local
+    trap "qgit worktree remove --force '$tree' 2>/dev/null; \
+          qgit worktree remove --force '$tmp/check' 2>/dev/null; \
+          rm -rf '$tmp'" EXIT
+    qgit worktree add -q --detach "$tree" "$base"
+
+    if [ -n "$build" ]; then
+        info configure "$tmp/build"
+        mkdir "$tmp/build"
+        (cd "$tmp/build" && "$tree/configure" --target-list=aarch64-softmmu \
+            --disable-docs --disable-user >"$tmp/configure.log" 2>&1) ||
+            { cat "$tmp/configure.log" >&2; die "configure failed"; }
+    fi
+
+    local -a am=(am --quiet)
+    [ -z "$signoff" ] || am+=(--signoff)
+    while IFS= read -r p; do
+        git -C "$tree" "${am[@]}" "$p" ||
+            die "$(basename "$p") does not apply to the pinned revision"
+        slug=$(patch_slug "$p")
+        if [ -n "${files_of[$slug]:-}" ]; then
+            for f in ${files_of[$slug]}; do
+                mkdir -p "$(dirname "$tree/$f")"
+                cp "$OVERLAY/$f" "$tree/$f"
+                git -C "$tree" add "$f"
+            done
+            git -C "$tree" commit --quiet --amend --no-edit
+        fi
+        info commit "$(git -C "$tree" log -1 --format=%s)"
+        if [ -n "$build" ]; then
+            ninja -C "$tmp/build" qemu-system-aarch64 >"$tmp/build.log" 2>&1 ||
+                { tail -n 40 "$tmp/build.log" >&2
+                  die "does not build: $(basename "$p")"; }
+            info built "$(basename "$p")"
+        fi
+    done < <(patch_list)
+
+    local -a fp=(format-patch --quiet --cover-letter --base="$base"
+                 -o "$out")
+    [ "$version" = 1 ] || fp+=(-v "$version")
+    rm -rf "$out"
+    git -C "$tree" "${fp[@]}" "$base..HEAD"
+
+    # The cover letter: the first line of cover.txt is its subject
+    local letter subject
+    letter=$(find "$out" -name '*0000-cover-letter.patch')
+    subject=$(head -n1 "$cover")
+    awk -v subject="$subject" -v blurb="$cover" '
+        /\*\*\* SUBJECT HERE \*\*\*/ { sub(/\*\*\* SUBJECT HERE \*\*\*/, subject) }
+        $0 == "*** BLURB HERE ***" {
+            getline l < blurb       # the subject line
+            while ((getline l < blurb) > 0) {
+                if (started || l != "") { print l; started = 1 }
+            }
+            next
+        }
+        { print }' "$letter" >"$tmp/letter"
+    mv "$tmp/letter" "$letter"
+
+    # What reviewers get: it applies to the pinned revision as is...
+    local -a patches
+    mapfile -t patches < <(find "$out" -name '*.patch' ! -name '*0000-*' |
+                           LC_ALL=C sort)
+    qgit worktree add -q --detach "$tmp/check" "$base"
+    git -C "$tmp/check" am --quiet "${patches[@]}" ||
+        die "the exported series does not apply with git am"
+    [ "$(git -C "$tmp/check" rev-parse 'HEAD^{tree}')" = \
+      "$(git -C "$tree" rev-parse 'HEAD^{tree}')" ] ||
+        die "the exported series does not reproduce the tree"
+
+    # ...and passes checkpatch (from the result, for its MAINTAINERS)
+    local -a cp=()
+    [ -n "$signoff" ] || cp+=(--no-signoff)
+    (cd "$tree" && scripts/checkpatch.pl --terse "${cp[@]}" "${patches[@]}") ||
+        die "checkpatch found errors"
+    info exported "${#patches[@]} patches and a cover letter in $out"
+}
+
 [ $# -ge 1 ] || { usage; exit 1; }
 cmd=$1
 shift
 case "$cmd" in
-apply | unapply | status | new | refresh) "cmd_$cmd" "$@" ;;
+apply | unapply | status | new | refresh | export) "cmd_$cmd" "$@" ;;
 -h | --help | help) usage ;;
 *) usage >&2; exit 1 ;;
 esac

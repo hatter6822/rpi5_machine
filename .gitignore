@@ -7,6 +7,7 @@
 
 # Processed device-tree bindings (make check-dt)
 /build-dt-schema/
+/build-series/
 
 __pycache__/
 *.py[co]

@@ -21,7 +21,8 @@ OVERLAY_SRCS := $(shell cd overlay && find . -name '*.[ch]' | sed 's|^\./||')
 
 .DEFAULT_GOAL := build
 .PHONY: FORCE help setup apply unapply status configure build guest check \
-        check-qtest check-smoke check-minimal check-dt checkpatch run-hello \
+        check-qtest check-smoke check-minimal check-dt checkpatch export-series \
+        run-hello \
         clean distclean
 
 help:
@@ -36,6 +37,7 @@ help:
 	@echo 'check-minimal build QEMU with raspi5b as its only board, run check on it'
 	@echo 'check-dt     validate the built-in device tree (needs dtschema, network)'
 	@echo 'checkpatch   run QEMU checkpatch.pl over overlay sources and patches'
+	@echo 'export-series write the upstream series to $$(SERIES_DIR) and check it'
 	@echo 'run-hello    boot the hello guest interactively'
 	@echo 'clean        remove guest builds; distclean also removes $$(BUILD_DIR)'
 
@@ -127,6 +129,14 @@ check-dt: build guest $(DT_SCHEMA)
 		DT_SCHEMA=$(abspath $(DT_SCHEMA)) \
 		$(PYTHON) -m unittest discover -s tests/smoke -p test_dt_schema.py -v
 
+# The upstream series (scripts/qemu-tree export): SERIES_FLAGS takes
+# -v <n>, --build (build every commit) and --signoff
+SERIES_DIR   ?= build-series
+SERIES_FLAGS ?=
+
+export-series:
+	scripts/qemu-tree export $(SERIES_FLAGS) $(SERIES_DIR)
+
 checkpatch:
 	@status=0; \
 	for f in $(OVERLAY_SRCS); do \
@@ -145,4 +155,4 @@ clean:
 	$(MAKE) -C $(GUEST_DIR) OUT=$(GUEST_BUILD) clean
 
 distclean: clean
-	rm -rf $(BUILD_DIR) $(MINIMAL_BUILD_DIR) $(DT_SCHEMA_DIR)
+	rm -rf $(BUILD_DIR) $(MINIMAL_BUILD_DIR) $(DT_SCHEMA_DIR) $(SERIES_DIR)

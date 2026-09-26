@@ -1,0 +1,68 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: A7om <hatter6822@gmail.com>
+Date: Sat, 26 Sep 2026 00:00:00 +0000
+Subject: [PATCH] hw/arm: Add the Broadcom BCM2712 SoC
+
+The BCM2712 of the Raspberry Pi 5 has four Cortex-A76 cores, a GIC-400
+and a mix of Broadcom set-top-box and VideoCore peripherals. Unlike the
+BCM283x SoCs, its peripherals sit above 4 GiB (0x10_0000_0000 up), and
+the legacy ARM control block is gone.
+
+Model the SoC with the devices a bare-metal kernel or Linux needs to
+boot: the cores (MPIDR.Aff1 is the core number, CNTFRQ is 54 MHz,
+optional EL3), the GIC-400 with 288 SPIs and the timer and maintenance
+PPIs, UART10 (a PL011), the system timer, the watchdog and reset status
+block, the RNG200, and the VideoCore mailbox with the firmware property
+and framebuffer channels. The firmware reaches buffers through a
+VideoCore bus view that holds the first GiB of RAM at 0x0 and at
+0xc000_0000. Every other block in the device tree is an
+unimplemented-device placeholder of its size, and two catch-all windows
+log accesses anywhere else in the peripheral ranges.
+
+bcm2712_fdt_populate() describes the modelled devices in a device tree,
+from the same constants as the memory map, for boards that generate one.
+
+Addresses, interrupts and compatibles follow Linux's bcm2712.dtsi;
+values not documented publicly are marked for checking on hardware.
+---
+ hw/arm/Kconfig     | 14 ++++++++++++++
+ hw/arm/meson.build |  1 +
+ 2 files changed, 15 insertions(+)
+
+diff --git a/hw/arm/Kconfig b/hw/arm/Kconfig
+index 16f83f0..52d145c 100644
+--- a/hw/arm/Kconfig
++++ b/hw/arm/Kconfig
+@@ -384,6 +384,20 @@ config RASPI
+     select BCM2836_CONTROL
+     select BCM2838_GPIO
+ 
++config BCM2712
++    bool
++    select ARM_GIC
++    select BCM2711_RNG200
++    select BCM2835_FB
++    select BCM2835_MBOX
++    select BCM2835_OTP
++    select BCM2835_POWERMGT
++    select BCM2835_PROPERTY
++    select BCM2835_SYSTMR
++    select DEVICE_TREE
++    select PL011 # UART
++    select UNIMP
++
+ config STM32F100_SOC
+     bool
+     select ARM_V7M
+diff --git a/hw/arm/meson.build b/hw/arm/meson.build
+index 4233a80..00b030a 100644
+--- a/hw/arm/meson.build
++++ b/hw/arm/meson.build
+@@ -32,6 +32,7 @@ arm_common_ss.add(when: 'CONFIG_RASPI', if_true: files(
+   'raspi.c',
+   'raspi4b.c'
+ ))
++arm_common_ss.add(when: 'CONFIG_BCM2712', if_true: files('bcm2712.c'))
+ arm_common_ss.add(when: 'CONFIG_STM32F100_SOC', if_true: files('stm32f100_soc.c'))
+ arm_common_ss.add(when: 'CONFIG_STM32F205_SOC', if_true: files('stm32f205_soc.c'))
+ arm_common_ss.add(when: 'CONFIG_STM32F405_SOC', if_true: files('stm32f405_soc.c'))

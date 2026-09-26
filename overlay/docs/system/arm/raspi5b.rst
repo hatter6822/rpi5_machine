@@ -1,3 +1,5 @@
+.. SPDX-License-Identifier: GPL-2.0-or-later
+
 Raspberry Pi 5 (``raspi5b``)
 ============================
 
