@@ -13,22 +13,22 @@ success without writing a value. GET_DMA_CHANNELS was hard-coded to
 the BCM2835 answer.
 
 Answer the variant as the standard firmware ("start") and the hash as
-all zeroes, since no firmware build stands behind the model; the hash
-and the serial number are clipped to the guest's buffer. Answer the
-board model as 0. Take the serial number and the DMA channel mask from
+all zeroes, since no firmware build stands behind the model. Answer
+the board model as 0. Every new answer is clipped to the guest's
+buffer, and its length says how much the full value needs. Take the serial number and the DMA channel mask from
 new "board-serial" and "dma-channel-mask" properties. Their defaults
 keep today's DMA answer and give a zero serial, so existing boards
 behave the same apart from the now defined values.
 ---
- hw/misc/bcm2835_property.c         | 43 +++++++++++++++++++++++-------
- include/hw/misc/bcm2835_property.h |  2 ++
- 2 files changed, 35 insertions(+), 10 deletions(-)
+ hw/misc/bcm2835_property.c         | 63 ++++++++++++++++++++++++------
+ include/hw/misc/bcm2835_property.h |  2 +
+ 2 files changed, 54 insertions(+), 11 deletions(-)
 
 diff --git a/hw/misc/bcm2835_property.c b/hw/misc/bcm2835_property.c
-index 03ac4cd..94cb0ac 100644
+index 761e365..2e412a7 100644
 --- a/hw/misc/bcm2835_property.c
 +++ b/hw/misc/bcm2835_property.c
-@@ -21,6 +21,12 @@
+@@ -21,8 +21,36 @@
  
  #define VCHI_BUSADDR_SIZE       sizeof(uint32_t)
  
@@ -40,14 +40,38 @@ index 03ac4cd..94cb0ac 100644
 +
  /* https://github.com/raspberrypi/firmware/wiki/Mailbox-property-interface */
  
++/*
++ * Answer the tag at @value with @len bytes of @data, as much as its
++ * @bufsize-byte buffer holds; returns the response length, @len
++ */
++static size_t bcm2835_property_answer(BCM2835PropertyState *s, hwaddr value,
++                                      uint32_t bufsize, const void *data,
++                                      size_t len)
++{
++    dma_memory_write(&s->dma_as, value + 12, data, MIN(bufsize, len),
++                     MEMTXATTRS_UNSPECIFIED);
++    return len;
++}
++
++static size_t bcm2835_property_answer32(BCM2835PropertyState *s,
++                                        hwaddr value, uint32_t bufsize,
++                                        uint32_t data)
++{
++    uint32_t le = cpu_to_le32(data);
++
++    return bcm2835_property_answer(s, value, bufsize, &le, sizeof(le));
++}
++
  static void bcm2835_property_mbox_push(BCM2835PropertyState *s, uint32_t value)
-@@ -55,10 +61,20 @@ static void bcm2835_property_mbox_push(BCM2835PropertyState *s, uint32_t value)
+ {
+     uint32_t tot_len;
+@@ -64,11 +92,20 @@ static void bcm2835_property_mbox_push(BCM2835PropertyState *s, uint32_t value)
              stl_le_phys(&s->dma_as, value + 12, 346337);
              resplen = 4;
              break;
 +        case RPI_FWREQ_GET_FIRMWARE_VARIANT:
-+            stl_le_phys(&s->dma_as, value + 12, FIRMWARE_VARIANT_START);
-+            resplen = 4;
++            resplen = bcm2835_property_answer32(s, value, bufsize,
++                                               FIRMWARE_VARIANT_START);
 +            break;
 +        case RPI_FWREQ_GET_FIRMWARE_HASH:
 +            /* No firmware build: an all-zero hash, clipped to the buffer */
@@ -60,12 +84,13 @@ index 03ac4cd..94cb0ac 100644
 -            qemu_log_mask(LOG_UNIMP,
 -                          "bcm2835_property: 0x%08x get board model NYI\n",
 -                          tag);
+-            resplen = 4;
 +            /* As current firmware: boards are told apart by revision */
-+            stl_le_phys(&s->dma_as, value + 12, 0);
-             resplen = 4;
++            resplen = bcm2835_property_answer32(s, value, bufsize, 0);
              break;
          case RPI_FWREQ_GET_BOARD_REVISION:
-@@ -70,12 +86,16 @@ static void bcm2835_property_mbox_push(BCM2835PropertyState *s, uint32_t value)
+             stl_le_phys(&s->dma_as, value + 12, s->board_rev);
+@@ -79,12 +116,13 @@ static void bcm2835_property_mbox_push(BCM2835PropertyState *s, uint32_t value)
              dma_memory_write(&s->dma_as, value + 12, s->macaddr.a, resplen,
                               MEMTXATTRS_UNSPECIFIED);
              break;
@@ -77,17 +102,14 @@ index 03ac4cd..94cb0ac 100644
 +        case RPI_FWREQ_GET_BOARD_SERIAL: {
 +            uint64_t serial = cpu_to_le64(s->board_serial);
 +
-+            /* Clipped to the buffer, like the hash */
-+            resplen = sizeof(serial);
-+            dma_memory_write(&s->dma_as, value + 12, &serial,
-+                             MIN(bufsize, sizeof(serial)),
-+                             MEMTXATTRS_UNSPECIFIED);
++            resplen = bcm2835_property_answer(s, value, bufsize, &serial,
++                                              sizeof(serial));
              break;
 +        }
          case RPI_FWREQ_GET_ARM_MEMORY:
              /* base */
              stl_le_phys(&s->dma_as, value + 12, 0);
-@@ -295,8 +315,7 @@ static void bcm2835_property_mbox_push(BCM2835PropertyState *s, uint32_t value)
+@@ -304,8 +342,7 @@ static void bcm2835_property_mbox_push(BCM2835PropertyState *s, uint32_t value)
              break;
  
          case RPI_FWREQ_GET_DMA_CHANNELS:
@@ -97,7 +119,7 @@ index 03ac4cd..94cb0ac 100644
              resplen = 4;
              break;
  
-@@ -571,6 +590,10 @@ static void bcm2835_property_realize(DeviceState *dev, Error **errp)
+@@ -580,6 +617,10 @@ static void bcm2835_property_realize(DeviceState *dev, Error **errp)
  static const Property bcm2835_property_props[] = {
      DEFINE_PROP_UINT32("board-rev", BCM2835PropertyState, board_rev, 0),
      DEFINE_PROP_STRING("command-line", BCM2835PropertyState, command_line),

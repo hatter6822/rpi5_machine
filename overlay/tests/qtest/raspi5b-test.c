@@ -582,6 +582,41 @@ static void test_mbox_unreachable(void)
     qtest_quit(qts);
 }
 
+/*
+ * A tag whose value buffer runs past the length the header gives is not
+ * answered, and nothing past that length is written.
+ */
+static void test_mbox_tag_overrun(void)
+{
+    QTestState *qts = qtest_init("-machine raspi5b");
+    const uint64_t buf = 0x10000;
+    const uint32_t req[] = {
+        8 * 4, FW_REQUEST,
+        FW_TAG_BOARD_SERIAL, 64, 0,
+        0xa5a5a5a5, 0xa5a5a5a5, 0xa5a5a5a5,
+    };
+
+    for (int i = 0; i < ARRAY_SIZE(req); i++) {
+        qtest_writel(qts, buf + 4 * i, req[i]);
+    }
+    qtest_writel(qts, buf + 4 * ARRAY_SIZE(req), 0x5a5a5a5a);
+    qtest_writel(qts, MBOX_BASE + MBOX_WRITE,
+                 VC_BUS_RAM | buf | MBOX_CHAN_PROPERTY);
+
+    g_assert_true(mbox_has_response(qts));
+    g_assert_cmphex(qtest_readl(qts, MBOX_BASE + MBOX_READ), ==,
+                    VC_BUS_RAM | buf | MBOX_CHAN_PROPERTY);
+    g_assert_cmphex(qtest_readl(qts, buf + 4), ==, FW_SUCCESS);
+    g_assert_cmphex(qtest_readl(qts, buf + 16), ==, 0);
+    for (int i = 5; i < ARRAY_SIZE(req); i++) {
+        g_assert_cmphex(qtest_readl(qts, buf + 4 * i), ==, 0xa5a5a5a5);
+    }
+    g_assert_cmphex(qtest_readl(qts, buf + 4 * ARRAY_SIZE(req)), ==,
+                    0x5a5a5a5a);
+
+    qtest_quit(qts);
+}
+
 /* The VideoCore keeps the top 4 MiB of the first GiB */
 static void test_mbox_memory_split(void)
 {
@@ -644,6 +679,10 @@ static void test_mbox_identity(void)
     g_assert_cmphex(mbox_tag(qts, FW_TAG_FIRMWARE_VARIANT, 4, val), ==,
                     FW_TAG_RESPONSE | 4);
     g_assert_cmphex(val[0], ==, 1);                     /* "start" */
+    /* A buffer too short for the value leaves the end tag after it alone */
+    g_assert_cmphex(mbox_tag(qts, FW_TAG_FIRMWARE_VARIANT, 0, val), ==,
+                    FW_TAG_RESPONSE | 4);
+    g_assert_cmphex(qtest_readl(qts, 0x10000 + 20), ==, 0);
 
     g_assert_cmphex(mbox_tag(qts, FW_TAG_FIRMWARE_HASH, 20, val), ==,
                     FW_TAG_RESPONSE | 20);
@@ -661,6 +700,9 @@ static void test_mbox_identity(void)
     g_assert_cmphex(mbox_tag(qts, FW_TAG_BOARD_MODEL, 4, val), ==,
                     FW_TAG_RESPONSE | 4);
     g_assert_cmphex(val[0], ==, 0);
+    g_assert_cmphex(mbox_tag(qts, FW_TAG_BOARD_MODEL, 0, val), ==,
+                    FW_TAG_RESPONSE | 4);
+    g_assert_cmphex(qtest_readl(qts, 0x10000 + 20), ==, 0);
 
     g_assert_cmphex(mbox_tag(qts, FW_TAG_BOARD_SERIAL, 8, val), ==,
                     FW_TAG_RESPONSE | 8);
@@ -895,6 +937,7 @@ int main(int argc, char **argv)
     qtest_add_func("/raspi5b/systimer/migrate", test_systimer_migrate);
     qtest_add_func("/raspi5b/mbox/board-revision", test_mbox_board_revision);
     qtest_add_func("/raspi5b/mbox/unreachable", test_mbox_unreachable);
+    qtest_add_func("/raspi5b/mbox/tag-overrun", test_mbox_tag_overrun);
     qtest_add_func("/raspi5b/mbox/memory-split", test_mbox_memory_split);
     qtest_add_func("/raspi5b/mbox/identity", test_mbox_identity);
     qtest_add_func("/raspi5b/mbox/command-line", test_mbox_command_line);

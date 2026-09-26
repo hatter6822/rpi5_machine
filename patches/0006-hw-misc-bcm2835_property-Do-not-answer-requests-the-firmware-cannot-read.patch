@@ -13,17 +13,35 @@ response and went on as if the request had succeeded.
 
 Check that the buffer is readable through the DMA address space before
 taking the request, first its header and then the whole size the header
-gives, and log a guest error otherwise. Requests in RAM behave as
-before: every BCM283x board maps its RAM into that address space.
+gives, and log a guest error otherwise. Stop parsing at a tag whose
+value buffer runs past that size, rather than reading and writing
+beyond what was checked. Requests in RAM behave as before: every
+BCM283x board maps its RAM into that address space.
 ---
- hw/misc/bcm2835_property.c | 17 +++++++++++++++++
- 1 file changed, 17 insertions(+)
+ hw/misc/bcm2835_property.c | 26 ++++++++++++++++++++++++++
+ 1 file changed, 26 insertions(+)
 
 diff --git a/hw/misc/bcm2835_property.c b/hw/misc/bcm2835_property.c
-index 216a746..03ac4cd 100644
+index 216a746..761e365 100644
 --- a/hw/misc/bcm2835_property.c
 +++ b/hw/misc/bcm2835_property.c
-@@ -469,11 +469,28 @@ static void bcm2835_property_write(void *opaque, hwaddr offset,
+@@ -48,6 +48,15 @@ static void bcm2835_property_mbox_push(BCM2835PropertyState *s, uint32_t value)
+         uint32_t bufsize = ldl_le_phys(&s->dma_as, value + 4);
+         /* @(value + 8) : Request/response indicator */
+         size_t resplen = 0;
++
++        /* Only the buffer the header sizes was checked to be readable */
++        if (tag != RPI_FWREQ_PROPERTY_END &&
++            (uint64_t)value + 12 + bufsize > (uint64_t)s->addr + tot_len) {
++            qemu_log_mask(LOG_GUEST_ERROR,
++                          "%s: tag 0x%08x runs past the end of the buffer\n",
++                          __func__, tag);
++            break;
++        }
+         switch (tag) {
+         case RPI_FWREQ_PROPERTY_END:
+             break;
+@@ -469,11 +478,28 @@ static void bcm2835_property_write(void *opaque, hwaddr offset,
                                     uint64_t value, unsigned size)
  {
      BCM2835PropertyState *s = opaque;

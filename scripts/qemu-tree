@@ -26,6 +26,7 @@ QEMU="$ROOT/qemu"
 OVERLAY="$ROOT/overlay"
 PATCHES="$ROOT/patches"
 SERIES="$ROOT/series"
+EXPORT_MARKER=.qemu-tree-export     # marks a directory export may empty
 
 die() { printf 'qemu-tree: %s\n' "$*" >&2; exit 1; }
 info() { printf '  %-8s %s\n' "$1" "$2"; }
@@ -452,6 +453,15 @@ cmd_export() {
     [ $# -eq 1 ] || die "usage: export [-v <n>] [--signoff] [--build] <dir>"
     [[ $version =~ ^[1-9][0-9]*$ ]] || die "-v needs a number"
     out=$(realpath -m "$1")
+    # The directory is emptied first, so it must be new, empty, or an
+    # earlier export: marked, or (from before the marker) holding
+    # nothing but numbered patches
+    [ ! -e "$out" ] || [ -d "$out" ] || die "$out is not a directory"
+    if [ -e "$out" ] && [ ! -f "$out/$EXPORT_MARKER" ] &&
+       [ -n "$(find "$out" -mindepth 1 -maxdepth 1 \
+                 ! -name '[0-9][0-9][0-9][0-9]-*.patch' -print -quit 2>&1)" ]; then
+        die "$out exists and was not made by 'export'; give a new or empty directory"
+    fi
     local map="$SERIES/series.map" cover="$SERIES/cover.txt"
     [ -f "$map" ] || die "needs $map"
     [ -f "$cover" ] || die "needs $cover"
@@ -550,7 +560,9 @@ cmd_export() {
     local -a fp=(format-patch --quiet --cover-letter --base="$base"
                  -o "$out")
     [ "$version" = 1 ] || fp+=(-v "$version")
-    rm -rf "$out"
+    [ ! -d "$out" ] || find "$out" -mindepth 1 -delete
+    mkdir -p "$out"
+    touch "$out/$EXPORT_MARKER"
     git -C "$tree" "${fp[@]}" "$base..HEAD"
 
     # The cover letter: the first line of cover.txt is its subject
