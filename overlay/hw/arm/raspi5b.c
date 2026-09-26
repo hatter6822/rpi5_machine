@@ -162,7 +162,9 @@ static void raspi5b_fdt_fail_absent_cpus(void *fdt, unsigned int num_cpus)
 
 /*
  * Like the firmware, leave the VideoCore's memory at the top of the first
- * GiB out of the memory node that arm_load_dtb() wrote.
+ * GiB out of the memory node that arm_load_dtb() wrote: it replaces every
+ * /memory node of the tree with one "/memory@0", which libfdt also finds
+ * by the unit-address-less "/memory".
  */
 static void raspi5b_fdt_memory(void *fdt, uint64_t ram_size)
 {

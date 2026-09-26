@@ -366,8 +366,10 @@ static bool bcm2712_realize_vc(BCM2712State *s, Error **errp)
     }
     window = MIN(memory_region_size(s->ram), BCM2712_VC_RAM_WINDOW);
     for (int i = 0; i < ARRAY_SIZE(s->vc_ram); i++) {
-        memory_region_init_alias(&s->vc_ram[i], OBJECT(s), "bcm2712.vc-ram",
-                                 s->ram, 0, window);
+        g_autofree char *name = g_strdup_printf("bcm2712.vc-ram%d", i);
+
+        memory_region_init_alias(&s->vc_ram[i], OBJECT(s), name, s->ram, 0,
+                                 window);
     }
     memory_region_add_subregion(&s->vc_bus, 0, &s->vc_ram[0]);
     memory_region_add_subregion(&s->vc_bus, BCM2712_VC_RAM_BUS_BASE,

@@ -15,10 +15,11 @@ the BCM2835 answer.
 Answer the variant as the standard firmware ("start") and the hash as
 all zeroes, since no firmware build stands behind the model. Answer
 the board model as 0. Every new answer is clipped to the guest's
-buffer, and its length says how much the full value needs. Take the serial number and the DMA channel mask from
-new "board-serial" and "dma-channel-mask" properties. Their defaults
-keep today's DMA answer and give a zero serial, so existing boards
-behave the same apart from the now defined values.
+buffer, and its length says how much the full value needs. Take the
+serial number and the DMA channel mask from new "board-serial" and
+"dma-channel-mask" properties. Their defaults keep today's DMA answer
+and give a zero serial, so existing boards behave the same apart from
+the now defined values.
 ---
  hw/misc/bcm2835_property.c         | 63 ++++++++++++++++++++++++------
  include/hw/misc/bcm2835_property.h |  2 +

@@ -95,7 +95,7 @@ TEST(pm_watchdog_reset, "pm/watchdog-reset")
 }
 ```
 
-A test that keeps resetting fails after eight resets.
+A test that resets more than eight times fails.
 
 ## Transcript
 

@@ -33,7 +33,7 @@ The first milestone targets bare-metal and microkernel bring-up.
 | Built-in device tree when no `-dtb` is given, validated against the Linux bindings | done |
 | Bare-metal test suite (26 tests: interrupts, timers and SGIs on every core, PSCI, resets, mailbox, RNG, UART, Secure/Non-secure GIC groups) on 1–4 cores, EL2 and EL3 | done |
 | Linux: stock Raspberry Pi OS kernel boots to the root-fs mount, on the built-in device tree or `bcm2712-rpi-5-b.dtb` | smoke-tested |
-| VideoCore mailbox and firmware property channel: BCM283x tag set, board and firmware identity | done; Pi 5 clock, power, RTC and GPIO tags in progress |
+| VideoCore mailbox and firmware property channel: BCM283x tag set, board and firmware identity | done; Pi 5 clock, power, RTC and GPIO tags planned (WS2.3b) |
 | SD, PCIe, RP1, GPIO, … | see [docs/PLAN.md](docs/PLAN.md) |
 
 ## Repository layout
