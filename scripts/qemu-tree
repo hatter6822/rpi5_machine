@@ -412,12 +412,16 @@ write_patch() {
     read -r base tree <<<"$staged"
     [ "$base" != "$tree" ] || die "no changes in: $*"
 
-    # Commit objects only, never checked out, so qemu/ is left untouched
+    # Commit objects only, never checked out, so qemu/ is left untouched;
+    # neither needs the user's git identity
     local parent commit name email
     name=${author% <*}
     email=${author##*<}
     email=${email%>}
-    parent=$(qgit commit-tree "$base" -m base)
+    parent=$(GIT_AUTHOR_NAME=$name GIT_AUTHOR_EMAIL=$email \
+             GIT_COMMITTER_NAME=qemu-tree \
+             GIT_COMMITTER_EMAIL=qemu-tree@localhost \
+             qgit commit-tree "$base" -m base)
     commit=$(GIT_AUTHOR_NAME=$name GIT_AUTHOR_EMAIL=$email \
              GIT_COMMITTER_NAME=qemu-tree \
              GIT_COMMITTER_EMAIL=qemu-tree@localhost \
@@ -489,8 +493,13 @@ cmd_export() {
         export GIT_COMMITTER_EMAIL=qemu-tree@localhost
     fi
 
+    # The series is based on the revision the superproject pins, whatever
+    # qemu/ has checked out
     local base tmp tree
-    base=$(qgit rev-parse HEAD)
+    base=$(git -C "$ROOT" ls-tree HEAD qemu | awk '{ print $3 }')
+    [ -n "$base" ] || die "the superproject does not pin a qemu/ revision"
+    qgit cat-file -e "$base^{commit}" 2>/dev/null ||
+        die "pinned revision ${base:0:12} is not in qemu/; run 'git submodule update qemu'"
     tmp=$(mktemp -d)
     tree="$tmp/tree"
     # shellcheck disable=SC2064 # expand now: $tmp is local

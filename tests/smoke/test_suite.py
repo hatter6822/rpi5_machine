@@ -20,6 +20,12 @@ DTS = Path(__file__).with_name("bcm2712-min.dts")
 
 RESULT = re.compile(r"^(PASS|FAIL|SKIP): ([^:]+)(?:: (.*))?$")
 
+# Every test the suite's sources declare, so that one missing from the
+# build or the transcript fails the run rather than going unnoticed
+TEST_DECL = re.compile(r'^TEST\(\w+,\s*"([^"]+)"\)', re.MULTILINE)
+EXPECTED = {name for src in (ROOT / "tests/guest/suite").glob("*.c")
+            for name in TEST_DECL.findall(src.read_text())}
+
 # uart/echo asks for a line with this note and skips without an answer
 ECHO_PROMPT = "# uart/echo: send a line"
 
@@ -91,15 +97,16 @@ class SuiteTest(unittest.TestCase):
         shutil.rmtree(cls.tmp)
 
     def check(self, results, out, skipped):
-        """Every test passed except @skipped, which were skipped."""
+        """Every declared test ran, and passed except @skipped."""
         skipped = set(skipped) | ALWAYS_SKIPPED
         self.assertIn("END: PASS", out, out)
         self.assertNotIn("PANIC", out, out)
-        self.assertTrue(results, out)
+        self.assertIn(f"# {len(EXPECTED)} tests\n", out, out)
+        self.assertEqual(set(results), EXPECTED, out)
+        self.assertLessEqual(skipped, EXPECTED)
         for name, (outcome, detail) in results.items():
             expected = "SKIP" if name in skipped else "PASS"
             self.assertEqual(outcome, expected, f"{name}: {detail}\n{out}")
-        self.assertLessEqual(set(skipped), set(results), out)
 
     def suite_dtb(self, mode):
         return {"builtin": None, "file": self.dtb, "none": "none"}[mode]

@@ -563,11 +563,17 @@ static void test_mbox_unreachable(void)
     QTestState *qts = qtest_init("-machine raspi5b -m 2G");
     /* RAM, but above the first GiB; then the same address on the bus */
     const uint64_t high = 1 * GiB + 0x10000;
+    /* A header the VideoCore reaches, but a body running past its view */
+    const uint64_t edge = 1 * GiB - 0x10;
     uint32_t val[2];
 
     mbox_request(qts, high, high, FW_TAG_BOARD_REVISION);
     g_assert_false(mbox_has_response(qts));
     g_assert_cmphex(qtest_readl(qts, high + 4), ==, FW_REQUEST);
+
+    mbox_request(qts, edge, edge, FW_TAG_BOARD_REVISION);
+    g_assert_false(mbox_has_response(qts));
+    g_assert_cmphex(qtest_readl(qts, edge + 4), ==, FW_REQUEST);
 
     /* The channel still works afterwards */
     mbox_request(qts, 0x10000, VC_BUS_RAM | 0x10000, FW_TAG_BOARD_REVISION);
@@ -660,6 +666,11 @@ static void test_mbox_identity(void)
                     FW_TAG_RESPONSE | 8);
     g_assert_cmphex(val[0], ==, 0x89abcdef);
     g_assert_cmphex(val[1], ==, 0x01234567);
+    /* Here too, and the end tag after the short buffer survives */
+    g_assert_cmphex(mbox_tag(qts, FW_TAG_BOARD_SERIAL, 4, val), ==,
+                    FW_TAG_RESPONSE | 8);
+    g_assert_cmphex(val[0], ==, 0x89abcdef);
+    g_assert_cmphex(qtest_readl(qts, 0x10000 + 24), ==, 0);
 
     g_assert_cmphex(mbox_tag(qts, FW_TAG_DMA_CHANNELS, 4, val), ==,
                     FW_TAG_RESPONSE | 4);
