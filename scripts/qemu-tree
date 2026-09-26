@@ -110,12 +110,24 @@ revert_stale_records() {
 check_tree() {
     [ -e "$QEMU/.git" ] ||
         die "qemu/ is not checked out; run 'git submodule update --init qemu'"
-    APPLIED="$(qgit rev-parse --absolute-git-dir)/qemu-tree/applied"
+    local state
+    state="$(qgit rev-parse --absolute-git-dir)/qemu-tree"
+    APPLIED="$state/applied"
     mkdir -p "$APPLIED"
 
     local pinned head
     pinned=$(git -C "$ROOT" ls-tree HEAD qemu | awk '{ print $3 }')
     head=$(qgit rev-parse HEAD)
+
+    # Records describe the tree of one QEMU commit. Once qemu/ moves (a
+    # bump, or a checkout), forget them: each patch is then re-derived from
+    # the tree, and one that no longer applies is an error, not an edit.
+    if [ -f "$state/head" ] && [ "$(cat "$state/head")" != "$head" ]; then
+        printf 'qemu-tree: qemu/ moved to %s; re-checking every patch\n' \
+            "${head:0:12}" >&2
+        rm -f "$APPLIED"/*.patch
+    fi
+    echo "$head" >"$state/head"
     if [ -n "$pinned" ] && [ "$pinned" != "$head" ]; then
         printf 'qemu-tree: warning: qemu/ is at %s, pinned commit is %s\n' \
             "${head:0:12}" "${pinned:0:12}" >&2
