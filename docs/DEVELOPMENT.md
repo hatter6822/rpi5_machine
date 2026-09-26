@@ -15,8 +15,8 @@ new file.** Patches are reserved for the glue that cannot be.
 
 Patches form a series, applied in file name order, and like the commits of
 an upstream series they may change the same file: `hw/arm/Kconfig` is
-changed both by the upstream-first Kconfig split (0001) and by the BCM2712
-glue (0002). Each patch is generated against the tree with every earlier
+changed both by the upstream-first Kconfig split and by the BCM2712
+glue. Each patch is generated against the tree with every earlier
 patch applied and with the changes of later patches taken back out, so it
 can still be refreshed on its own. Two consequences:
 
@@ -48,7 +48,7 @@ Edit it in `qemu/`, then either
 
 ```
 scripts/qemu-tree new hw-misc-add-bcm2712-foo qemu-relative/path ...   # new patch
-scripts/qemu-tree refresh 0002-hw-arm-Build-the-BCM2712-SoC-and-raspi5b-machine.patch
+scripts/qemu-tree refresh 0004-hw-arm-Build-the-BCM2712-SoC-and-raspi5b-machine.patch
 ```
 
 `new` appends a patch to the series and opens git's editor for a commit

@@ -241,7 +241,29 @@ static void bcm2712_init(Object *obj)
     BCM2712State *s = BCM2712(obj);
 
     object_initialize_child(obj, "gic", &s->gic, TYPE_ARM_GIC);
+    object_initialize_child(obj, "systimer", &s->systimer,
+                            TYPE_BCM2835_SYSTIMER);
     object_initialize_child(obj, "uart10", &s->uart10, TYPE_PL011);
+}
+
+/*
+ * The VideoCore system timer: a 1 MHz free-running counter and four
+ * comparators, the same block as on BCM2835. The device tree node spans
+ * 0x1000 bytes; the registers occupy the first 0x20 and the rest stays
+ * with the placeholder mapped beneath.
+ */
+static bool bcm2712_realize_systimer(BCM2712State *s, Error **errp)
+{
+    SysBusDevice *sbd = SYS_BUS_DEVICE(&s->systimer);
+
+    if (!sysbus_realize(sbd, errp)) {
+        return false;
+    }
+    bcm2712_map(sbd, 0, BCM2712_SYSTIMER);
+    for (int i = 0; i < BCM2835_SYSTIMER_COUNT; i++) {
+        sysbus_connect_irq(sbd, i, bcm2712_spi(s, BCM2712_SPI_SYSTIMER0 + i));
+    }
+    return true;
 }
 
 static void bcm2712_realize(DeviceState *dev, Error **errp)
@@ -254,7 +276,8 @@ static void bcm2712_realize(DeviceState *dev, Error **errp)
         return;
     }
 
-    if (!bcm2712_realize_cpus(s, errp) || !bcm2712_realize_gic(s, errp)) {
+    if (!bcm2712_realize_cpus(s, errp) || !bcm2712_realize_gic(s, errp) ||
+        !bcm2712_realize_systimer(s, errp)) {
         return;
     }
 
@@ -267,7 +290,11 @@ static void bcm2712_realize(DeviceState *dev, Error **errp)
     sysbus_connect_irq(SYS_BUS_DEVICE(&s->uart10), 0,
                        bcm2712_spi(s, BCM2712_SPI_UART10));
 
-    /* Everything not yet modelled logs its accesses under -d unimp */
+    /*
+     * Everything not yet modelled logs its accesses under -d unimp. The
+     * placeholders sit below the models, so a block whose model is smaller
+     * than its device tree node (the system timer) keeps one for the rest.
+     */
     for (BCM2712Device d = 0; d < BCM2712_NUM_DEVICES; d++) {
         switch (d) {
         case BCM2712_AXI:

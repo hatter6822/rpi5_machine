@@ -59,13 +59,13 @@ commit (or a short series) with its own tests.
 
 ## 2. Current state
 
-Delivered so far (WS0.1–WS0.3, WS0.6):
+Delivered so far (WS0.1–WS0.3, WS0.6, WS2.1):
 
 | Area | State |
 | --- | --- |
 | Repository | pinned QEMU v11.1.1 submodule, overlay + patch series (patches may share files, like an upstream series) managed by `scripts/qemu-tree`, CI with ccache |
 | Kconfig (WS0.6) | every BCM283x device model has its own symbol, so `bcm2712` can select just the models it reuses; a `raspi5b`-only build is tested (`make check-minimal`) |
-| SoC (`bcm2712`) | 1–4 Cortex-A76 (`MPIDR.Aff1` = core, CNTFRQ 54 MHz, optional EL3), GIC-400 with 288 SPIs, 5 priority bits and all timer/maintenance PPIs, UART10 (PL011), complete memory map with T0 placeholders and two catch-all windows |
+| SoC (`bcm2712`) | 1–4 Cortex-A76 (`MPIDR.Aff1` = core, CNTFRQ 54 MHz, optional EL3), GIC-400 with 288 SPIs, 5 priority bits and all timer/maintenance PPIs, UART10 (PL011), system timer (WS2.1), complete memory map with T0 placeholders and two catch-all windows |
 | Board (`raspi5b`) | 1/2/4/8/16 GiB RAM, board revision code, PSCI over SMC with EL2 entry (default) or guest-owned EL3 (`secure=on`), DTB fix-ups for unmodelled devices, `/system/linux,revision` |
 | Tests | qtest (UART IDs, GIC geometry, priority bits and security, RAM, placeholders), bare-metal smoke guest (EL, MPIDR, CNTFRQ, PSCI CPU_ON on all cores, SYSTEM_OFF, EL3 mode) |
 | Linux | the stock Raspberry Pi OS kernel (6.18) with the firmware's `bcm2712-rpi-5-b.dtb` boots on 4 CPUs to the root-fs mount, without warnings |
@@ -335,7 +335,15 @@ with a custom armstub.
 These blocks are shared with earlier Raspberry Pi SoCs; the work is mostly
 re-targeting existing QEMU models to BCM2712 addresses and differences.
 
-#### WS2.1 System timer (S)
+#### WS2.1 System timer (done except the bare-metal check)
+*Delivered:* the SoC maps `bcm2835-sys-timer` with comparators on SPIs
+64–67 and the DT node is no longer disabled; two upstream-first fixes to
+the model (patches 0002/0003): reset now cancels armed comparators and
+lowers their interrupts, and armed comparators are migrated. qtests cover
+the counter, every comparator's match, interrupt and acknowledgement,
+reset and migration. The bare-metal interrupt check lands with WS9.2a,
+which provides the exception vectors and GIC driver it needs.
+
 **Depends:** WS0.6.
 Instantiate `bcm2835-sys-timer` at `0x10_7c00_3000` (the DT node covers
 `0x1000`; the model is `0x20` bytes, so the rest stays a placeholder),

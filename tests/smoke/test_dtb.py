@@ -12,8 +12,9 @@ from pathlib import Path
 
 from test_hello import GUEST, QEMU, TIMEOUT
 
-# Only one of the compatibles raspi5b disables is present, which also
-# checks that absent ones are skipped rather than treated as errors.
+# One modelled device and only one of the compatibles raspi5b disables,
+# which also checks that absent ones are skipped rather than treated as
+# errors.
 MINIMAL_DTS = """
 /dts-v1/;
 / {
@@ -33,6 +34,11 @@ MINIMAL_DTS = """
     timer@107c003000 {
         compatible = "brcm,bcm2835-system-timer";
         reg = <0x10 0x7c003000 0x0 0x1000>;
+    };
+
+    v3d@1002000000 {
+        compatible = "brcm,2712-v3d";
+        reg = <0x10 0x02000000 0x0 0x4000>;
     };
 };
 """
@@ -71,8 +77,12 @@ class DtbFixupTest(unittest.TestCase):
 
     def test_unmodelled_devices_disabled(self):
         dtb = self.fixed_up()
-        self.assertEqual(fdtget(dtb, "/timer@107c003000", "status"),
+        self.assertEqual(fdtget(dtb, "/v3d@1002000000", "status"),
                          "disabled")
+
+    def test_modelled_devices_untouched(self):
+        dtb = self.fixed_up()
+        self.assertIsNone(fdtget(dtb, "/timer@107c003000", "status"))
 
     def test_board_revision(self):
         dtb = self.fixed_up("-m", "4G")

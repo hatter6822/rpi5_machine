@@ -77,7 +77,6 @@ static uint32_t raspi5b_board_rev(uint64_t ram_size)
  * list should only ever shrink; see docs/PLAN.md.
  */
 static const char *const raspi5b_unmodelled_compatibles[] = {
-    "brcm,bcm2835-system-timer",
     "brcm,bcm2712-pcie",
     "brcm,bcm2712-mip",
     "brcm,bcm2712-sdhci",
