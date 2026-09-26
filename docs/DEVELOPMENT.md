@@ -159,8 +159,12 @@ make export-series SERIES_FLAGS='-v 2 --signoff'
 a temporary worktree (refusing an overlay file that is in no patch, or in
 two), writes it with `git format-patch --cover-letter --base`, and checks
 that the result applies with `git am`, reproduces the tree, and passes
-checkpatch. CI runs it on every change, and builds every commit in a
-separate job. Before submitting:
+checkpatch. The destination must be a new or empty directory, or one an
+earlier export made: export empties it first, so it marks the directories
+it makes (`.qemu-tree-export`, which `make distclean` also requires before
+removing `SERIES_DIR`) and refuses everything else, `patches/` included.
+CI runs it on every change, and builds every commit in a separate job.
+Before submitting:
 
 * every commit needs a `Signed-off-by:` from its human author (the DCO,
   `docs/devel/submitting-a-patch.rst`). The patches here deliberately
