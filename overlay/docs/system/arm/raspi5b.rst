@@ -15,7 +15,8 @@ and microkernel bring-up, with Linux support following.
 Implemented devices
 -------------------
 
-* 1 to 4 Cortex-A76 CPUs (``-smp``), ``MPIDR_EL1.Aff1`` = core number
+* 1 to 4 Cortex-A76 CPUs (``-smp``), ``MPIDR_EL1.Aff1`` = core number,
+  with ``MPIDR_EL1.MT`` set as on the silicon
 * ARM generic timer at 54 MHz
 * GIC-400 (GICv2 with Virtualization Extensions)
 * System timer at ``0x10_7c00_3000``: 1 MHz free-running counter and four

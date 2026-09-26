@@ -146,7 +146,7 @@ others.
 | CPU | the Cortex-A76 IMPLEMENTATION DEFINED registers firmware writes, read and written back at EL2 and EL3 |
 | GIC | geometry, an SGI to self, Group 0 and 1 across the Secure and Non-secure worlds (EL3) |
 | Generic timers | frequency; the EL1, EL2 and Secure physical timers; the EL1 physical and virtual timers on every core, with a virtual offset above the count |
-| SMP | PSCI `CPU_ON` of every core, SGIs between every pair of cores and to all others, an SPI routed to each core in turn; `CPU_ON`/`CPU_OFF`/`AFFINITY_INFO` statuses |
+| SMP | each core's `MPIDR_EL1`, PSCI `CPU_ON` of every core, SGIs between every pair of cores and to all others, an SPI routed to each core in turn; `CPU_ON`/`CPU_OFF`/`AFFINITY_INFO` statuses |
 | System timer | rate against the generic counter, every comparator's interrupt |
 | Firmware | the mailbox's board revision, the identity tags |
 | PM, reset | watchdog countdown and reset, three PSCI `SYSTEM_RESET`s and a watchdog reset that must restore the boot state |

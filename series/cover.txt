@@ -30,9 +30,12 @@ The series is in four parts:
   code, keeps every tag within the value buffer it declares, and
   answers the firmware and board identity tags Linux asks for.
 
-- A new RNG200 model, the Cortex-A76's IMPLEMENTATION DEFINED
-  registers, without which TF-A stops in its reset handler, and two
-  fixes for bugs found by the tests:
+- A new RNG200 model, two target/arm changes TF-A needs, and two fixes
+  for bugs found by the tests:
+  - the Cortex-A76's IMPLEMENTATION DEFINED registers, without which
+    TF-A stops in its reset handler;
+  - a CPU property that sets MPIDR_EL1.MT, by which TF-A numbers the
+    A76 cores;
   - with the Security Extensions, a Non-secure write to GICD_SGIR could
     raise Group 0 SGIs;
   - a generic timer whose offset exceeds the count, such as the virtual

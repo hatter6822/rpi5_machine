@@ -158,9 +158,15 @@ static bool bcm2712_realize_cpus(BCM2712State *s, Error **errp)
                                 ARM_CPU_TYPE_NAME("cortex-a76"));
         cpu = OBJECT(&s->cpu[i]);
 
-        /* Cortex-A76 reports its core number in MPIDR_EL1.Aff1 */
+        /*
+         * Cortex-A76 reports its core number in MPIDR_EL1.Aff1, with the
+         * MT bit set and thread 0 in Aff0, as a DynamIQ core does.
+         * Firmware numbers the cores by the MT bit: TF-A shifts the
+         * affinity down a level when it is set.
+         */
         object_property_set_uint(cpu, "mp-affinity", i << ARM_AFF1_SHIFT,
                                  &error_abort);
+        object_property_set_bool(cpu, "mpidr-mt", true, &error_abort);
         object_property_set_uint(cpu, "cntfrq", BCM2712_CNTFRQ_HZ,
                                  &error_abort);
         /*

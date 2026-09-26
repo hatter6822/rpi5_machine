@@ -59,15 +59,15 @@ commit (or a short series) with its own tests.
 
 ## 2. Current state
 
-Delivered so far: M1 (WS0.1–WS0.3, WS0.5, WS0.6, WS2.1, WS2.2, WS2.3a, WS2.4, WS2.5, WS3.2, WS3.6, WS9.2) and, towards M2, WS1.5:
+Delivered so far: M1 (WS0.1–WS0.3, WS0.5, WS0.6, WS2.1, WS2.2, WS2.3a, WS2.4, WS2.5, WS3.2, WS3.6, WS9.2) and, towards M2, WS1.5 and WS1.2:
 
 | Area | State |
 | --- | --- |
 | Repository | pinned QEMU v11.1.1 submodule, overlay + patch series (patches may share files, like an upstream series) managed by `scripts/qemu-tree`, which also exports the upstream series (WS0.5: a commit per patch and a cover letter, checked with `git am`, checkpatch and a build of every commit), CI with ccache |
 | Kconfig (WS0.6) | every BCM283x device model has its own symbol, so `bcm2712` can select just the models it reuses; a `raspi5b`-only build is tested (`make check-minimal`) |
-| SoC (`bcm2712`) | 1–4 Cortex-A76 (`MPIDR.Aff1` = core, CNTFRQ 54 MHz, optional EL3, the IMPDEF registers firmware writes (WS1.5)), GIC-400 with 288 SPIs, 5 priority bits and all timer/maintenance PPIs, UART10 (PL011), system timer (WS2.1), watchdog and reset status (WS2.4), RNG200 (WS2.5), VideoCore mailbox with the BCM283x property and framebuffer channels (WS2.2) and every identity tag answered (WS2.3a), complete memory map with T0 placeholders and two catch-all windows |
+| SoC (`bcm2712`) | 1–4 Cortex-A76 (`MPIDR.Aff1` = core with `MPIDR.MT` set (WS1.2), CNTFRQ 54 MHz, optional EL3, the IMPDEF registers firmware writes (WS1.5)), GIC-400 with 288 SPIs, 5 priority bits and all timer/maintenance PPIs, UART10 (PL011), system timer (WS2.1), watchdog and reset status (WS2.4), RNG200 (WS2.5), VideoCore mailbox with the BCM283x property and framebuffer channels (WS2.2) and every identity tag answered (WS2.3a), complete memory map with T0 placeholders and two catch-all windows |
 | Board (`raspi5b`) | 1/2/4/8/16 GiB RAM, board revision code, serial number (`serial=`), PSCI over SMC with EL2 entry (default) or guest-owned EL3 (`secure=on`), system reset and power-off through PSCI, the watchdog and the monitor (WS3.6), a built-in device tree when no `-dtb` is given (WS3.2; `builtin-dtb=off` passes none), DTB fix-ups for unmodelled devices, `/system/linux,revision` |
-| Tests | qtest (UART IDs, GIC geometry, priority bits and security, RAM, placeholders, system timer, watchdog, mailbox, identity tags, RNG), the built-in tree validated against the Linux v6.18 bindings (`make check-dt`), bare-metal smoke guest (EL, MPIDR, CNTFRQ, PSCI CPU_ON on all cores, SYSTEM_OFF, EL3 mode), and the bare-metal suite (WS9.2, 27 tests: GIC and the Secure/Non-secure group split, every timer on every core, SGIs between all core pairs, SPI routing, PSCI, the system timer, the mailbox and identity tags, the RNG, UART receive and loopback, a watchdog reset and four system resets checked against the boot state, an ID-register dump, the A76's IMPDEF registers; 1–4 cores, with the built-in tree, a `-dtb` one and none, EL2 and EL3) |
+| Tests | qtest (UART IDs, GIC geometry, priority bits and security, RAM, placeholders, system timer, watchdog, mailbox, identity tags, RNG), the built-in tree validated against the Linux v6.18 bindings (`make check-dt`), bare-metal smoke guest (EL, MPIDR, CNTFRQ, PSCI CPU_ON on all cores, SYSTEM_OFF, EL3 mode), and the bare-metal suite (WS9.2, 28 tests: GIC and the Secure/Non-secure group split, each core's MPIDR, every timer on every core, SGIs between all core pairs, SPI routing, PSCI, the system timer, the mailbox and identity tags, the RNG, UART receive and loopback, a watchdog reset and four system resets checked against the boot state, an ID-register dump, the A76's IMPDEF registers; 1–4 cores, with the built-in tree, a `-dtb` one and none, EL2 and EL3) |
 | Linux | the stock Raspberry Pi OS kernel (6.18) boots on 4 CPUs to the root-fs mount, without warnings, with the firmware's `bcm2712-rpi-5-b.dtb` and on the built-in tree (1, 2 and 8 GiB) |
 
 Known provisional values, each marked in the code: 288 SPIs
@@ -88,12 +88,12 @@ and turns provisional values into verified ones. H never gates a milestone.
 | --- | --- | --- | --- |
 | **M0** Skeleton | machine boots bare-metal payloads | WS0.1–0.3 | done: `make check` |
 | **M1** Bare-metal platform | everything a microkernel needs: timers, IPIs, mailbox/property, watchdog reset, RNG, a device tree | WS0.5, WS0.6, WS2.1, WS2.2, WS2.3a, WS2.4, WS2.5, WS3.2, WS3.6, WS9.2 | done: the bare-metal suite (WS9.2) passes on 1–4 cores with and without `-dtb`; PSCI `SYSTEM_RESET` and the watchdog reboot the guest four times |
-| **M2** Firmware-faithful boot | real TF-A, U-Boot and UEFI run unmodified | WS1.5, WS3.1, WS3.3, WS3.4 | upstream TF-A `rpi5` BL31 (`secure=on`) → U-Boot → Linux to the root-fs mount; EDK2 to the UEFI shell |
+| **M2** Firmware-faithful boot | real TF-A, U-Boot and UEFI run unmodified | WS1.2, WS1.5, WS3.1, WS3.3, WS3.4 | upstream TF-A `rpi5` BL31 (`secure=on`) → U-Boot → Linux to the root-fs mount; EDK2 to the UEFI shell |
 | **M3** Linux on SD card | Raspberry Pi OS boots to a login prompt | WS2.3b–e, WS2.6, WS4.1–4.6, WS5.1, WS5.2, WS3.5 | unmodified Raspberry Pi OS Lite image boots from `-drive if=sd` with `scripts/rpi5-boot`; `reboot` and `poweroff` work |
 | **M4** PCIe | PCIe root complexes and MSI | WS6.1–6.5 | NVMe root and virtio-net on the external PCIe1 port under Linux |
 | **M5** RP1 | 40-pin header, Ethernet, USB | WS7.1–7.12 | Linux networking over RP1 Ethernet, USB keyboard and mass storage, GPIO/I²C/SPI/UART qtests; bare-metal RP1 UART0 at `0x1f_0003_0000` |
 | **M6** Upstream | merged in QEMU | WS9.3, WS9.5–9.8 | series accepted by the Arm/Raspberry Pi maintainers |
-| **H** Hardware parity | provisional values verified on silicon | WS0.4, WS1.1–1.4, WS1.6, WS9.4 | golden dumps checked in; `TODO(WS0.4)`/`TODO(WS1.x)` markers gone; UART transcripts of the bare-metal suite identical on QEMU and hardware |
+| **H** Hardware parity | provisional values verified on silicon | WS0.4, WS1.1, WS1.3, WS1.4, WS1.6, WS9.4 | golden dumps checked in; `TODO(WS0.4)`/`TODO(WS1.x)` markers gone; UART transcripts of the bare-metal suite identical on QEMU and hardware |
 
 Upstreaming (WS9.7) is incremental: M0+M1 form the first series, and each
 later milestone is its own series once the previous one is merged.
@@ -110,6 +110,7 @@ graph LR
   WS3.2[WS3.2 built-in DT] --> WS9.2
   WS9.2 --> M1((M1))
   WS1.5[WS1.5 IMPDEF sysregs] --> WS3.3[WS3.3 armstub/BL31 loader] --> WS3.4[WS3.4 TF-A/U-Boot/UEFI]
+  WS1.2[WS1.2 MPIDR.MT] --> WS3.4
   WS4.1[WS4.1 L2 intc] --> WS4.2[WS4.2 brcmstb GPIO] & WS4.4[WS4.4 BSC I2C]
   WS4.2 --> WS4.6[WS4.6 board wiring] & WS5.1[WS5.1 SDHCI]
   WS5.1 --> WS3.5[WS3.5 SD boot helper] --> M3((M3))
@@ -305,7 +306,20 @@ upstream in `target/arm/tcg/cpu64.c`.
 **Done when:** the WS0.4 diff shows no unexplained CPU ID differences; a
 bare-metal test walks `CLIDR`/`CCSIDR` and prints the cache geometry.
 
-#### WS1.2 `MPIDR_EL1.MT` (S, optional) — track H
+#### WS1.2 `MPIDR_EL1.MT` (done)
+*Delivered:* an upstream-first patch (`target/arm`) adds an `mpidr-mt`
+CPU property that sets `MPIDR_EL1.MT`, and with it `VMPIDR_EL2`'s reset
+value, and the SoC sets it: each core reports `0x81000000 | core << 8`,
+the Cortex-A76 TRM's value (`MT = 1`, thread 0 in `Aff0`, the core in
+`Aff1`). The unit moved from track H into M2 because TF-A's `rpi5` port
+needs it: it shifts the affinity down a level when `MT` is set, and
+without it numbers the second core 4, past the end of its four-core
+tables, and refuses PSCI `CPU_ON` for it. `mp-affinity` still holds the
+affinity alone, so QEMU's PSCI, which compares it with the affinity a
+caller names, is unaffected, as is the GIC-400, which targets CPU
+interfaces by number; Linux masks `MT` out (`MPIDR_HWID_BITMASK`). The
+bare-metal test `smp/mpidr` checks the whole register on every core.
+
 Real A76 cores report `MT = 1` with the core number in `Aff1`. QEMU cannot
 express `MT` today. Evaluate an upstream CPU property; check that PSCI
 affinity matching (`arm_cpu_by_mpidr`-style lookups) and GIC target logic
@@ -1232,13 +1246,13 @@ cores with every DT mode and at EL3, and with the firmware's
 `bcm2712-rpi-5-b.dtb`.
 
 Two QEMU bugs found by these tests are fixed by upstream-first patches
-ahead of the SoC patch (now 0011): with the Security Extensions,
+ahead of the SoC patch: with the Security Extensions,
 `GICD_SGIR` ignored `NSATT` and the security of the write, so
-Non-secure code could raise Secure SGIs (0009, `hw/intc/arm_gic`); and
+Non-secure code could raise Secure SGIs (`hw/intc/arm_gic`); and
 a timer whose offset exceeds the physical count, such as the virtual
 timer with `CNTVOFF_EL2` above `CNTPCT` (a virtual count below zero),
 never fired, because the deadline's wrap-around was taken for "never"
-(0010, `target/arm`). `uart/echo` does not feed input before its prompt:
+(`target/arm`). `uart/echo` does not feed input before its prompt:
 every reset, and enabling the PL011 FIFO, empties the receiver.
 
 **Done when:** `make check-smoke` runs the suite on 1, 2 and 4 cores

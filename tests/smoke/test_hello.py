@@ -34,7 +34,7 @@ class HelloTest(unittest.TestCase):
 
     def assertBooted(self, output, el):
         self.assertIn(f"raspi5b: core 0 up at EL{el}, "
-                      "MPIDR 0x0000000080000000, CNTFRQ 54000000 Hz", output)
+                      "MPIDR 0x0000000081000000, CNTFRQ 54000000 Hz", output)
 
     def test_default_el2_psci(self):
         status, out = boot("-M", "raspi5b")
@@ -43,7 +43,7 @@ class HelloTest(unittest.TestCase):
         self.assertIn("raspi5b: PSCI 1.1", out)
         for core in (1, 2, 3):
             self.assertIn(f"raspi5b: core {core} online, "
-                          f"MPIDR 0x00000000{0x80000000 | core << 8:08x}", out)
+                          f"MPIDR 0x00000000{0x81000000 | core << 8:08x}", out)
         self.assertIn("raspi5b: PSCI SYSTEM_OFF", out)
         self.assertNotIn("SYSTEM_OFF returned", out)
 

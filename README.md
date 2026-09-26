@@ -7,11 +7,11 @@ submission.
 ```
 $ make setup build guest
 $ build/qemu-system-aarch64 -M raspi5b -nographic -kernel tests/guest/build/hello.elf
-raspi5b: core 0 up at EL2, MPIDR 0x0000000080000000, CNTFRQ 54000000 Hz
+raspi5b: core 0 up at EL2, MPIDR 0x0000000081000000, CNTFRQ 54000000 Hz
 raspi5b: PSCI 1.1
-raspi5b: core 1 online, MPIDR 0x0000000080000100
-raspi5b: core 2 online, MPIDR 0x0000000080000200
-raspi5b: core 3 online, MPIDR 0x0000000080000300
+raspi5b: core 1 online, MPIDR 0x0000000081000100
+raspi5b: core 2 online, MPIDR 0x0000000081000200
+raspi5b: core 3 online, MPIDR 0x0000000081000300
 raspi5b: PSCI SYSTEM_OFF
 ```
 
@@ -21,7 +21,7 @@ The first milestone targets bare-metal and microkernel bring-up.
 
 | Area | State |
 | --- | --- |
-| 4 × Cortex-A76, `MPIDR.Aff1` = core, 54 MHz generic timer | done |
+| 4 × Cortex-A76, `MPIDR.Aff1` = core with `MPIDR.MT` set, 54 MHz generic timer | done |
 | GIC-400 (GICv2 + virtualization extensions, 5 priority bits), timer/maintenance PPIs | done |
 | UART10 (PL011 debug UART) | done |
 | System timer (1 MHz counter, four comparators) | done |
@@ -31,7 +31,7 @@ The first milestone targets bare-metal and microkernel bring-up.
 | Firmware boot contract: EL2 entry, PSCI over SMC (`secure=off`); guest-owned EL3 (`secure=on`) | done |
 | Complete BCM2712 memory map, unmodelled blocks logged with `-d unimp` | done |
 | Built-in device tree when no `-dtb` is given, validated against the Linux bindings | done |
-| Bare-metal test suite (27 tests: interrupts, timers and SGIs on every core, PSCI, resets, mailbox, RNG, UART, Secure/Non-secure GIC groups, the A76's IMPDEF registers) on 1–4 cores, EL2 and EL3 | done |
+| Bare-metal test suite (28 tests: interrupts, timers and SGIs on every core, PSCI, resets, mailbox, RNG, UART, Secure/Non-secure GIC groups, the A76's MPIDR and IMPDEF registers) on 1–4 cores, EL2 and EL3 | done |
 | Linux: stock Raspberry Pi OS kernel boots to the root-fs mount, on the built-in device tree or `bcm2712-rpi-5-b.dtb` | smoke-tested |
 | VideoCore mailbox and firmware property channel: BCM283x tag set, board and firmware identity | done; Pi 5 clock, power, RTC and GPIO tags planned (WS2.3b) |
 | SD, PCIe, RP1, GPIO, … | see [docs/PLAN.md](docs/PLAN.md) |

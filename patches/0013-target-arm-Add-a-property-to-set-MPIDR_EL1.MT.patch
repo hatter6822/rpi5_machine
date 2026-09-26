@@ -1,0 +1,66 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: A7om <hatter6822@gmail.com>
+Date: Sat, 26 Sep 2026 00:00:00 +0000
+Subject: [PATCH] target/arm: Add a property to set MPIDR_EL1.MT
+
+MPIDR_EL1.MT reports that the lowest affinity level numbers the threads
+of a core. DynamIQ cores such as the Cortex-A55, A76 and A78 set it
+although they run one thread each, and number themselves in Aff1 with
+Aff0 = 0. Firmware turns an MPIDR into a core number by it: TF-A's
+Raspberry Pi 5 port shifts the affinity down a level when MT is set, and
+without it takes the BCM2712's second Cortex-A76 (Aff1 = 1) for core 4
+of a four-core system and refuses PSCI CPU_ON for it.
+
+The bit cannot come from mp-affinity, which must hold the affinity
+fields alone: PSCI and the GICv3 compare it with the affinity an MPIDR
+names. Add an "mpidr-mt" property, off by default, which sets MT in
+MPIDR_EL1 and so in VMPIDR_EL2's reset value, for boards that model such
+cores to set.
+---
+ target/arm/cpu.c    | 1 +
+ target/arm/cpu.h    | 5 +++++
+ target/arm/helper.c | 3 +++
+ 3 files changed, 9 insertions(+)
+
+diff --git a/target/arm/cpu.c b/target/arm/cpu.c
+index 787e4dc..49168cc 100644
+--- a/target/arm/cpu.c
++++ b/target/arm/cpu.c
+@@ -2489,6 +2489,7 @@ static const Property arm_cpu_properties[] = {
+     DEFINE_PROP_UINT64("midr", ARMCPU, midr, 0),
+     DEFINE_PROP_UINT64("mp-affinity", ARMCPU,
+                         mp_affinity, ARM64_AFFINITY_INVALID),
++    DEFINE_PROP_BOOL("mpidr-mt", ARMCPU, mp_is_mt, false),
+     DEFINE_PROP_INT32("node-id", ARMCPU, node_id, CPU_UNSET_NUMA_NODE_ID),
+     DEFINE_PROP_INT32("core-count", ARMCPU, core_count, -1),
+     /* True to default to the backward-compat old CNTFRQ rather than 1Ghz */
+diff --git a/target/arm/cpu.h b/target/arm/cpu.h
+index c0492c8..cc92738 100644
+--- a/target/arm/cpu.h
++++ b/target/arm/cpu.h
+@@ -1056,6 +1056,11 @@ struct ArchCPU {
+ 
+     /* Uniprocessor system with MP extensions */
+     bool mp_is_up;
++    /*
++     * MPIDR.MT: the lowest affinity level numbers the threads of a core,
++     * so the core number is in Aff1
++     */
++    bool mp_is_mt;
+ 
+     /* True if we tried kvm_arm_host_cpu_features() during CPU instance_init
+      * and the probe failed (so we need to report the error in realize)
+diff --git a/target/arm/helper.c b/target/arm/helper.c
+index 7755c8f..40cb37c 100644
+--- a/target/arm/helper.c
++++ b/target/arm/helper.c
+@@ -3029,6 +3029,9 @@ static uint64_t mpidr_read_val(CPUARMState *env)
+         if (cpu->mp_is_up) {
+             mpidr |= (1u << 30);
+         }
++        if (cpu->mp_is_mt) {
++            mpidr |= (1u << 24);
++        }
+     }
+     return mpidr;
+ }
