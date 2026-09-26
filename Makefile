@@ -157,9 +157,22 @@ clean:
 # distclean removes a directory only when this repository made it, since
 # each of these variables can point anywhere: a build directory carries
 # configure's stamp, an export the marker scripts/qemu-tree writes, and the
-# schema directory holds nothing but the schema and its clone
+# schema directory holds nothing but the schema and its clone. A directory
+# that holds a repository is never a build directory, whatever it carries:
+# not this one or a parent of it ('make configure BUILD_DIR=.' leaves the
+# stamp in the checkout), and not another checkout (qemu/ included).
+ROOT := $(realpath $(CURDIR))
+
 define rm_made
-@if [ -e '$(1)' ] && ! { [ -d '$(1)' ] && $(2); }; then \
+@if [ -d '$(1)' ]; then \
+	d=$$(cd '$(1)' && pwd -P) && case '$(ROOT)/' in "$${d%/}/"*) \
+		echo "distclean: $(1) holds this repository, leaving it" >&2; exit 1;; \
+	esac; \
+	if [ -e '$(1)/.git' ]; then \
+		echo "distclean: $(1) is a checkout, leaving it" >&2; exit 1; \
+	fi; \
+fi; \
+if [ -e '$(1)' ] && ! { [ -d '$(1)' ] && $(2); }; then \
 	echo "distclean: $(1) was not made here, leaving it" >&2; exit 1; \
 fi; rm -rf '$(1)'
 endef
