@@ -484,14 +484,22 @@ cmd_export() {
         [ -n "${slugs[$slug]:-}" ] || die "series.map: no patch named $slug"
     done
 
-    # Commits need a committer; a Signed-off-by must be the user's own
-    if [ -n "$signoff" ]; then
-        { git config user.name && git config user.email; } >/dev/null ||
-            die "--signoff needs git config user.name and user.email"
-    elif ! git var GIT_COMMITTER_IDENT >/dev/null 2>&1; then
-        export GIT_COMMITTER_NAME=qemu-tree
-        export GIT_COMMITTER_EMAIL=qemu-tree@localhost
+    # Commits need a committer, and a Signed-off-by must be the user's own.
+    # They are made in a worktree of qemu/, which has a config of its own,
+    # so resolve the identity here and hand it on explicitly.
+    local ident name email
+    if ident=$(git -C "$ROOT" -c user.useConfigOnly=true \
+               var GIT_COMMITTER_IDENT 2>/dev/null); then
+        name=${ident% <*}
+        email=${ident#*<}
+        email=${email%%>*}
+    elif [ -n "$signoff" ]; then
+        die "--signoff needs git config user.name and user.email"
+    else
+        name=qemu-tree
+        email=qemu-tree@localhost
     fi
+    export GIT_COMMITTER_NAME=$name GIT_COMMITTER_EMAIL=$email
 
     # The series is based on the revision the superproject pins, whatever
     # qemu/ has checked out
