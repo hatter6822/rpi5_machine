@@ -21,7 +21,8 @@ OVERLAY_SRCS := $(shell cd overlay && find . -name '*.[ch]' | sed 's|^\./||')
 
 .DEFAULT_GOAL := build
 .PHONY: FORCE help setup apply unapply status configure build guest check \
-        check-qtest check-smoke checkpatch run-hello clean distclean
+        check-qtest check-smoke check-minimal checkpatch run-hello clean \
+        distclean
 
 help:
 	@echo 'setup        initialise the qemu submodule and apply the overlay'
@@ -32,6 +33,7 @@ help:
 	@echo 'build        build qemu-system-aarch64 (default target)'
 	@echo 'guest        build the bare-metal test guests (clang + lld)'
 	@echo 'check        run the raspi5b qtest and the smoke tests'
+	@echo 'check-minimal build QEMU with raspi5b as its only board, run check on it'
 	@echo 'checkpatch   run QEMU checkpatch.pl over overlay sources and patches'
 	@echo 'run-hello    boot the hello guest interactively'
 	@echo 'clean        remove guest builds; distclean also removes $$(BUILD_DIR)'
@@ -76,6 +78,22 @@ guest:
 
 check: check-qtest check-smoke
 
+# A QEMU containing the raspi5b machine and nothing else, which proves that
+# the machine selects every device it needs by itself, without the other
+# Raspberry Pi boards (CONFIG_RASPI). configure looks the device file up
+# relative to qemu/configs/devices/aarch64-softmmu/.
+MINIMAL_BUILD_DIR ?= build-minimal
+MINIMAL_DEVICES   := tests/configs/raspi5b-only
+MINIMAL_CONFIGURE_FLAGS := --without-default-devices \
+	--with-devices-aarch64=../../../../$(MINIMAL_DEVICES)
+
+check-minimal:
+	$(MAKE) BUILD_DIR=$(MINIMAL_BUILD_DIR) \
+		EXTRA_CONFIGURE_FLAGS='$(MINIMAL_CONFIGURE_FLAGS)' check
+	@! grep -qx 'CONFIG_RASPI=y' \
+		$(MINIMAL_BUILD_DIR)/aarch64-softmmu-config-devices.mak || \
+		{ echo 'check-minimal: CONFIG_RASPI is enabled' >&2; exit 1; }
+
 check-qtest: build $(QTEST_BIN)
 	QTEST_QEMU_BINARY=$(abspath $(QEMU_BIN)) $(QTEST_BIN) --tap
 
@@ -101,4 +119,4 @@ clean:
 	$(MAKE) -C $(GUEST_DIR) OUT=$(GUEST_BUILD) clean
 
 distclean: clean
-	rm -rf $(BUILD_DIR)
+	rm -rf $(BUILD_DIR) $(MINIMAL_BUILD_DIR)

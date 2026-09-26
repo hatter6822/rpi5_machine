@@ -1,8 +1,10 @@
 # QEMU build directory (see BUILD_DIR in the Makefile)
 /build/
+/build-minimal/
 
 # Bare-metal guest objects
 /tests/guest/build/
+/build-minimal/
 
 __pycache__/
 *.py[co]

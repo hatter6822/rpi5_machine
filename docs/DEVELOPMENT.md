@@ -104,6 +104,7 @@ We follow upstream QEMU conventions so the code can be submitted unchanged:
 | --- | --- | --- |
 | Register-level device tests | `overlay/tests/qtest/*-test.c` | `make check-qtest` |
 | Bare-metal guests over UART | `tests/guest/`, `tests/smoke/` | `make check-smoke` |
+| Both, on a QEMU whose only board is `raspi5b` | `tests/configs/raspi5b-only.mak` | `make check-minimal` |
 | Linux / firmware boots | `overlay/tests/functional/aarch64/` (planned, WS9.3) | QEMU functional test runner |
 
 Each new device lands with a qtest for its registers and reset values. The

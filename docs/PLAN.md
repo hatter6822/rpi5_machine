@@ -59,11 +59,12 @@ commit (or a short series) with its own tests.
 
 ## 2. Current state
 
-Delivered by the boilerplate (WS0.1–WS0.3):
+Delivered so far (WS0.1–WS0.3, WS0.6):
 
 | Area | State |
 | --- | --- |
-| Repository | pinned QEMU v11.1.1 submodule, overlay + patch series managed by `scripts/qemu-tree`, CI with ccache |
+| Repository | pinned QEMU v11.1.1 submodule, overlay + patch series (patches may share files, like an upstream series) managed by `scripts/qemu-tree`, CI with ccache |
+| Kconfig (WS0.6) | every BCM283x device model has its own symbol, so `bcm2712` can select just the models it reuses; a `raspi5b`-only build is tested (`make check-minimal`) |
 | SoC (`bcm2712`) | 1–4 Cortex-A76 (`MPIDR.Aff1` = core, CNTFRQ 54 MHz, optional EL3), GIC-400 with 288 SPIs, 5 priority bits and all timer/maintenance PPIs, UART10 (PL011), complete memory map with T0 placeholders and two catch-all windows |
 | Board (`raspi5b`) | 1/2/4/8/16 GiB RAM, board revision code, PSCI over SMC with EL2 entry (default) or guest-owned EL3 (`secure=on`), DTB fix-ups for unmodelled devices, `/system/linux,revision` |
 | Tests | qtest (UART IDs, GIC geometry, priority bits and security, RAM, placeholders), bare-metal smoke guest (EL, MPIDR, CNTFRQ, PSCI CPU_ON on all cores, SYSTEM_OFF, EL3 mode) |
@@ -246,10 +247,22 @@ series a maintainer will review.
 `git am`, builds at every commit, and passes checkpatch; the M0+M1 cover
 letter exists.
 
-#### WS0.6 Decouple BCM283x models from `CONFIG_RASPI` (S, upstream-first)
-Today `bcm2835_systmr.c`, `bcm2835_mbox.c`, `bcm2835_property.c`,
+#### WS0.6 Decouple BCM283x models from `CONFIG_RASPI` (done; to be posted upstream)
+*Delivered:* `patches/0001-hw-Add-a-Kconfig-symbol-for-each-BCM283x-device-model.patch`,
+first in the series so that it can be posted on its own; `make check-minimal`
+builds and tests a QEMU whose only board is `raspi5b` (`CONFIG_RASPI=n`).
+Posting to qemu-devel waits for the human author's `Signed-off-by:` (WS9.7).
+The raspi5b-only build also exposed an upstream link failure: QEMU 11.1
+builds `target/arm/tcg/gicv5-cpuif.c` unconditionally but the GICv5
+helpers it calls only with `CONFIG_ARM_GICV5`, and the TCG stub for
+`define_gicv5_cpuif_regs()` asserts. `tests/configs/raspi5b-only.mak`
+enables `ARM_GICV5` as a workaround; *follow-up (S):* post the fix
+(build the file only with `ARM_GICV5`, make the stub a no-op for CPUs
+without FEAT_GCIE) alongside this patch.
+
+Before this unit `bcm2835_systmr.c`, `bcm2835_mbox.c`, `bcm2835_property.c`,
 `bcm2835_powermgt.c`, `bcm2835_rng.c`, `bcm2835_thermal.c`, `bcm2835_fb.c`,
-`bcm2835_dma.c` and friends are only built under the board symbol
+`bcm2835_dma.c` and friends were only built under the board symbol
 `CONFIG_RASPI` (`hw/*/meson.build`). Introduce per-device symbols
 (`BCM2835_SYSTMR`, `BCM2835_MBOX`, `BCM2835_PROPERTY`, `BCM2835_FB`, ...)
 selected by `RASPI`, and let `BCM2712` select only what it reuses.

@@ -58,5 +58,9 @@ jobs:
       - name: Test
         run: make check
 
+      # Proves the machine selects every device it needs by itself
+      - name: Build and test with raspi5b as the only board
+        run: make check-minimal
+
       - name: Compiler cache statistics
         run: ccache --show-stats

@@ -43,6 +43,7 @@ patches/       changes to existing QEMU files (git format-patch series)
 scripts/       qemu-tree: applies the overlay and patches, creates/refreshes patches
 tests/guest/   bare-metal test guests (clang + lld, no GCC cross toolchain)
 tests/smoke/   end-to-end tests that boot the guests
+tests/configs/ QEMU device configurations for test builds
 docs/          plan, development guide, hardware reference
 ```
 
@@ -67,6 +68,7 @@ $ sudo apt install build-essential python3-venv ninja-build \
 | `make setup` | fetch the pinned QEMU and apply the overlay |
 | `make build` | configure (aarch64-softmmu only) and build `build/qemu-system-aarch64` |
 | `make check` | run the `raspi5b` qtest and the bare-metal smoke tests |
+| `make check-minimal` | build a QEMU whose only board is `raspi5b` (in `build-minimal/`) and run the same tests on it |
 | `make checkpatch` | run QEMU's `checkpatch.pl` over our sources and patches |
 | `make status` | show overlay/patch state and any unmanaged edits in `qemu/` |
 | `make unapply` | return `qemu/` to the pristine pinned commit |
