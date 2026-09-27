@@ -18,7 +18,7 @@ No functional change for the existing boards.
  2 files changed, 54 insertions(+), 15 deletions(-)
 
 diff --git a/hw/misc/bcm2835_property.c b/hw/misc/bcm2835_property.c
-index c9abd9b..70f2ff3 100644
+index c9abd9bd..70f2ff3e 100644
 --- a/hw/misc/bcm2835_property.c
 +++ b/hw/misc/bcm2835_property.c
 @@ -33,18 +33,16 @@
@@ -108,7 +108,7 @@ index c9abd9b..70f2ff3 100644
      .instance_init = bcm2835_property_init,
  };
 diff --git a/include/hw/misc/bcm2835_property.h b/include/hw/misc/bcm2835_property.h
-index 2ca6ddf..7572d85 100644
+index 2ca6ddf7..7572d85b 100644
 --- a/include/hw/misc/bcm2835_property.h
 +++ b/include/hw/misc/bcm2835_property.h
 @@ -15,7 +15,8 @@

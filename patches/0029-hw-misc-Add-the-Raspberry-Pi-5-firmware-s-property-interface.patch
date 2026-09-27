@@ -30,44 +30,45 @@ guest sets it, the alarm goes pending when the time reaches it, and the
 backup battery's charger keeps a voltage within its range. On a Pi 5
 the alarm powers a halted board back on, which QEMU leaves out.
 ---
- hw/misc/Kconfig                      | 4 ++++
+ hw/misc/Kconfig                      | 5 +++++
  hw/misc/meson.build                  | 1 +
  hw/misc/trace-events                 | 8 ++++++++
  include/hw/arm/raspberrypi-fw-defs.h | 2 ++
- 4 files changed, 15 insertions(+)
+ 4 files changed, 16 insertions(+)
 
 diff --git a/hw/misc/Kconfig b/hw/misc/Kconfig
-index 9b2f207..928ad1a 100644
+index dcb97722..00327b7d 100644
 --- a/hw/misc/Kconfig
 +++ b/hw/misc/Kconfig
-@@ -262,6 +262,10 @@ source macio/Kconfig
+@@ -265,6 +265,11 @@ config BCM2711_AVS_MONITOR
  config BCM2711_RNG200
      bool
  
 +config BCM2712_PROPERTY
 +    bool
++    select BCM2711_AVS_MONITOR
 +    select BCM2835_PROPERTY
 +
  config BCM2835_CPRMAN
      bool
  
 diff --git a/hw/misc/meson.build b/hw/misc/meson.build
-index f4f8cf7..106ddf9 100644
+index 13e0748f..0505f5fa 100644
 --- a/hw/misc/meson.build
 +++ b/hw/misc/meson.build
-@@ -87,6 +87,7 @@ system_ss.add(when: 'CONFIG_OMAP', if_true: files(
-   'omap_clk.c',
+@@ -88,6 +88,7 @@ system_ss.add(when: 'CONFIG_OMAP', if_true: files(
  ))
+ system_ss.add(when: 'CONFIG_BCM2711_AVS_MONITOR', if_true: files('bcm2711_avs_monitor.c'))
  system_ss.add(when: 'CONFIG_BCM2711_RNG200', if_true: files('bcm2711_rng200.c'))
 +system_ss.add(when: 'CONFIG_BCM2712_PROPERTY', if_true: files('bcm2712_property.c'))
  system_ss.add(when: 'CONFIG_BCM2835_CPRMAN', if_true: files('bcm2835_cprman.c'))
  system_ss.add(when: 'CONFIG_BCM2835_MBOX', if_true: files('bcm2835_mbox.c'))
  system_ss.add(when: 'CONFIG_BCM2835_MPHI', if_true: files('bcm2835_mphi.c'))
 diff --git a/hw/misc/trace-events b/hw/misc/trace-events
-index b29b0ed..2051af6 100644
+index c28b9fb8..77b82232 100644
 --- a/hw/misc/trace-events
 +++ b/hw/misc/trace-events
-@@ -343,6 +343,14 @@ aspeed_hace_hexdump(const char *desc, uint32_t offset, char *s) "%s: 0x%08x: %s"
+@@ -347,6 +347,14 @@ bcm2711_avs_monitor_temperature(int32_t temperature) "%" PRId32 " millidegrees C
  bcm2711_rng200_read(uint64_t offset, uint32_t value) "offset 0x%02" PRIx64 " value 0x%08" PRIx32
  bcm2711_rng200_write(uint64_t offset, uint64_t value) "offset 0x%02" PRIx64 " value 0x%08" PRIx64
  
@@ -83,7 +84,7 @@ index b29b0ed..2051af6 100644
  bcm2835_mbox_property(uint32_t tag, uint32_t bufsize, size_t resplen) "mbox property tag:0x%08x in_sz:%u out_sz:%zu"
  
 diff --git a/include/hw/arm/raspberrypi-fw-defs.h b/include/hw/arm/raspberrypi-fw-defs.h
-index bee0dd6..bcb3354 100644
+index bee0dd63..bcb3354f 100644
 --- a/include/hw/arm/raspberrypi-fw-defs.h
 +++ b/include/hw/arm/raspberrypi-fw-defs.h
 @@ -80,6 +80,8 @@ enum rpi_firmware_property_tag {

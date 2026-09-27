@@ -72,6 +72,7 @@ const MemMapEntry bcm2712_memmap[BCM2712_NUM_DEVICES] = {
     [BCM2712_L2_INTC]       = { 0x107d517000, 0x10 },
     [BCM2712_MAIN_AON_IRQ]  = { 0x107d517ac0, 0x10 },
     [BCM2712_GIO_AON]       = { 0x107d517c00, 0x40 },
+    [BCM2712_AVS]           = { 0x107d542000, 0xf00 },
     [BCM2712_GIC]           = { 0x107fff8000, 0x8000 },
 };
 
@@ -114,6 +115,7 @@ static const char *const bcm2712_device_names[BCM2712_NUM_DEVICES] = {
     [BCM2712_L2_INTC]       = "bcm2712.l2-intc",
     [BCM2712_MAIN_AON_IRQ]  = "bcm2712.main-aon-irq",
     [BCM2712_GIO_AON]       = "bcm2712.gio-aon",
+    [BCM2712_AVS]           = "bcm2712.avs-monitor",
     [BCM2712_GIC]           = "bcm2712.gic",
 };
 
@@ -355,6 +357,8 @@ static void bcm2712_init(Object *obj)
                             TYPE_BCM2835_SYSTIMER);
     object_initialize_child(obj, "pm", &s->pm, TYPE_BCM2835_POWERMGT);
     object_initialize_child(obj, "rng", &s->rng, TYPE_BCM2711_RNG200);
+    object_initialize_child(obj, "avs-monitor", &s->avs,
+                            TYPE_BCM2711_AVS_MONITOR);
 
     memory_region_init(&s->mbox_chans, obj, "bcm2712.mbox-channels",
                        MBOX_CHAN_COUNT << MBOX_AS_CHAN_SHIFT);
@@ -545,6 +549,20 @@ static bool bcm2712_realize_rng(BCM2712State *s, Error **errp)
     return true;
 }
 
+/* The AVS monitor, whose temperature code converts as the Pi 5's trees say */
+static bool bcm2712_realize_avs(BCM2712State *s, Error **errp)
+{
+    SysBusDevice *sbd = SYS_BUS_DEVICE(&s->avs);
+
+    qdev_prop_set_int32(DEVICE(sbd), "slope", BCM2712_AVS_TEMP_SLOPE);
+    qdev_prop_set_int32(DEVICE(sbd), "offset", BCM2712_AVS_TEMP_OFFSET);
+    if (!sysbus_realize(sbd, errp)) {
+        return false;
+    }
+    bcm2712_map(sbd, 0, BCM2712_AVS);
+    return true;
+}
+
 /* Offset of MAIL0_READ in the bcm2835-mbox MMIO region */
 #define BCM2712_MBOX_REGS_OFFSET    0x80
 
@@ -616,7 +634,9 @@ static bool bcm2712_realize_vc(BCM2712State *s, Error **errp)
                                      errp) ||
         !sysbus_realize(SYS_BUS_DEVICE(&s->otp), errp) ||
         !object_property_set_uint(OBJECT(&s->property), "dma-channel-mask",
-                                  BCM2712_DMA_CHANNEL_MASK, errp)) {
+                                  BCM2712_DMA_CHANNEL_MASK, errp) ||
+        !object_property_set_link(OBJECT(&s->property), "avs-monitor",
+                                  OBJECT(&s->avs), errp)) {
         return false;
     }
     return bcm2712_realize_mbox_client(s, SYS_BUS_DEVICE(&s->property),
@@ -676,8 +696,8 @@ static void bcm2712_realize(DeviceState *dev, Error **errp)
         !bcm2712_realize_pinctrl(&s->pinctrl_aon, BCM2712_PINCTRL_AON, errp) ||
         !bcm2712_realize_ddcs(s, errp) || !bcm2712_realize_sdios(s, errp) ||
         !bcm2712_realize_systimer(s, errp) || !bcm2712_realize_pm(s, errp) ||
-        !bcm2712_realize_rng(s, errp) || !bcm2712_realize_vc(s, errp) ||
-        !bcm2712_realize_uarts(s, errp)) {
+        !bcm2712_realize_rng(s, errp) || !bcm2712_realize_avs(s, errp) ||
+        !bcm2712_realize_vc(s, errp) || !bcm2712_realize_uarts(s, errp)) {
         return;
     }
 
@@ -998,6 +1018,41 @@ static void bcm2712_fdt_sdios(void *fdt, uint32_t clk_emmc2)
     }
 }
 
+/*
+ * The AVS monitor and its temperature sensor, as the firmware's tree has
+ * them, and the thermal zone of the Pi 5's trees, which converts the
+ * sensor's code and has Linux shut down at the critical temperature. Their
+ * other trips switch the fan, which is behind RP1.
+ */
+static void bcm2712_fdt_avs(void *fdt)
+{
+    static const char compat[] =
+        "brcm,bcm2711-avs-monitor\0syscon\0simple-mfd";
+    const char *zone = "/thermal-zones/cpu-thermal";
+    const char *crit = "/thermal-zones/cpu-thermal/trips/cpu-crit";
+    g_autofree char *avs = bcm2712_fdt_soc_node(fdt, "avs-monitor",
+                                                BCM2712_AVS, compat,
+                                                sizeof(compat));
+    g_autofree char *sensor = g_strdup_printf("%s/thermal", avs);
+    uint32_t phandle = qemu_fdt_alloc_phandle(fdt);
+
+    qemu_fdt_add_subnode(fdt, sensor);
+    qemu_fdt_setprop_string(fdt, sensor, "compatible", "brcm,bcm2711-thermal");
+    qemu_fdt_setprop_cell(fdt, sensor, "#thermal-sensor-cells", 0);
+    qemu_fdt_setprop_cell(fdt, sensor, "phandle", phandle);
+
+    qemu_fdt_add_path(fdt, crit);
+    qemu_fdt_setprop_cell(fdt, zone, "polling-delay-passive", 1000);
+    qemu_fdt_setprop_cell(fdt, zone, "polling-delay", 1000);
+    qemu_fdt_setprop_cells(fdt, zone, "coefficients",
+                           (uint32_t)BCM2712_AVS_TEMP_SLOPE,
+                           BCM2712_AVS_TEMP_OFFSET);
+    qemu_fdt_setprop_cell(fdt, zone, "thermal-sensors", phandle);
+    qemu_fdt_setprop_cell(fdt, crit, "temperature", BCM2712_TEMP_CRITICAL);
+    qemu_fdt_setprop_cell(fdt, crit, "hysteresis", 0);
+    qemu_fdt_setprop_string(fdt, crit, "type", "critical");
+}
+
 char *bcm2712_fdt_node_path(void *fdt, BCM2712Device dev)
 {
     g_autofree char *unit = g_strdup_printf("@%x",
@@ -1063,6 +1118,7 @@ void bcm2712_fdt_populate(BCM2712State *s, void *fdt)
     qemu_fdt_setprop_cell(fdt, "/", "interrupt-parent", gic);
     bcm2712_fdt_cpu_irqs(s, fdt, cpu_phandles);
 
+    bcm2712_fdt_avs(fdt);
     bcm2712_fdt_l2_intcs(fdt, l2_phandles);
     bcm2712_fdt_gpios(fdt, l2_phandles);
     bcm2712_fdt_pinctrls(fdt);

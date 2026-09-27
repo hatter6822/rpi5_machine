@@ -38,6 +38,16 @@ Implemented devices
   in the 3 MiB left (all of 1024 x 768 at 32 bits per pixel)
 * RNG200 random number generator at ``0x10_7d20_8000``, fed by QEMU's
   random source (reproducible with ``-seed``)
+* The AVS monitor's temperature sensor at ``0x10_7d54_2000``, which
+  Linux's ``bcm2711_thermal`` driver reads for ``thermal_zone0``. It
+  reports the SoC's temperature, 25 degrees C by default, in steps of
+  0.55 degrees C from -112.65 to 450 degrees C. The ``temperature``
+  property of ``bcm2711-avs-monitor``, in millidegrees C, sets it:
+  ``-global bcm2711-avs-monitor.temperature=65000`` at startup, or
+  ``qom-set /machine/soc/avs-monitor temperature 65000`` while the
+  machine runs; a value beyond the range is refused. At 110 degrees C,
+  the critical trip in both device trees, Linux powers the machine off.
+  The monitor's other registers read as zero and ignore writes
 * The seven Broadcom level 2 interrupt controllers of the firmware's
   device tree, each in front of one SPI: the edge-latching layout
   (``brcm,l2-intc``) for the display, the always-on block and the
@@ -208,7 +218,9 @@ the older Pis' firmware does not, the channel answers as the Pi 5's:
   off at boot. Linux's ``raspberrypi-power`` switches them; no modelled
   device depends on their states. A domain that does not exist stays off,
   and a device that does not exist says so;
-* the temperature limit: 85 degrees C, ``config.txt``'s ``temp_limit``;
+* temperatures: the SoC's, which ``vcgencmd measure_temp`` reports, as
+  the AVS monitor's sensor reads it, and the limit, 85 degrees C,
+  ``config.txt``'s ``temp_limit``;
 * reboot flags: a guest sets them before a reset, as Linux does for
   ``reboot "0 tryboot"``, and the next boot takes them: its device tree
   reports the tryboot, as described below. The reboot notification that
@@ -280,7 +292,9 @@ Without ``-dtb``, the machine generates a device tree describing what it
 models, derived from its memory map: the CPUs with PSCI, the generic timer,
 the PMU, the GIC, the system timer, the mailbox and the firmware interface
 with its clocks, reset controller, power domains and real-time clock, the
-PM block, the RNG, the level 2 interrupt controllers, the GPIO blocks
+PM block, the RNG, the AVS monitor with its temperature sensor and the
+thermal zone Linux reads it through, the level 2 interrupt controllers,
+the GPIO blocks
 and their pin controllers, the HDMI ports' DDC I2C controllers, the power
 button with the state of its pin (GPIO, pulled up), the activity LED,
 UART10 (``serial10``, the ``stdout-path``) and UARTA, the SD hosts (the

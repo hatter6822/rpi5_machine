@@ -22,6 +22,7 @@
 #define SOC_WINDOW_BASE         0x107c000000ULL
 #define HVS_BASE                0x107c580000ULL
 #define RNG_BASE                0x107d208000ULL
+#define AVS_BASE                0x107d542000ULL
 
 #define PL011_PERIPHID0         0xfe0
 #define PL011_PERIPHID1         0xfe4
@@ -80,6 +81,7 @@
 #define FW_TAG_SET_POWER_STATE  0x00028001
 #define FW_TAG_DOMAIN_STATE     0x00030030
 #define FW_TAG_SET_DOMAIN_STATE 0x00038030
+#define FW_TAG_TEMPERATURE      0x00030006
 #define FW_TAG_MAX_TEMPERATURE  0x0003000a
 #define FW_TAG_NOTIFY_REBOOT    0x00030048
 #define FW_TAG_REBOOT_FLAGS     0x00030064
@@ -1729,6 +1731,179 @@ static void test_rng_seed(void)
         qtest_quit(qts);
     }
     g_assert_cmpmem(words[0], sizeof(words[0]), words[1], sizeof(words[1]));
+}
+
+/*
+ * The AVS monitor's temperature sensor (Linux's bcm2711_thermal.c): a
+ * 10-bit code, which the Pi 5's trees convert to millidegrees Celsius as
+ * -550 * code + 450000
+ */
+#define AVS_SIZE                0xf00
+#define AVS_RO_TEMP_STATUS      0x200
+#define AVS_TEMP_VALID          (BIT(16) | BIT(10))
+#define AVS_TEMP_CODE           0x3ff
+#define AVS_PATH                "/machine/soc/avs-monitor"
+
+static int64_t qom_get_int(QTestState *qts, const char *path,
+                           const char *property)
+{
+    QDict *rsp = qtest_qmp(qts, "{ 'execute': 'qom-get', 'arguments':"
+                           " { 'path': %s, 'property': %s } }",
+                           path, property);
+    int64_t val;
+
+    g_assert(qdict_haskey(rsp, "return"));
+    val = qdict_get_int(rsp, "return");
+    qobject_unref(rsp);
+    return val;
+}
+
+/* Set the chip's temperature: false if the sensor cannot report it */
+static bool avs_set_temperature(QTestState *qts, int64_t temperature)
+{
+    QDict *rsp = qtest_qmp(qts, "{ 'execute': 'qom-set', 'arguments':"
+                           " { 'path': %s, 'property': 'temperature',"
+                           "   'value': %" PRId64 " } }",
+                           AVS_PATH, temperature);
+    bool ok = qdict_haskey(rsp, "return");
+
+    qobject_unref(rsp);
+    return ok;
+}
+
+/* The code the sensor reports, marked valid */
+static uint32_t avs_code(QTestState *qts)
+{
+    uint32_t status = qtest_readl(qts, AVS_BASE + AVS_RO_TEMP_STATUS);
+
+    g_assert_cmphex(status & ~AVS_TEMP_CODE, ==, AVS_TEMP_VALID);
+    return status & AVS_TEMP_CODE;
+}
+
+/* The temperature the trees' coefficients make of @code */
+static int32_t avs_code_temperature(uint32_t code)
+{
+    return 450000 - 550 * (int32_t)code;
+}
+
+/* The firmware's reading, the same */
+static void check_avs_code(QTestState *qts, uint32_t code)
+{
+    g_assert_cmpuint(avs_code(qts), ==, code);
+    g_assert_cmpint((int32_t)fw_request(qts, FW_TAG_TEMPERATURE, 0, 0), ==,
+                    avs_code_temperature(code));
+}
+
+/*
+ * 25 degrees C unless set, and the chip's temperature changes at run time:
+ * the sensor, and the firmware, report the nearest code, a code and a half
+ * rounding to the lower temperature. One the code cannot reach is refused.
+ */
+static void test_avs_temperature(void)
+{
+    static const struct {
+        int32_t temperature;
+        uint32_t code;
+    } steps[] = {
+        { 54000, 720 },
+        { 54100, 720 },
+        { 54275, 720 },
+        { 54276, 719 },         /* 54.55 degrees C */
+        { -40000, 891 },        /* -40.05 degrees C */
+        { 450274, 0 },
+        { -112924, 1023 },
+    };
+    QTestState *qts = qtest_init("-machine raspi5b");
+
+    g_assert_cmpint(qom_get_int(qts, AVS_PATH, "slope"), ==, -550);
+    g_assert_cmpint(qom_get_int(qts, AVS_PATH, "offset"), ==, 450000);
+    g_assert_cmpint(qom_get_int(qts, AVS_PATH, "temperature"), ==, 25000);
+    check_avs_code(qts, 773);   /* 24.85 degrees C */
+
+    for (int i = 0; i < ARRAY_SIZE(steps); i++) {
+        g_assert_true(avs_set_temperature(qts, steps[i].temperature));
+        g_assert_cmpint(qom_get_int(qts, AVS_PATH, "temperature"), ==,
+                        steps[i].temperature);
+        check_avs_code(qts, steps[i].code);
+    }
+
+    g_assert_false(avs_set_temperature(qts, 450275));
+    g_assert_false(avs_set_temperature(qts, -112925));
+    g_assert_false(avs_set_temperature(qts, 1LL << 32));
+    g_assert_cmpint(qom_get_int(qts, AVS_PATH, "temperature"), ==, -112924);
+    check_avs_code(qts, 1023);
+
+    qtest_quit(qts);
+}
+
+/* The temperature from the command line */
+static void test_avs_global(void)
+{
+    QTestState *qts = qtest_init("-machine raspi5b"
+                                 " -global bcm2711-avs-monitor.temperature="
+                                 "65000");
+
+    check_avs_code(qts, 700);
+
+    qtest_quit(qts);
+}
+
+/* The other registers read as 0, and writes change nothing */
+static void test_avs_registers(void)
+{
+    QTestState *qts = qtest_init("-machine raspi5b");
+
+    for (uint32_t reg = 0; reg < AVS_SIZE; reg += 4) {
+        qtest_writel(qts, AVS_BASE + reg, UINT32_MAX);
+    }
+    for (uint32_t reg = 0; reg < AVS_SIZE; reg += 4) {
+        if (reg != AVS_RO_TEMP_STATUS) {
+            g_assert_cmphex(qtest_readl(qts, AVS_BASE + reg), ==, 0);
+        }
+    }
+    check_avs_code(qts, 773);
+
+    qtest_quit(qts);
+}
+
+/* A reset leaves the chip at its temperature */
+static void test_avs_reset(void)
+{
+    QTestState *qts = qtest_init("-machine raspi5b");
+
+    g_assert_true(avs_set_temperature(qts, 65000));
+    qtest_system_reset(qts);
+    g_assert_cmpint(qom_get_int(qts, AVS_PATH, "temperature"), ==, 65000);
+    check_avs_code(qts, 700);
+
+    qtest_quit(qts);
+}
+
+/* The temperature survives migration */
+static void test_avs_migrate(void)
+{
+    g_autofree char *file = g_strdup_printf("%s/raspi5b-avs-%d.mig",
+                                            g_get_tmp_dir(), getpid());
+    g_autofree char *out = g_strdup_printf("exec:cat > %s", file);
+    g_autofree char *in = g_strdup_printf("exec:cat %s", file);
+    QTestState *src, *dst;
+
+    src = qtest_init("-machine raspi5b");
+    g_assert_true(avs_set_temperature(src, 65000));
+    qtest_qmp_assert_success(src, "{ 'execute': 'migrate',"
+                             "  'arguments': { 'uri': %s } }", out);
+    wait_for_migration(src);
+    qtest_quit(src);
+
+    dst = qtest_init("-machine raspi5b -incoming defer");
+    qtest_qmp_assert_success(dst, "{ 'execute': 'migrate-incoming',"
+                             "  'arguments': { 'uri': %s } }", in);
+    wait_for_migration(dst);
+    g_assert_cmpint(qom_get_int(dst, AVS_PATH, "temperature"), ==, 65000);
+    check_avs_code(dst, 700);
+
+    qtest_quit(dst);
+    unlink(file);
 }
 
 /*
@@ -4526,6 +4701,11 @@ int main(int argc, char **argv)
     qtest_add_func("/raspi5b/rng/soft-reset", test_rng_soft_reset);
     qtest_add_func("/raspi5b/rng/reset", test_rng_reset);
     qtest_add_func("/raspi5b/rng/seed", test_rng_seed);
+    qtest_add_func("/raspi5b/avs/temperature", test_avs_temperature);
+    qtest_add_func("/raspi5b/avs/global", test_avs_global);
+    qtest_add_func("/raspi5b/avs/registers", test_avs_registers);
+    qtest_add_func("/raspi5b/avs/reset", test_avs_reset);
+    qtest_add_func("/raspi5b/avs/migrate", test_avs_migrate);
     qtest_add_func("/raspi5b/l2-intc/reset-values",
                    test_l2_intc_reset_values);
     qtest_add_func("/raspi5b/l2-intc/outputs", test_l2_intc_outputs);

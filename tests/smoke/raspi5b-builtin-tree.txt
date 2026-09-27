@@ -50,9 +50,9 @@
     partition = <0x0>
     boot-mode = <0x3>
 /sd-io-1v8-reg
-    phandle = <0x801a>
+    phandle = <0x801b>
     states = <0x1b7740 0x1 0x325aa0 0x0>
-    gpios = <0x8011 0x3 0x0>
+    gpios = <0x8012 0x3 0x0>
     regulator-settling-time-us = <0x1388>
     regulator-always-on
     regulator-boot-on
@@ -61,8 +61,8 @@
     regulator-name = "vdd-sd-io"
     compatible = "regulator-gpio"
 /sd-vcc-reg
-    phandle = <0x801b>
-    gpios = <0x8011 0x4 0x0>
+    phandle = <0x801c>
+    gpios = <0x8012 0x4 0x0>
     enable-active-high
     regulator-boot-on
     regulator-max-microvolt = <0x325aa0>
@@ -74,15 +74,15 @@
 /leds/led-act
     linux,default-trigger = "mmc0"
     default-state = "off"
-    gpios = <0x8011 0x9 0x1>
+    gpios = <0x8012 0x9 0x1>
     label = "ACT"
 /gpio-keys
-    pinctrl-0 = <0x8017>
+    pinctrl-0 = <0x8018>
     pinctrl-names = "default"
     compatible = "gpio-keys"
 /gpio-keys/power-button
     debounce-interval = <0x32>
-    gpios = <0x8012 0x14 0x1>
+    gpios = <0x8013 0x14 0x1>
     linux,code = <0x74>
     label = "pwr_button"
 /aliases
@@ -99,6 +99,17 @@
     reusable
     size = <0x0 0x4000000>
     compatible = "shared-dma-pool"
+/thermal-zones
+/thermal-zones/cpu-thermal
+    thermal-sensors = <0x800a>
+    coefficients = <0xfffffdda 0x6ddd0>
+    polling-delay = <0x3e8>
+    polling-delay-passive = <0x3e8>
+/thermal-zones/cpu-thermal/trips
+/thermal-zones/cpu-thermal/trips/cpu-crit
+    type = "critical"
+    hysteresis = <0x0>
+    temperature = <0x1adb0>
 /arm-pmu
     interrupt-affinity = <0x8008 0x8007 0x8006 0x8005>
     interrupts = <0x0 0x10 0x4 0x0 0x11 0x4 0x0 0x12 0x4 0x0 0x13 0x4>
@@ -170,8 +181,8 @@
     #address-cells = <0x1>
     compatible = "simple-bus"
 /soc@107c000000/firmware
-    phandle = <0x8016>
-    mboxes = <0x8015>
+    phandle = <0x8017>
+    mboxes = <0x8016>
     dma-ranges
     #size-cells = <0x1>
     #address-cells = <0x1>
@@ -184,22 +195,22 @@
     compatible = "raspberrypi,firmware-reset"
 /soc@107c000000/power
     #power-domain-cells = <0x1>
-    firmware = <0x8016>
+    firmware = <0x8017>
     compatible = "raspberrypi,bcm2835-power"
 /soc@107c000000/rpi_rtc
     trickle-charge-microvolt = <0x0>
-    firmware = <0x8016>
+    firmware = <0x8017>
     compatible = "raspberrypi,rpi-rtc"
 /soc@107c000000/mmc@fff000
-    cd-gpios = <0x8011 0x5 0x1>
+    cd-gpios = <0x8012 0x5 0x1>
     sd-uhs-sdr104
     sd-uhs-ddr50
     sd-uhs-sdr50
     bus-width = <0x4>
-    vmmc-supply = <0x801b>
-    vqmmc-supply = <0x801a>
+    vmmc-supply = <0x801c>
+    vqmmc-supply = <0x801b>
     pinctrl-names = "default"
-    pinctrl-0 = <0x8018 0x8019>
+    pinctrl-0 = <0x8019 0x801a>
     mmc-ddr-3_3v
     clock-names = "sw_sdio"
     clocks = <0x8001>
@@ -224,7 +235,7 @@
     reg = <0x7c003000 0x1000>
     compatible = "brcm,bcm2835-system-timer"
 /soc@107c000000/mailbox@7c013880
-    phandle = <0x8015>
+    phandle = <0x8016>
     #mbox-cells = <0x0>
     interrupts = <0x0 0x21 0x4>
     reg = <0x7c013880 0x40>
@@ -259,7 +270,7 @@
     #address-cells = <0x1>
     clock-frequency = <0x17cdc>
     interrupts = <0x1>
-    interrupt-parent = <0x800e>
+    interrupt-parent = <0x800f>
     reg = <0x7d508200 0x58>
     compatible = "brcm,brcmstb-i2c"
 /soc@107c000000/i2c@7d508280
@@ -267,28 +278,28 @@
     #address-cells = <0x1>
     clock-frequency = <0x17cdc>
     interrupts = <0x2>
-    interrupt-parent = <0x800e>
+    interrupt-parent = <0x800f>
     reg = <0x7d508280 0x58>
     compatible = "brcm,brcmstb-i2c"
 /soc@107c000000/pinctrl@7d504100
-    phandle = <0x8014>
+    phandle = <0x8015>
     reg = <0x7d504100 0x30>
     compatible = "brcm,bcm2712c0-pinctrl"
 /soc@107c000000/pinctrl@7d504100/emmc-sd-default-state
-    phandle = <0x8018>
+    phandle = <0x8019>
     bias-pull-up
     pins = "emmc_cmd", "emmc_dat0", "emmc_dat1", "emmc_dat2", "emmc_dat3"
 /soc@107c000000/pinctrl@7d504100/pwr-button-default-state
-    phandle = <0x8017>
+    phandle = <0x8018>
     bias-pull-up
     pins = "gpio20"
     function = "gpio"
 /soc@107c000000/pinctrl@7d510700
-    phandle = <0x8013>
+    phandle = <0x8014>
     reg = <0x7d510700 0x20>
     compatible = "brcm,bcm2712c0-aon-pinctrl"
 /soc@107c000000/pinctrl@7d510700/emmc-aon-cd-default-state
-    phandle = <0x8019>
+    phandle = <0x801a>
     bias-pull-up
     pins = "aon_gpio5"
     function = "sd_card_g"
@@ -296,69 +307,76 @@
     #interrupt-cells = <0x2>
     interrupt-controller
     interrupts = <0x0>
-    interrupt-parent = <0x800d>
-    phandle = <0x8012>
+    interrupt-parent = <0x800e>
+    phandle = <0x8013>
     brcm,gpio-bank-widths = <0x20 0x16>
     #gpio-cells = <0x2>
     gpio-controller
     reg = <0x7d508500 0x40>
     compatible = "brcm,bcm7445-gpio", "brcm,brcmstb-gpio"
 /soc@107c000000/gpio@7d517c00
-    phandle = <0x8011>
+    phandle = <0x8012>
     brcm,gpio-bank-widths = <0x11 0x6>
     #gpio-cells = <0x2>
     gpio-controller
     reg = <0x7d517c00 0x40>
     compatible = "brcm,bcm7445-gpio", "brcm,brcmstb-gpio"
 /soc@107c000000/interrupt-controller@7c502000
-    phandle = <0x8010>
+    phandle = <0x8011>
     #interrupt-cells = <0x1>
     interrupt-controller
     interrupts = <0x0 0x61 0x4>
     reg = <0x7c502000 0x30>
     compatible = "brcm,bcm2711-l2-intc", "brcm,l2-intc"
 /soc@107c000000/interrupt-controller@7d503000
-    phandle = <0x800f>
+    phandle = <0x8010>
     #interrupt-cells = <0x1>
     interrupt-controller
     interrupts = <0x0 0xee 0x4>
     reg = <0x7d503000 0x18>
     compatible = "brcm,l2-intc"
 /soc@107c000000/interrupt-controller@7d508380
-    phandle = <0x800e>
+    phandle = <0x800f>
     #interrupt-cells = <0x1>
     interrupt-controller
     interrupts = <0x0 0xf2 0x4>
     reg = <0x7d508380 0x10>
     compatible = "brcm,bcm7271-l2-intc"
 /soc@107c000000/interrupt-controller@7d508400
-    phandle = <0x800d>
+    phandle = <0x800e>
     #interrupt-cells = <0x1>
     interrupt-controller
     interrupts = <0x0 0xf4 0x4>
     reg = <0x7d508400 0x10>
     compatible = "brcm,bcm7271-l2-intc"
 /soc@107c000000/interrupt-controller@7d510600
-    phandle = <0x800c>
+    phandle = <0x800d>
     #interrupt-cells = <0x1>
     interrupt-controller
     interrupts = <0x0 0xef 0x4>
     reg = <0x7d510600 0x30>
     compatible = "brcm,bcm2711-l2-intc", "brcm,l2-intc"
 /soc@107c000000/interrupt-controller@7d517000
-    phandle = <0x800b>
+    phandle = <0x800c>
     #interrupt-cells = <0x1>
     interrupt-controller
     interrupts = <0x0 0xf7 0x4>
     reg = <0x7d517000 0x10>
     compatible = "brcm,bcm7271-l2-intc"
 /soc@107c000000/interrupt-controller@7d517ac0
-    phandle = <0x800a>
+    phandle = <0x800b>
     #interrupt-cells = <0x1>
     interrupt-controller
     interrupts = <0x0 0xf5 0x4>
     reg = <0x7d517ac0 0x10>
     compatible = "brcm,bcm7271-l2-intc"
+/soc@107c000000/avs-monitor@7d542000
+    reg = <0x7d542000 0xf00>
+    compatible = "brcm,bcm2711-avs-monitor", "syscon", "simple-mfd"
+/soc@107c000000/avs-monitor@7d542000/thermal
+    phandle = <0x800a>
+    #thermal-sensor-cells = <0x0>
+    compatible = "brcm,bcm2711-thermal"
 /soc@107c000000/interrupt-controller@7fff9000
     phandle = <0x8009>
     interrupts = <0x1 0x9 0xf04>

@@ -1,0 +1,70 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: A7om <hatter6822@gmail.com>
+Date: Sat, 26 Sep 2026 00:00:00 +0000
+Subject: [PATCH] hw/misc: Add the Broadcom AVS monitor
+
+The BCM2711 (Raspberry Pi 4) and BCM2712 (Raspberry Pi 5) both have an
+AVS (adaptive voltage scaling) monitor, which measures the chip's
+temperature. It is the "brcm,bcm2711-avs-monitor" node of their device
+trees, a syscon from whose AVS_RO_TEMP_STATUS register Linux's
+bcm2711_thermal driver reads a 10-bit code, which the tree's thermal
+zone converts to millidegrees Celsius with its coefficients. raspi4b
+removes the thermal node from its tree today, as QEMU has no model for
+it.
+
+Add a model of that register. The chip is at the temperature the
+"temperature" property gives, in millidegrees Celsius, 25 degrees C
+unless set, as bcm2835-thermal reports, and qom-set can change it at
+run time; the register holds the code nearest to it, with both of the
+bits Linux takes as valid set. The "slope" and "offset" properties take
+the coefficients of the chip's thermal zone, the BCM2711's by default,
+and bcm2711_avs_monitor_get_temperature() gives the temperature the
+code stands for, which the firmware reports too. The monitor's other
+registers read as 0 and ignore writes.
+---
+ hw/misc/Kconfig      | 3 +++
+ hw/misc/meson.build  | 1 +
+ hw/misc/trace-events | 4 ++++
+ 3 files changed, 8 insertions(+)
+
+diff --git a/hw/misc/Kconfig b/hw/misc/Kconfig
+index 9b2f207b..dcb97722 100644
+--- a/hw/misc/Kconfig
++++ b/hw/misc/Kconfig
+@@ -259,6 +259,9 @@ config XLNX_ZYNQ_DDRC
+ 
+ source macio/Kconfig
+ 
++config BCM2711_AVS_MONITOR
++    bool
++
+ config BCM2711_RNG200
+     bool
+ 
+diff --git a/hw/misc/meson.build b/hw/misc/meson.build
+index f4f8cf7c..13e0748f 100644
+--- a/hw/misc/meson.build
++++ b/hw/misc/meson.build
+@@ -86,6 +86,7 @@ system_ss.add(when: 'CONFIG_NPCM7XX', if_true: files(
+ system_ss.add(when: 'CONFIG_OMAP', if_true: files(
+   'omap_clk.c',
+ ))
++system_ss.add(when: 'CONFIG_BCM2711_AVS_MONITOR', if_true: files('bcm2711_avs_monitor.c'))
+ system_ss.add(when: 'CONFIG_BCM2711_RNG200', if_true: files('bcm2711_rng200.c'))
+ system_ss.add(when: 'CONFIG_BCM2835_CPRMAN', if_true: files('bcm2835_cprman.c'))
+ system_ss.add(when: 'CONFIG_BCM2835_MBOX', if_true: files('bcm2835_mbox.c'))
+diff --git a/hw/misc/trace-events b/hw/misc/trace-events
+index b29b0ede..c28b9fb8 100644
+--- a/hw/misc/trace-events
++++ b/hw/misc/trace-events
+@@ -339,6 +339,10 @@ aspeed_hace_hash_addr(const char *s, uint64_t addr) "%s: 0x%" PRIx64
+ aspeed_hace_hash_execute_acc_mode(bool final_request) "final request: %d"
+ aspeed_hace_hexdump(const char *desc, uint32_t offset, char *s) "%s: 0x%08x: %s"
+ 
++# bcm2711_avs_monitor.c
++bcm2711_avs_monitor_read(uint64_t offset, uint32_t value) "offset 0x%03" PRIx64 " value 0x%08" PRIx32
++bcm2711_avs_monitor_temperature(int32_t temperature) "%" PRId32 " millidegrees Celsius"
++
+ # bcm2711_rng200.c
+ bcm2711_rng200_read(uint64_t offset, uint32_t value) "offset 0x%02" PRIx64 " value 0x%08" PRIx32
+ bcm2711_rng200_write(uint64_t offset, uint64_t value) "offset 0x%02" PRIx64 " value 0x%08" PRIx64

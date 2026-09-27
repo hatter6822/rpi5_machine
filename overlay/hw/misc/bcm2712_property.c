@@ -22,7 +22,9 @@
  * - the reboot flags a guest sets before it reboots, of which bit 0 asks
  *   the bootloader for a tryboot. They outlive the reset, for the board
  *   to report the tryboot in the device tree of the boot it starts.
- * - the temperature limit, 85 degrees C, config.txt's temp_limit.
+ * - the temperature, which the firmware reads from the chip's AVS
+ *   monitor, linked as "avs-monitor", as Linux's thermal driver does,
+ *   and the temperature limit, 85 degrees C, config.txt's temp_limit.
  * - the real-time clock, which the firmware keeps in the power management
  *   IC and Linux's rtc-rpi driver reads and sets through GET/SET_RTC_REG:
  *   the time, which starts as QEMU's RTC (-rtc) and runs on through a
@@ -42,6 +44,7 @@
 #include "qemu/timer.h"
 #include "hw/misc/bcm2712_property.h"
 #include "hw/arm/raspberrypi-fw-defs.h"
+#include "hw/core/qdev-properties.h"
 #include "migration/vmstate.h"
 #include "qapi/qapi-events-misc.h"
 #include "system/rtc.h"
@@ -334,6 +337,13 @@ static bool bcm2712_property_answer_tag(BCM2835PropertyState *ps,
         answer = domain && extract32(s->domains_on, id, 1);
         break;
 
+    case RPI_FWREQ_GET_TEMPERATURE:
+        if (!s->avs_monitor) {
+            return false;
+        }
+        answer = bcm2711_avs_monitor_get_temperature(s->avs_monitor);
+        break;
+
     case RPI_FWREQ_GET_MAX_TEMPERATURE:
         answer = TEMP_LIMIT;
         break;
@@ -424,6 +434,11 @@ static void bcm2712_property_finalize(Object *obj)
     timer_free(s->rtc_timer);
 }
 
+static const Property bcm2712_property_properties[] = {
+    DEFINE_PROP_LINK("avs-monitor", BCM2712PropertyState, avs_monitor,
+                     TYPE_BCM2711_AVS_MONITOR, BCM2711AVSMonitorState *),
+};
+
 static void bcm2712_property_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
@@ -434,6 +449,7 @@ static void bcm2712_property_class_init(ObjectClass *klass, const void *data)
     rc->phases.enter = bcm2712_property_reset_enter;
     dc->vmsd = &vmstate_bcm2712_property;
     dc->desc = "Raspberry Pi 5 firmware property interface";
+    device_class_set_props(dc, bcm2712_property_properties);
 }
 
 static const TypeInfo bcm2712_property_types[] = {

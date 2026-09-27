@@ -245,6 +245,23 @@ class SuiteTest(SuiteChecks, unittest.TestCase):
         self.assertEqual(run.results["sd/mbr"],
                          ("SKIP", "no card in the slot"), run.out)
 
+    def test_temperature(self):
+        """avs/temperature finds the AVS monitor and its thermal zone in
+        both trees, and without one, and reads the temperature -global
+        sets, as the firmware reports it."""
+        for mode in DT_MODES:
+            with self.subTest(dt=mode):
+                run = run_suite("-global",
+                                "bcm2711-avs-monitor.temperature=65000",
+                                dtb=self.suite_dtb(mode))
+                self.assertExited(run)
+                self.assertEqual(run.results.get("avs/temperature"),
+                                 ("PASS", None), run.out)
+                source = "default" if mode == "none" else "dt"
+                self.assertIn("# avs/temperature: monitor 0x107d542000 "
+                              f"({source}), code 700, 65000 millidegrees C, "
+                              "firmware 65000\n", run.out)
+
     def test_uart_echo(self):
         """The suite receives the line it asks for over UART10."""
         line = "raspi5b uart/echo 0123456789"

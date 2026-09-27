@@ -18,6 +18,7 @@
 #include "hw/i2c/brcmstb_i2c.h"
 #include "hw/intc/arm_gic.h"
 #include "hw/intc/brcmstb_l2_intc.h"
+#include "hw/misc/bcm2711_avs_monitor.h"
 #include "hw/misc/bcm2711_rng200.h"
 #include "hw/misc/bcm2835_mbox.h"
 #include "hw/misc/bcm2835_powermgt.h"
@@ -117,6 +118,7 @@ typedef enum BCM2712Device {
     BCM2712_L2_INTC,
     BCM2712_MAIN_AON_IRQ,
     BCM2712_GIO_AON,
+    BCM2712_AVS,
     BCM2712_GIC,
 
     BCM2712_NUM_DEVICES
@@ -190,6 +192,15 @@ enum {
 /* The SD/eMMC host controllers: SDIO1 for the SD card, SDIO2 for Wi-Fi */
 #define BCM2712_NUM_SDIO            2
 
+/*
+ * The AVS monitor's temperature sensor, whose code the Pi 5's device
+ * trees convert to millidegrees Celsius as slope * code + offset, and
+ * the temperature at which they have Linux shut down
+ */
+#define BCM2712_AVS_TEMP_SLOPE      (-550)
+#define BCM2712_AVS_TEMP_OFFSET     450000
+#define BCM2712_TEMP_CRITICAL       110000
+
 struct BCM2712State {
     /*< private >*/
     DeviceState parent_obj;
@@ -211,6 +222,7 @@ struct BCM2712State {
     BCM2835SystemTimerState systimer;
     BCM2835PowerMgtState pm;
     BCM2711Rng200State rng;
+    BCM2711AVSMonitorState avs;
     PL011State uart10;
     SerialMM uarta;
 

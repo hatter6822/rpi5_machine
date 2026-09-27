@@ -115,6 +115,16 @@
             brcm,gpio-bank-widths = <32 4>;
         };
 
+        avs-monitor@7d542000 {
+            compatible = "brcm,bcm2711-avs-monitor", "syscon", "simple-mfd";
+            reg = <0x7d542000 0xf00>;
+
+            thermal: thermal {
+                compatible = "brcm,bcm2711-thermal";
+                #thermal-sensor-cells = <0>;
+            };
+        };
+
         gicv2: interrupt-controller@7fff9000 {
             compatible = "arm,gic-400";
             reg = <0x7fff9000 0x1000>,
@@ -124,6 +134,15 @@
             interrupt-controller;
             #interrupt-cells = <3>;
             #address-cells = <0>;
+        };
+    };
+
+    thermal-zones {
+        cpu-thermal {
+            polling-delay-passive = <1000>;
+            polling-delay = <1000>;
+            coefficients = <(-550) 450000>;
+            thermal-sensors = <&thermal>;
         };
     };
 };

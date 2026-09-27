@@ -9,6 +9,7 @@
 #ifndef HW_MISC_BCM2712_PROPERTY_H
 #define HW_MISC_BCM2712_PROPERTY_H
 
+#include "hw/misc/bcm2711_avs_monitor.h"
 #include "hw/misc/bcm2835_property.h"
 #include "qom/object.h"
 
@@ -33,6 +34,8 @@ struct BCM2712PropertyState {
     BCM2835PropertyState parent_obj;
 
     /*< public >*/
+    BCM2711AVSMonitorState *avs_monitor;   /* the temperature sensor */
+
     uint32_t clock_rate[BCM2712_PROPERTY_NUM_CLOCKS];
     uint32_t clocks_on;         /* bit N: the Nth clock of GET_CLOCKS */
     uint32_t domains_on;        /* bit N: power domain N */

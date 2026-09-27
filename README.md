@@ -30,6 +30,7 @@ Pi OS booting from an SD card, is in progress.
 | System timer (1 MHz counter, four comparators) | done |
 | Watchdog and reset status (PM block) | done |
 | RNG200 random number generator | done |
+| The AVS monitor's temperature sensor, which Linux's thermal driver reads, set with `-global bcm2711-avs-monitor.temperature=` or `qom-set` | done |
 | Broadcom L2 interrupt controllers (7, both register layouts) | done |
 | BCM2712 GPIO blocks (GIO: 32 + 22 lines, AON: 17 + 6), edge and level interrupts, and their pin controllers, which keep the functions and pulls software selects | done |
 | The HDMI ports' DDC I2C controllers, with a monitor's EDID on HDMI0's bus | done |
@@ -41,9 +42,9 @@ Pi OS booting from an SD card, is in progress.
 | Complete BCM2712 memory map, unmodelled blocks logged with `-d unimp` | done |
 | Built-in device tree when no `-dtb` is given, validated against the Linux bindings | done |
 | The firmware's device-tree changes, made anew for each boot: model and serial number, the command line it builds, `/chosen` with the boot's reset status, partition, count and tryboot, the power supply and seeds, the CMA pool and the bootloader configuration | done |
-| Bare-metal test suite (35 tests: interrupts, timers and SGIs on every core, PSCI, resets, mailbox, the firmware's clocks, real-time clock and framebuffer, a tryboot, RNG, UART, L2 interrupt controllers, GPIO interrupts, the SD card's master boot record, Secure/Non-secure GIC groups, the A76's MPIDR and IMPDEF registers) on 1–4 cores, EL2 and EL3 | done |
+| Bare-metal test suite (36 tests: interrupts, timers and SGIs on every core, PSCI, resets, mailbox, the firmware's clocks, real-time clock and framebuffer, a tryboot, RNG, the SoC's temperature, UART, L2 interrupt controllers, GPIO interrupts, the SD card's master boot record, Secure/Non-secure GIC groups, the A76's MPIDR and IMPDEF registers) on 1–4 cores, EL2 and EL3 | done |
 | Linux: stock Raspberry Pi OS kernel mounts its root file system from an SD card, on the built-in device tree or `bcm2712-rpi-5-b.dtb`, started directly or by U-Boot from the card | smoke-tested |
-| VideoCore mailbox and firmware property channel: BCM283x tag set, board and firmware identity, and the Pi 5's own answers: its clocks (cpufreq), power domains, reboot flags (tryboot) and real-time clock (`hwclock`); the framebuffer, the machine's display, within the VideoCore's 4 MiB | done; the SoC's temperature next (WS2.6) |
+| VideoCore mailbox and firmware property channel: BCM283x tag set, board and firmware identity, and the Pi 5's own answers: its clocks (cpufreq), power domains, reboot flags (tryboot), real-time clock (`hwclock`) and the SoC's temperature (`vcgencmd measure_temp`); the framebuffer, the machine's display, within the VideoCore's 4 MiB | done |
 | PCIe, RP1 (with the 40-pin header's GPIO), … | see [docs/PLAN.md](docs/PLAN.md) |
 
 ## Repository layout
@@ -57,6 +58,7 @@ overlay/       new files, laid out exactly as in the QEMU tree
   tests/qtest/raspi5b-test.c
   docs/system/arm/raspi5b.rst
   hw/misc/bcm2711_rng200.c      RNG200 random number generator
+  hw/misc/bcm2711_avs_monitor.c AVS monitor temperature sensor
   hw/intc/brcmstb_l2_intc.c     Broadcom L2 interrupt controller
   hw/gpio/brcmstb_gpio.c        Broadcom GPIO controller
   hw/gpio/brcmstb_pinctrl.c     Broadcom pin controller

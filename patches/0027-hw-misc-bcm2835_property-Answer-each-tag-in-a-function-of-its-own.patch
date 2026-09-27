@@ -15,7 +15,7 @@ No functional change.
  1 file changed, 416 insertions(+), 397 deletions(-)
 
 diff --git a/hw/misc/bcm2835_property.c b/hw/misc/bcm2835_property.c
-index 48404a8..c9abd9b 100644
+index 48404a83..c9abd9bd 100644
 --- a/hw/misc/bcm2835_property.c
 +++ b/hw/misc/bcm2835_property.c
 @@ -75,457 +75,476 @@ static void bcm2835_property_put32(BCM2835PropertyState *s, hwaddr value,

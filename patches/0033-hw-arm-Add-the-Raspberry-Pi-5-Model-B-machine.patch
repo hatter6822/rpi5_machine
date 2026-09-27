@@ -41,7 +41,7 @@ card on either device tree.
  2 files changed, 9 insertions(+)
 
 diff --git a/hw/arm/Kconfig b/hw/arm/Kconfig
-index 644601c..bffa6ff 100644
+index 868fe17b..8cdd0602 100644
 --- a/hw/arm/Kconfig
 +++ b/hw/arm/Kconfig
 @@ -384,6 +384,14 @@ config RASPI
@@ -60,7 +60,7 @@ index 644601c..bffa6ff 100644
      bool
      select ARM_GIC
 diff --git a/hw/arm/meson.build b/hw/arm/meson.build
-index 00b030a..a381c31 100644
+index 00b030ab..a381c31e 100644
 --- a/hw/arm/meson.build
 +++ b/hw/arm/meson.build
 @@ -33,6 +33,7 @@ arm_common_ss.add(when: 'CONFIG_RASPI', if_true: files(

@@ -244,7 +244,6 @@ static const char *const raspi5b_unmodelled_compatibles[] = {
     /* Nodes only present in the Raspberry Pi downstream device tree */
     "brcm,bcm2712-iommu",
     "brcm,bcm2712-iommuc",
-    "brcm,bcm2711-avs-monitor",
     "brcm,bcm2712-dma",
     "brcm,bcm2712-hevc-dec",
     "raspberrypi,pispbe",

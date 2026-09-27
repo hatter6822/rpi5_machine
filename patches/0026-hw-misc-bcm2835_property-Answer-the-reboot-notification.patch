@@ -14,7 +14,7 @@ Answer it with an empty value: the model has nothing to stop.
  1 file changed, 8 insertions(+)
 
 diff --git a/hw/misc/bcm2835_property.c b/hw/misc/bcm2835_property.c
-index d4d9a03..48404a8 100644
+index d4d9a03e..48404a83 100644
 --- a/hw/misc/bcm2835_property.c
 +++ b/hw/misc/bcm2835_property.c
 @@ -410,6 +410,14 @@ static void bcm2835_property_mbox_push(BCM2835PropertyState *s, uint32_t value)
