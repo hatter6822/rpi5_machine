@@ -1464,7 +1464,9 @@ default block interface, and `auto_create_sdcard` gives it an empty
 `id` QMP's `blockdev-change-medium` and `eject` take. Two QEMU bugs
 surfaced. Since a362b19a39e4, a card realized on a drive without a
 medium took no permissions on it and registered no callbacks, so no
-card could go into the empty slot: upstream-first patch 0021 fixes it.
+card could go into the empty slot. Patch 0021 fixed it; master made the
+same fix in 15d4bc75 (September 2026, after v11.1.1), and 0021 is now
+its backport.
 QEMU also ignored the address write that resumes an SDMA transfer
 stopped at a buffer boundary, which timed U-Boot out on any read across
 512 KiB: upstream fixed it in 725a8f10 (September 2026, after v11.1.1),

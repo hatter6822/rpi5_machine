@@ -59,7 +59,7 @@ The series is in four parts:
   controller, and for the Pi 5's firmware property interface, a subclass
   of the BCM2835's; a 16550 change, an SDHCI change, two property
   interface changes, a framebuffer change, three target/arm changes TF-A
-  needs, and four fixes for bugs found by the tests:
+  needs, and three fixes for bugs found by the tests:
   - a property for the depth of the 16550's FIFOs, as UARTA's hold 32
     bytes and Linux fills them;
   - an SDHCI output that follows the card in the slot, for boards whose
@@ -82,12 +82,12 @@ The series is in four parts:
   - a generic timer whose offset exceeds the count, such as the virtual
     timer with CNTVOFF_EL2 above CNTPCT, never fired;
   - the DDC's EDID device dropped out of a transfer in progress when the
-    machine migrated, so the transfer's remaining bytes read as 0xff;
-  - an SD card on a drive without a medium could not take one later, so
-    no card could go into a board's empty slot.
-  One more patch is a fix from master, which v11.1.1 lacks: SDMA now
-  resumes after stopping at a buffer boundary, which U-Boot's reads
-  need (725a8f107cc1). It leaves the series once rebased onto master.
+    machine migrated, so the transfer's remaining bytes read as 0xff.
+  Two more patches are fixes from master, which v11.1.1 lacks: an SD
+  card on a drive without a medium can take one later again, so a
+  board's empty slot takes a card (15d4bc75f817), and SDMA resumes
+  after stopping at a buffer boundary, which U-Boot's reads need
+  (725a8f107cc1). They leave the series once rebased onto master.
 
 - The SoC, the board, a qtest and the documentation.
 
