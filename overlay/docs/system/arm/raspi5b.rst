@@ -258,6 +258,23 @@ boot the reset starts, and the firmware's real-time clock runs on. PSCI
 partition 63 in ``RSTS``) power the machine off, and QEMU exits with
 status 0.
 
+The partition a reboot asks for travels in ``RSTS``, where Linux's
+watchdog driver and bare-metal code put it. The Raspberry Pi kernel
+reboots through PSCI first, though, and passes the partition of
+``reboot N`` to ``SYSTEM_RESET2``, which QEMU's PSCI does not provide;
+the ``SYSTEM_RESET`` it falls back to asks for no partition.
+
+What a reset leaves for the next boot can also go from one run of QEMU to
+the next, for a host that runs QEMU afresh for each boot, as the firmware
+reads the SD card afresh: with ``-action reboot=shutdown,shutdown=pause``,
+the guest's reset stops it before QEMU makes the reset, and the machine
+can be read. The machine's properties ``reset-status`` (``RSTS``),
+``reboot-flags`` and ``boot-count`` (the boots so far) read what the reset
+leaves; given at startup, with ``-machine``, they make the first boot the
+one that reset would have started. They can only be set then, as can
+``boot-partition``, which names the partition of the card that the boot
+files come from.
+
 The monitor's ``system_powerdown`` presses the board's power button for
 200 ms, as a user would; a press carries on through a reset. Linux's
 ``gpio-keys`` reports it as ``KEY_POWER``, which systemd-logind takes as
@@ -329,10 +346,11 @@ firmware does before it starts the OS:
 * ``/chosen/bootloader`` describes the boot: ``boot-mode`` 3, RPIBOOT, in
   which the host supplies the boot files, as QEMU does; ``rsts``, the PM
   block's reset status as the boot found it; ``partition``, the
-  partition asked for there (0 at power-on), which files the host
-  supplies come from; ``count``, the boots since power-on, in 8 bits;
-  ``tryboot``, 1 when the boot before set the reboot flag that asks for
-  one; and 0 for ``arg1`` and ``capabilities``;
+  partition the files come from, ``boot-partition`` if it is given and
+  otherwise the one asked for in ``rsts`` (0 at power-on); ``count``,
+  the boots since power-on, in 8 bits; ``tryboot``, 1 when the boot
+  before set the reboot flag that asks for one; and 0 for ``arg1`` and
+  ``capabilities``;
 * ``/chosen/power`` reports a 5 A bench supply (``max_current``), which
   turns the USB ports' high current limit on;
 * the memory node leaves out the VideoCore's memory, and a
@@ -351,7 +369,8 @@ firmware does before it starts the OS:
 
 Every reset gives the next boot its own tree, as the firmware writes one
 for each boot: ``rsts``, ``partition``, ``count``, ``tryboot`` and the
-seeds are the new boot's. The count moves with the machine in migration.
+seeds are the new boot's. The firmware counts every boot, with a tree or
+without, and the count moves with the machine in migration.
 
 Compared with the tree the firmware gives a Pi 5, the machine's lacks:
 

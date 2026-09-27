@@ -26,10 +26,14 @@ machine generates a device tree, which validates against the kernel's
 bindings. Either tree gets the changes the firmware makes before it
 starts the OS, anew for each boot: the model and serial number, the
 command line it builds, what /chosen reports about the boot and the
-power supply, and seeds for KASLR and the RNG. The stock Raspberry Pi OS
-kernel mounts its root file system from an SD card, on that tree or on
-the firmware's bcm2712-rpi-5-b.dtb, started directly, by TF-A, or by
-U-Boot, which loads it from the card.
+power supply, and seeds for KASLR and the RNG. Machine properties read
+what a reset leaves for the next boot (the reset status, the firmware's
+reboot flags and the boot count) and set it for the first, for a host
+that starts QEMU afresh for each boot, reading the SD card as the
+firmware does. The stock Raspberry Pi OS kernel mounts its root file
+system from an SD card, on that tree or on the firmware's
+bcm2712-rpi-5-b.dtb, started directly, by TF-A, or by U-Boot, which
+loads it from the card.
 
 The series is in four parts:
 

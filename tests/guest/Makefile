@@ -1,9 +1,10 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 #
 # Bare-metal guests: the test library in lib/, the hello smoke guest and
-# the test suite (tests/guest/README.md), and the Linux /init of the
-# rpi5-boot tests. Built with clang and lld by default so that no aarch64
-# GCC cross toolchain is required.
+# the test suite (tests/guest/README.md), and for the rpi5-boot tests a
+# guest that reboots as its command line says and a Linux /init. Built
+# with clang and lld by default so that no aarch64 GCC cross toolchain is
+# required.
 
 # Make's built-in defaults (cc, ld) are host tools; prefer clang and lld
 ifeq ($(origin CC),default)
@@ -35,7 +36,7 @@ LINUX_CFLAGS  := --target=aarch64-linux-gnu -mcpu=cortex-a76 -std=gnu11 -O2 \
                  -fno-pic -fno-stack-protector -mgeneral-regs-only
 LINUX_LDFLAGS := -nostdlib -static --no-dynamic-linker -e _start
 
-GUESTS  := hello suite firstboot
+GUESTS  := hello suite reboot firstboot
 
 .PHONY: all clean
 all: $(GUESTS:%=$(OUT)/%.elf)
@@ -44,6 +45,9 @@ $(OUT)/hello.elf: $(LIB_OBJS) $(OUT)/hello/hello.o lib/link.ld
 	$(LD) $(LDFLAGS) -o $@ $(filter %.o,$^)
 
 $(OUT)/suite.elf: $(LIB_OBJS) $(SUITE_OBJS) lib/link.ld
+	$(LD) $(LDFLAGS) -o $@ $(filter %.o,$^)
+
+$(OUT)/reboot.elf: $(LIB_OBJS) $(OUT)/reboot/reboot.o lib/link.ld
 	$(LD) $(LDFLAGS) -o $@ $(filter %.o,$^)
 
 $(OUT)/firstboot.elf: $(OUT)/linux/firstboot.o

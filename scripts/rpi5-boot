@@ -13,10 +13,16 @@ for a Raspberry Pi 5, applies the overlays and parameters to the device
 tree as the firmware's dtoverlay code does (the blob matches dtmerge's),
 turns the command line's serial0 into the UART it names, and runs QEMU
 with the card in the SD slot and the kernel, tree, initramfs and command
-line it chose. When the guest reboots, QEMU exits and rpi5-boot reads
-the card again for the next boot, as the bootloader does: Raspberry Pi
-OS rewrites cmdline.txt on its first boot and then reboots. It stops
-when the guest powers off or QEMU ends otherwise.
+line it chose. When the guest reboots, rpi5-boot reads the card again
+for the next boot, as the bootloader does: Raspberry Pi OS rewrites
+cmdline.txt on its first boot and then reboots. The next boot is the
+one the reset starts: before it ends QEMU, rpi5-boot reads what the
+reset leaves, which the next QEMU starts with and autoboot.txt and
+config.txt test: the firmware's tryboot flag (reboot "0 tryboot"), the
+boot count, and the partition the OS asked for in the watchdog's reset
+status (Linux passes reboot N's partition to PSCI's SYSTEM_RESET2,
+which QEMU lacks). It stops when the guest powers off or QEMU ends
+otherwise.
 
 Reading the image needs mtools. The image is the card, which the guest
 writes to: a raw image, decompressed (xz -d), whose size QEMU's SD card
@@ -47,6 +53,12 @@ PLATFORM = "bcm2712"
 BOARD_TYPE = 0x17
 # The raspi5b machine's serial number unless "serial=" sets another
 MACHINE_SERIAL = 0x0123456789abcdef
+# The firmware's reboot flag that makes the next boot a tryboot
+TRYBOOT_FLAG = 0x1
+# PM_RSTS holds the partition the OS asked for in bits 0, 2, .. 10
+RSTS_PARTITION_BITS = 6
+# The partitions the bootloader walks through for one it can boot
+WALK_LAST = 8
 
 # A directory rpi5-boot writes its files to holds this file
 OUTPUT_MARKER = ".rpi5-boot"
@@ -1277,13 +1289,53 @@ OUR_MODELS = {"pi5"}
 EXPRESSION = re.compile(r"([a-z0-9_]+)(?:([=<>])(\w+)|&(\w+)(?:=(\w+))?)")
 
 
-class BootVars:
-    """What config.txt's filters test: the boot this is"""
+class Reset:
+    """What a reset leaves for the boot it starts, as the machine's
+    properties of those names read it (none at power-on): the reset
+    status, which holds the partition the OS asked for, the firmware's
+    reboot flags and the boots so far, counted in 8 bits"""
 
-    def __init__(self, boot_partition, tryboot=False):
-        self.tryboot = tryboot
-        self.values = {"boot_partition": boot_partition, "partition": 0,
-                       "boot_arg1": 0, "bootvar0": 0, "boot_count": 1}
+    def __init__(self, status=None, flags=0, count=0):
+        self.status = status
+        self.flags = flags
+        self.count = count
+
+    @property
+    def partition(self):
+        """The partition the OS asked for, 0 for none"""
+        rsts = self.status or 0
+        return sum(((rsts >> 2 * i) & 1) << i
+                   for i in range(RSTS_PARTITION_BITS))
+
+    @property
+    def tryboot(self):
+        return bool(self.flags & TRYBOOT_FLAG)
+
+    @property
+    def boot_count(self):
+        """The number of the boot it starts"""
+        return (self.count + 1) & 0xff
+
+    def machine_options(self):
+        """The raspi5b options that make the machine's first boot this
+        one"""
+        if self.status is None:
+            return []
+        return [f"reset-status={self.status:#x}",
+                f"reboot-flags={self.flags:#x}", f"boot-count={self.count}"]
+
+
+class BootVars:
+    """What config.txt's filters test: the boot this is, from the
+    partition it boots, the partition the OS asked for, and the tryboot
+    flag and boot count the reset left"""
+
+    def __init__(self, boot_partition, partition=0, reset=None):
+        reset = reset or Reset()
+        self.tryboot = reset.tryboot
+        self.values = {"boot_partition": boot_partition,
+                       "partition": partition, "boot_arg1": 0,
+                       "bootvar0": 0, "boot_count": reset.boot_count}
         for i in range(8):
             self.values[f"cust_otp{i}"] = 0
 
@@ -1331,19 +1383,31 @@ class BootVars:
         return f"unknown {text}", False
 
 
+class AutobootVars(BootVars):
+    """What autoboot.txt's filters test: whether the boot is a tryboot,
+    the only filter it has beside [all] and [none]"""
+
+    def filter(self, text):
+        if text == "tryboot":
+            return "tryboot", self.tryboot
+        return f"unknown {text}", False
+
+
 class Config:
     """config.txt evaluated for this board: the settings that apply, the
     last one of each name winning, and the overlay and parameter lines
-    in order"""
+    in order. No file (@name None) is the firmware's defaults."""
 
     def __init__(self, fs, name, bootvars, verbose=False):
         self.fs = fs
+        self.name = name
         self.bootvars = bootvars
         self.verbose = verbose
         self.values = {}
         self.dt_lines = []
         self.filters = {}
-        self._read(name, 0)
+        if name is not None:
+            self._read(name, 0)
 
     def get(self, name, default=None):
         return self.values.get(name, default)
@@ -1400,7 +1464,7 @@ class Config:
         else:
             kind, matched = self.bootvars.filter(text)
             if kind.startswith("unknown") and self.verbose:
-                log(f"config.txt: filter [{text}] is not supported, and "
+                log(f"{self.name}: filter [{text}] is not supported, and "
                     "does not match")
             self.filters[kind] = matched
 
@@ -1415,9 +1479,10 @@ AMBA_UARTS = (b"arm,pl011", b"arm,pl011-axi", b"arm,primecell")
 class Boot:
     """What one boot loads, by name in the boot partition"""
 
-    def __init__(self, fs, config):
+    def __init__(self, fs, config, partition=None):
         self.fs = fs
         self.config = config
+        self.partition = partition
         self.os_prefix = ""
         self.overlay_dir = "overlays/"
         self.kernel = None
@@ -1437,40 +1502,57 @@ def fat_partitions(image):
     return parts
 
 
-def boot_partition(image, requested, verbose):
-    """The partition the bootloader boots, and its file system: the one
-    asked for, else the one autoboot.txt in the first FAT partition names,
-    else the first FAT partition with a config.txt, which marks a Pi 5
-    boot partition"""
+def boot_partition(image, requested, reset, verbose, explicit=False):
+    """The partition the bootloader boots after @reset, its file system,
+    and whether autoboot.txt makes a tryboot's switch at the partition,
+    which then boots with its config.txt (tryboot_a_b). The partition is
+    the one asked for, else the one autoboot.txt in the first FAT
+    partition names, as its filters select, else the first FAT partition
+    with a config.txt, which marks a Pi 5 boot partition. A partition
+    asked for or named that is not one, or has no config.txt, is passed
+    over for the next one up to partition 8 that has, and then for the
+    first, as the bootloader's PARTITION_WALK passes over it; one asked
+    for @explicit is an error."""
     parts = fat_partitions(image)
     if not parts:
         raise BootError(f"{image} has no FAT partition to boot from")
-    if requested is not None:
-        for part in parts:
-            if part.number == requested:
-                fs = BootFs(image, part)
-                if not fs.exists("config.txt"):
-                    raise BootError(f"partition {requested} has no "
-                                    "config.txt, so a Pi 5 will not boot "
-                                    "from it")
-                return part, fs
-        raise BootError(f"{image} has no FAT partition {requested}")
     first = BootFs(image, parts[0])
-    if first.exists("autoboot.txt"):
-        autoboot = Config(first, "autoboot.txt", BootVars(parts[0].number),
-                          verbose)
-        number = autoboot.number("boot_partition", 0)
-        for part in parts:
-            if number and part.number == number:
-                fs = first if part is parts[0] else BootFs(image, part)
-                if fs.exists("config.txt"):
-                    return part, fs
-        if number:
-            log(f"autoboot.txt: partition {number} is not bootable")
-    for part in parts:
+
+    def bootable(part):
         fs = first if part is parts[0] else BootFs(image, part)
-        if fs.exists("config.txt"):
-            return part, fs
+        return fs if fs.exists("config.txt") else None
+
+    a_b = False
+    number = requested
+    unbootable = "partition {}, which the reboot asks for, is not bootable"
+    if first.exists("autoboot.txt"):
+        autoboot = Config(first, "autoboot.txt",
+                          AutobootVars(parts[0].number, reset=reset),
+                          verbose)
+        a_b = bool(autoboot.number("tryboot_a_b", 0))
+        if not requested:
+            number = autoboot.number("boot_partition", 0)
+            unbootable = "autoboot.txt: partition {} is not bootable"
+    if number:
+        part = next((p for p in parts if p.number == number), None)
+        fs = part and bootable(part)
+        if fs:
+            return part, fs, a_b
+        if explicit and requested:
+            if part:
+                raise BootError(f"partition {number} has no config.txt, "
+                                "so a Pi 5 will not boot from it")
+            raise BootError(f"{image} has no FAT partition {number}")
+        log(unbootable.format(number))
+        for part in parts:
+            if number < part.number <= WALK_LAST:
+                fs = bootable(part)
+                if fs:
+                    return part, fs, a_b
+    for part in parts:
+        fs = bootable(part)
+        if fs:
+            return part, fs, a_b
     raise BootError(f"no FAT partition of {image} has a config.txt, which "
                     "a Pi 5 needs to boot from it")
 
@@ -1708,15 +1790,31 @@ def kernel_cmdline(boot, root, append):
 
 # The SHUTDOWN event reasons that are a reboot, with -action reboot=shutdown
 REBOOT_REASONS = ("guest-reset", "host-qmp-system-reset")
+# The machine's properties that hold what a reset leaves for the next boot
+RESET_PROPERTIES = ("reset-status", "reboot-flags", "boot-count")
 
 
-def prepare(image, args):
-    """Read the card as the bootloader does for one boot"""
-    part, fs = boot_partition(image, args.partition, args.verbose)
-    config = Config(fs, "config.txt", BootVars(part.number), args.verbose)
+def prepare(image, args, reset):
+    """Read the card as the bootloader does for the boot @reset starts,
+    which asks for a partition itself or else for the one --partition
+    names: a tryboot reads tryboot.txt in place of config.txt, unless
+    autoboot.txt has switched partitions for it"""
+    if reset.partition:
+        requested, explicit = reset.partition, False
+    else:
+        requested, explicit = args.partition, True
+    part, fs, a_b = boot_partition(image, requested, reset, args.verbose,
+                                   explicit)
+    name = "tryboot.txt" if reset.tryboot and not a_b else "config.txt"
+    if not fs.exists(name):
+        log(f"partition {part.number} has no {name} for the tryboot: the "
+            "firmware's defaults apply")
+        name = None
+    config = Config(fs, name, BootVars(part.number, requested or 0, reset),
+                    args.verbose)
     verbose = args.verbose or bool(config.number("uart_2ndstage", 0)) or \
         bool(config.number("dtdebug", 0))
-    boot = Boot(fs, config)
+    boot = Boot(fs, config, part.number)
     choose_files(boot, verbose)
     if boot.dtb:
         compose_tree(boot, verbose)
@@ -1732,8 +1830,11 @@ def prepare(image, args):
         value = config.get(name)
         if value is not None and (default is None or
                                   config.number(name, default) != default):
-            log(f"config.txt: {name}={value} ignored: {why}")
+            log(f"{config.name}: {name}={value} ignored: {why}")
     if verbose:
+        log(f"boot {reset.boot_count}"
+            f"{', a tryboot,' if reset.tryboot else ''} from partition "
+            f"{part.number} with {config.name or 'no configuration file'}")
         log(f"partition {part.number}: kernel {boot.kernel}, device tree "
             f"{boot.dtb or '(none)'}, initramfs "
             f"{','.join(boot.initramfs) or '(none)'}")
@@ -1782,7 +1883,10 @@ def write_files(boot, outdir):
     return files
 
 
-def qemu_command(args, image, boot, files):
+def qemu_command(args, image, boot, files, reset):
+    """QEMU's command line for @boot, the one @reset starts, from @files:
+    the machine reports the partition the files come from, and starts
+    with what the reset left"""
     machine = ["raspi5b"]
     if boot.armstub:
         machine.append("secure=on")
@@ -1791,6 +1895,8 @@ def qemu_command(args, image, boot, files):
             machine.append(f"dtb-address={c_strtoul(address)[0]:#x}")
     if boot.tree is None:
         machine.append("builtin-dtb=off")
+    machine.append(f"boot-partition={boot.partition}")
+    machine += reset.machine_options()
     cmd = [args.qemu, "-M", ",".join(machine)]
     if not args.graphics:
         cmd.append("-nographic")
@@ -1808,9 +1914,13 @@ def qemu_command(args, image, boot, files):
 
 
 def run_qemu(cmd, verbose):
-    """Run QEMU until it exits: its exit status, and the reason its
-    SHUTDOWN event gave, if any. QMP on a socket pair reports the event;
-    the guest starts once it is listened for."""
+    """Run QEMU until the guest powers off or reboots, or QEMU ends
+    otherwise: its exit status, the reason its SHUTDOWN event gave, if
+    any, and for a reboot what the reset leaves for the next boot (None
+    if QEMU did not say). QMP on a socket pair reports the event; the
+    guest starts once it is listened for, and QEMU waits with the guest
+    stopped after the event, for the machine to be read, until told to
+    quit. A SIGTERM or SIGHUP stops QEMU, and then rpi5-boot."""
     ours, theirs = socket.socketpair()
     fd = theirs.fileno()
     if verbose:
@@ -1818,16 +1928,25 @@ def run_qemu(cmd, verbose):
     try:
         proc = subprocess.Popen(
             cmd + ["-S", "-chardev", f"socket,id={PROG},fd={fd}",
-                   "-object", f"monitor-qmp,id={PROG},chardev={PROG}"],
+                   "-object", f"monitor-qmp,id={PROG},chardev={PROG}",
+                   "-action", "shutdown=pause"],
             pass_fds=(fd,))
     except OSError as err:
         ours.close()
         raise BootError(f"cannot run {cmd[0]}: {err.strerror}") from None
     finally:
         theirs.close()
+    stopped = []
 
     def forward(signum, frame):
+        stopped.append(signum)
         proc.send_signal(signum)
+
+    def execute(command, ident, **arguments):
+        message = {"execute": command, "id": ident}
+        if arguments:
+            message["arguments"] = arguments
+        ours.sendall(json.dumps(message).encode() + b"\n")
 
     # QEMU owns the terminal: a Ctrl-C it gets as a signal ends it, and
     # then rpi5-boot, which waits for that
@@ -1835,21 +1954,33 @@ def run_qemu(cmd, verbose):
                 signal.SIGHUP: forward}
     old = {sig: signal.signal(sig, handler)
            for sig, handler in handlers.items()}
+    shutdown = False
     reason = None
+    state = {}
     try:
-        started = False
         for line in ours.makefile("rb"):
             try:
                 message = json.loads(line)
             except ValueError:
                 continue
+            ident = message.get("id")
             if "QMP" in message:
-                ours.sendall(b'{"execute": "qmp_capabilities"}\n')
-            elif "return" in message and not started:
-                started = True
-                ours.sendall(b'{"execute": "cont"}\n')
-            elif message.get("event") == "SHUTDOWN":
+                execute("qmp_capabilities", "capabilities")
+            elif ident == "capabilities":
+                execute("cont", "cont")
+            elif message.get("event") == "SHUTDOWN" and not shutdown:
+                # The first: quitting brings another
+                shutdown = True
                 reason = message.get("data", {}).get("reason")
+                if reason not in REBOOT_REASONS:
+                    execute("quit", "quit")
+                    continue
+                for name in RESET_PROPERTIES:
+                    execute("qom-get", name, path="/machine", property=name)
+            elif ident in RESET_PROPERTIES:
+                state[ident] = message.get("return")
+                if len(state) == len(RESET_PROPERTIES):
+                    execute("quit", "quit")
     except OSError:
         pass
     finally:
@@ -1857,8 +1988,15 @@ def run_qemu(cmd, verbose):
         for sig, handler in old.items():
             signal.signal(sig, handler)
         ours.close()
+    if stopped:
+        raise SystemExit(128 + stopped[0])
+    reset = None
+    if len(state) == len(RESET_PROPERTIES) and \
+       all(isinstance(value, int) for value in state.values()):
+        reset = Reset(state["reset-status"], state["reboot-flags"],
+                      state["boot-count"])
     # A signal that ended QEMU, as a shell reports it
-    return (128 - status if status < 0 else status), reason
+    return (128 - status if status < 0 else status), reason, reset
 
 
 def repo_qemu():
@@ -1886,7 +2024,8 @@ def parse_args(argv):
                         "checkout's build/qemu-system-aarch64, else "
                         "qemu-system-aarch64)")
     parser.add_argument("--partition", metavar="N", type=int,
-                        help="boot partition number (default: as the "
+                        help="boot partition number, unless the guest asks "
+                        "for another when it reboots (default: as the "
                         "bootloader picks it, with autoboot.txt)")
     parser.add_argument("--root", metavar="DEVICE",
                         help="replace the command line's root= with "
@@ -1930,20 +2069,25 @@ def boot_loop(args):
         outdir = temporary = tempfile.mkdtemp(prefix=f"{PROG}-")
     old = {sig: signal.signal(sig, stop)
            for sig in (signal.SIGTERM, signal.SIGHUP)}
+    reset = Reset()
     try:
         while True:
-            boot = prepare(image, args)
+            boot = prepare(image, args, reset)
             files = write_files(boot, outdir)
-            cmd = qemu_command(args, image, boot, files)
+            cmd = qemu_command(args, image, boot, files, reset)
             if args.print_only:
                 print(shlex.join(cmd))
                 return 0
-            status, reason = run_qemu(cmd, args.verbose)
+            status, reason, reset = run_qemu(cmd, args.verbose)
             if reason not in REBOOT_REASONS:
                 return status
             if args.no_reboot:
                 log("the guest rebooted: stopping, as --no-reboot asks")
                 return status
+            if reset is None:
+                log("QEMU did not say what the reset left: the next boot "
+                    "is a power-on's")
+                reset = Reset()
             log("the guest rebooted: reading the card again")
     finally:
         for sig, handler in old.items():

@@ -20,6 +20,15 @@ devices the model lacks are disabled, and /system/linux,revision gets
 the board revision. The serial= property sets the serial number the
 firmware reports.
 
+The reset-status, reboot-flags and boot-count properties read what a
+reset leaves for the boot it starts: the reset status, which holds the
+partition the OS asked for, the firmware's reboot flags and the number
+of boots so far. Given at startup, they make the first boot the one
+that reset would have started, for a host that runs QEMU afresh for
+each boot, reading the SD card afresh as the firmware does.
+boot-partition names the partition of the card the boot files came
+from, which /chosen/bootloader reports.
+
 system_powerdown presses the power button on GIO 20 for 200 ms, which
 Linux reports as KEY_POWER. The green activity LED on GIO AON 9 is an
 LED device, so its changes show as trace events. A monitor's EDID

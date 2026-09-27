@@ -4484,6 +4484,55 @@ static void test_act_led(void)
     qtest_quit(qts);
 }
 
+static int64_t machine_get(QTestState *qts, const char *property)
+{
+    return qom_get_int(qts, "/machine", property);
+}
+
+/*
+ * What a reset leaves for the boot it starts reads as it stands: the
+ * reset status, the reboot flags the OS has set and the boots so far,
+ * which count with a device tree or without. A machine given them makes
+ * the boot that reset would have made, which takes the flags. They are
+ * given when the machine is created, and only then.
+ */
+static void test_reset_state(void)
+{
+    const uint32_t rsts = PM_RSTS_HADWRF | pm_partition(5);
+    QTestState *qts = qtest_init("-machine raspi5b");
+    uint32_t val[1] = { 1 };
+    QDict *rsp;
+
+    g_assert_cmphex(machine_get(qts, "reset-status"), ==, PM_RSTS_HADPOR);
+    g_assert_cmphex(machine_get(qts, "reboot-flags"), ==, 0);
+    g_assert_cmpint(machine_get(qts, "boot-count"), ==, 1);
+
+    /* Linux's reboot "5 tryboot" through the watchdog, as it fires */
+    g_assert_cmphex(mbox_call(qts, FW_TAG_SET_REBOOT_FLAGS, sizeof(val), val),
+                    ==, FW_TAG_RESPONSE | sizeof(val));
+    pm_writel(qts, PM_RSTS, rsts);
+    g_assert_cmphex(machine_get(qts, "reset-status"), ==, rsts);
+    g_assert_cmphex(machine_get(qts, "reboot-flags"), ==, 1);
+    g_assert_cmpint(machine_get(qts, "boot-count"), ==, 1);
+
+    rsp = qtest_qmp(qts, "{ 'execute': 'qom-set', 'arguments':"
+                    " { 'path': '/machine', 'property': 'boot-count',"
+                    "   'value': 7 } }");
+    g_assert(qdict_haskey(rsp, "error"));
+    qobject_unref(rsp);
+    g_assert_cmpint(machine_get(qts, "boot-count"), ==, 1);
+    qtest_quit(qts);
+
+    qts = qtest_initf("-machine raspi5b,reset-status=0x%x,reboot-flags=1,"
+                      "boot-count=1", rsts);
+    g_assert_cmphex(pm_readl(qts, PM_RSTS), ==, rsts);
+    g_assert_cmphex(fw_reboot_flags(qts), ==, 0);
+    g_assert_cmpint(machine_get(qts, "boot-count"), ==, 2);
+    qtest_system_reset(qts);
+    g_assert_cmpint(machine_get(qts, "boot-count"), ==, 3);
+    qtest_quit(qts);
+}
+
 static void test_unimplemented_regions(void)
 {
     QTestState *qts = qtest_init("-machine raspi5b");
@@ -4764,6 +4813,7 @@ int main(int argc, char **argv)
     qtest_add_func("/raspi5b/board/power-button-migrate",
                    test_power_button_migrate);
     qtest_add_func("/raspi5b/board/act-led", test_act_led);
+    qtest_add_func("/raspi5b/board/reset-state", test_reset_state);
     qtest_add_func("/raspi5b/pm/registers", test_pm_registers);
     qtest_add_func("/raspi5b/pm/watchdog-countdown",
                    test_pm_watchdog_countdown);

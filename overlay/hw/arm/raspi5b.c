@@ -71,6 +71,17 @@ struct Raspi5bMachineState {
      * keeps in a register a reset leaves alone
      */
     uint8_t boot_count;
+    /*
+     * The rest of what a reset leaves for the boot it starts, when given
+     * for the first boot (see raspi5b_carry_reset()): the reset status
+     * and the firmware's reboot flags
+     */
+    uint32_t reset_status;
+    bool reset_status_set;
+    uint32_t reboot_flags;
+    /* The partition the boot's files come from, when given */
+    uint32_t boot_partition;
+    bool boot_partition_set;
 
     /*
      * The power button, which system_powerdown presses for a moment: its
@@ -548,15 +559,17 @@ static uint32_t raspi5b_rsts_partition(uint32_t rsts)
 /*
  * What the firmware reports about the boot it is making, which it writes
  * afresh each time: the reset status it found, the partition it boots
- * from, which for files QEMU supplies is the one the OS asked for (0 on
- * power-on), and the boot's number since power-on
+ * from, and the boot's number since power-on. The files QEMU supplies
+ * come from the partition boot-partition names, if it names one, and
+ * otherwise stand for the one the OS asked for (0 at power-on).
  */
 static void raspi5b_boot_values(const Raspi5bMachineState *s,
                                 uint32_t *rsts, uint32_t *partition,
                                 uint8_t *count)
 {
     *rsts = s->soc.pm.rsts;
-    *partition = raspi5b_rsts_partition(*rsts);
+    *partition = s->boot_partition_set ? s->boot_partition
+                                       : raspi5b_rsts_partition(*rsts);
     *count = s->boot_count + 1;
 }
 
@@ -666,8 +679,9 @@ static void raspi5b_fdt_chosen(const Raspi5bMachineState *s, void *fdt,
                           RASPI5B_BOOT_MODE_RPIBOOT);
     qemu_fdt_setprop_cell(fdt, "/chosen/bootloader", "partition", partition);
     qemu_fdt_setprop_cell(fdt, "/chosen/bootloader", "rsts", rsts);
-    /* No reboot flags at power-on: see raspi5b_bootloader() */
-    qemu_fdt_setprop_cell(fdt, "/chosen/bootloader", "tryboot", 0);
+    /* The reboot flags a reset left, which raspi5b_bootloader() takes */
+    qemu_fdt_setprop_cell(fdt, "/chosen/bootloader", "tryboot",
+        !!(s->soc.property.reboot_flags & BCM2712_REBOOT_FLAG_TRYBOOT));
     /* No USB, network, tryboot, RAM disk, NVMe or secure boot */
     qemu_fdt_setprop_cell(fdt, "/chosen/bootloader", "capabilities", 0);
     qemu_fdt_setprop_cell(fdt, "/chosen/bootloader", "arg1", 0);
@@ -785,13 +799,14 @@ static void raspi5b_modify_dtb(const struct arm_boot_info *info, void *fdt)
 }
 
 /*
- * What the bootloader does for each boot. It takes the reboot flags the
- * last boot left in the firmware, which are for this boot only. QEMU
- * copies the same tree back into memory at every reset, where the
- * firmware writes a new one for each boot: bring the values that change
- * from boot to boot up to date first, including a new KASLR seed (QEMU
- * renews rng-seed itself). Registered before the ROMs' own reset, so the
- * boot the reset starts sees them.
+ * What the bootloader does for each boot. It counts the boot, with a
+ * device tree or without, and takes the reboot flags the last boot left
+ * in the firmware, which are for this boot only. QEMU copies the same
+ * tree back into memory at every reset, where the firmware writes a new
+ * one for each boot: bring the values that change from boot to boot up
+ * to date first, including a new KASLR seed (QEMU renews rng-seed
+ * itself). Registered before the ROMs' own reset, so the boot the reset
+ * starts sees them.
  */
 static void raspi5b_bootloader(void *opaque)
 {
@@ -804,6 +819,8 @@ static void raspi5b_bootloader(void *opaque)
     uint32_t rsts, partition;
     uint8_t count;
 
+    raspi5b_boot_values(s, &rsts, &partition, &count);
+    s->boot_count = count;
     s->soc.property.reboot_flags = 0;
     /* arm_load_dtb() has left the tree here if it loaded one */
     if (!MACHINE(s)->fdt) {
@@ -814,8 +831,6 @@ static void raspi5b_bootloader(void *opaque)
         !rom_ptr_for_as(as, s->binfo.dtb_start, fdt_totalsize(fdt))) {
         return;
     }
-    raspi5b_boot_values(s, &rsts, &partition, &count);
-    s->boot_count = count;
     node = fdt_path_offset(fdt, "/chosen/bootloader");
     if (node >= 0) {
         fdt_setprop_inplace_u32(fdt, node, "rsts", rsts);
@@ -1159,6 +1174,22 @@ static void raspi5b_sd_card(Raspi5bMachineState *s)
     qdev_realize_and_unref(card, bus, &error_fatal);
 }
 
+/*
+ * What a reset leaves for the boot it starts (the reset status, the
+ * firmware's reboot flags and the boot count) may be given for the first
+ * boot, as the properties of those names read it from a machine whose
+ * guest has asked for a reset that QEMU has not made yet: the first boot
+ * is then the one that reset would have started, for a host that runs
+ * QEMU afresh for each boot.
+ */
+static void raspi5b_carry_reset(Raspi5bMachineState *s)
+{
+    if (s->reset_status_set) {
+        s->soc.pm.rsts = s->reset_status;
+    }
+    s->soc.property.reboot_flags = s->reboot_flags;
+}
+
 static void raspi5b_machine_init(MachineState *machine)
 {
     Raspi5bMachineState *s = RASPI5B_MACHINE(machine);
@@ -1201,6 +1232,7 @@ static void raspi5b_machine_init(MachineState *machine)
     /* The command line tag answers with -append: cmdline.txt's part */
     qdev_prop_set_string(soc, "command-line", machine->kernel_cmdline);
     qdev_realize(soc, NULL, &error_fatal);
+    raspi5b_carry_reset(s);
     raspi5b_wire_gpio(s);
     raspi5b_sd_card(s);
     /* A monitor on HDMI0 */
@@ -1273,6 +1305,102 @@ static void raspi5b_set_builtin_dtb(Object *obj, bool value, Error **errp)
     RASPI5B_MACHINE(obj)->builtin_dtb = value;
 }
 
+/*
+ * The state a reset leaves is given for the first boot only, and reads as
+ * it stands once the machine exists
+ */
+static bool raspi5b_settable(const char *name, Error **errp)
+{
+    if (phase_check(PHASE_MACHINE_INITIALIZED)) {
+        error_setg(errp, "'%s' can only be set when the machine is created",
+                   name);
+        return false;
+    }
+    return true;
+}
+
+static void raspi5b_get_reset_status(Object *obj, Visitor *v,
+                                     const char *name, void *opaque,
+                                     Error **errp)
+{
+    Raspi5bMachineState *s = RASPI5B_MACHINE(obj);
+    uint32_t value = phase_check(PHASE_MACHINE_INITIALIZED) ?
+                     s->soc.pm.rsts : s->reset_status;
+
+    visit_type_uint32(v, name, &value, errp);
+}
+
+static void raspi5b_set_reset_status(Object *obj, Visitor *v,
+                                     const char *name, void *opaque,
+                                     Error **errp)
+{
+    Raspi5bMachineState *s = RASPI5B_MACHINE(obj);
+
+    if (raspi5b_settable(name, errp) &&
+        visit_type_uint32(v, name, &s->reset_status, errp)) {
+        s->reset_status_set = true;
+    }
+}
+
+static void raspi5b_get_reboot_flags(Object *obj, Visitor *v,
+                                     const char *name, void *opaque,
+                                     Error **errp)
+{
+    Raspi5bMachineState *s = RASPI5B_MACHINE(obj);
+    uint32_t value = phase_check(PHASE_MACHINE_INITIALIZED) ?
+                     s->soc.property.reboot_flags : s->reboot_flags;
+
+    visit_type_uint32(v, name, &value, errp);
+}
+
+static void raspi5b_set_reboot_flags(Object *obj, Visitor *v,
+                                     const char *name, void *opaque,
+                                     Error **errp)
+{
+    Raspi5bMachineState *s = RASPI5B_MACHINE(obj);
+
+    if (raspi5b_settable(name, errp)) {
+        visit_type_uint32(v, name, &s->reboot_flags, errp);
+    }
+}
+
+static void raspi5b_get_boot_count(Object *obj, Visitor *v,
+                                   const char *name, void *opaque,
+                                   Error **errp)
+{
+    visit_type_uint8(v, name, &RASPI5B_MACHINE(obj)->boot_count, errp);
+}
+
+static void raspi5b_set_boot_count(Object *obj, Visitor *v,
+                                   const char *name, void *opaque,
+                                   Error **errp)
+{
+    Raspi5bMachineState *s = RASPI5B_MACHINE(obj);
+
+    if (raspi5b_settable(name, errp)) {
+        visit_type_uint8(v, name, &s->boot_count, errp);
+    }
+}
+
+static void raspi5b_get_boot_partition(Object *obj, Visitor *v,
+                                       const char *name, void *opaque,
+                                       Error **errp)
+{
+    visit_type_uint32(v, name, &RASPI5B_MACHINE(obj)->boot_partition, errp);
+}
+
+static void raspi5b_set_boot_partition(Object *obj, Visitor *v,
+                                       const char *name, void *opaque,
+                                       Error **errp)
+{
+    Raspi5bMachineState *s = RASPI5B_MACHINE(obj);
+
+    if (raspi5b_settable(name, errp) &&
+        visit_type_uint32(v, name, &s->boot_partition, errp)) {
+        s->boot_partition_set = true;
+    }
+}
+
 static void raspi5b_machine_instance_init(Object *obj)
 {
     Raspi5bMachineState *s = RASPI5B_MACHINE(obj);
@@ -1332,6 +1460,34 @@ static void raspi5b_machine_class_init(ObjectClass *oc, const void *data)
                               raspi5b_set_serial, NULL, NULL);
     object_class_property_set_description(oc, "serial",
         "The board serial number the firmware reports (GET_BOARD_SERIAL)");
+
+    object_class_property_add(oc, "boot-partition", "uint32",
+                              raspi5b_get_boot_partition,
+                              raspi5b_set_boot_partition, NULL, NULL);
+    object_class_property_set_description(oc, "boot-partition",
+        "The partition of the SD card the boot files come from, which the "
+        "firmware reports; by default, the one the reset status asks for");
+
+    object_class_property_add(oc, "reset-status", "uint32",
+                              raspi5b_get_reset_status,
+                              raspi5b_set_reset_status, NULL, NULL);
+    object_class_property_set_description(oc, "reset-status",
+        "PM_RSTS for the first boot, with the partition the OS asked for "
+        "(by default, a power-on's); a running machine reads it as it is");
+
+    object_class_property_add(oc, "reboot-flags", "uint32",
+                              raspi5b_get_reboot_flags,
+                              raspi5b_set_reboot_flags, NULL, NULL);
+    object_class_property_set_description(oc, "reboot-flags",
+        "The firmware's reboot flags for the first boot (1: tryboot); a "
+        "running machine reads those the OS has set for the next");
+
+    object_class_property_add(oc, "boot-count", "uint8",
+                              raspi5b_get_boot_count, raspi5b_set_boot_count,
+                              NULL, NULL);
+    object_class_property_set_description(oc, "boot-count",
+        "The boots before the first one, as the firmware counts them in 8 "
+        "bits; a running machine reads its boots so far");
 }
 
 static const TypeInfo raspi5b_machine_types[] = {

@@ -34,6 +34,7 @@ from test_suite import DTS
 
 SCRIPT = ROOT / "scripts" / "rpi5-boot"
 FIRSTBOOT = GUEST.with_name("firstboot.elf")
+REBOOT_GUEST = GUEST.with_name("reboot.elf")
 
 FIRMWARE = Path(os.environ.get("FIRMWARE", "/nonexistent"))
 DTMERGE = FIRMWARE / "dtmerge"
@@ -603,14 +604,16 @@ class OverlayTest(unittest.TestCase):
 # ---------------------------------------------------------------------------
 # config.txt and the files it names
 
-def config(text, files=None, partition=1, verbose=False):
-    """config.txt evaluated for a Pi 5 booting from @partition: (the
+def config(text, files=None, partition=1, verbose=False, requested=0,
+           reset=None):
+    """config.txt evaluated for a Pi 5 booting from @partition, after
+    @reset (a power-on's by default) and asked for @requested: (the
     Config, what was logged)"""
     card = {"config.txt": text}
     card.update(files or {})
     with Logs() as logs:
         result = rb.Config(FakeFs(card), "config.txt",
-                           rb.BootVars(partition), verbose)
+                           rb.BootVars(partition, requested, reset), verbose)
     return result, logs
 
 
@@ -703,6 +706,49 @@ class ConfigTest(unittest.TestCase):
             conf.values,
             {"a": "pi5", "d": "pi5", "f": "serial", "h": "partition-1",
              "j": "no-request", "k": "count", "q": "all"})
+
+    def test_boot_filters(self):
+        """The reset that starts the boot sets what [tryboot], boot_count
+        and partition test: the tryboot flag, the boot count (8 bits)
+        and the partition the OS asked for"""
+        text = ("[tryboot]\na=tryboot\n[all]\n"
+                "[boot_count=5]\nb=five\n[all]\n"
+                "[partition=3]\nc=asked\n[all]\n"
+                "[boot_count=0]\nd=wrapped\n")
+        conf, _ = config(text, requested=3,
+                         reset=rb.Reset(0x1000, rb.TRYBOOT_FLAG, 4))
+        self.assertEqual(conf.values,
+                         {"a": "tryboot", "b": "five", "c": "asked"})
+        conf, _ = config(text, reset=rb.Reset(0x1000, 0, 255))
+        self.assertEqual(conf.values, {"d": "wrapped"})
+
+    def test_autoboot_filters(self):
+        """autoboot.txt has [tryboot] beside [all] and [none], and no
+        other filter"""
+        fs = FakeFs({"autoboot.txt": "[pi5]\na=1\n[all]\n[tryboot]\nb=1\n"
+                                     "[none]\nc=1\n[all]\nd=1\n"})
+        for flags, values in ((0, {"d": "1"}),
+                              (rb.TRYBOOT_FLAG, {"b": "1", "d": "1"})):
+            conf = rb.Config(fs, "autoboot.txt", rb.AutobootVars(
+                1, reset=rb.Reset(0x1000, flags, 0)))
+            self.assertEqual(conf.values, values)
+
+    def test_reset(self):
+        """What a reset leaves, as the machine's properties read it"""
+        power_on = rb.Reset()
+        self.assertEqual((power_on.partition, power_on.tryboot,
+                          power_on.boot_count, power_on.machine_options()),
+                         (0, False, 1, []))
+        # The watchdog's reset to partition 4 (bits 0, 2, .. 10), and a
+        # tryboot flag; the next boot is the fourth
+        watchdog = rb.Reset(0x30, 0x1, 3)
+        self.assertEqual((watchdog.partition, watchdog.tryboot,
+                          watchdog.boot_count), (4, True, 4))
+        self.assertEqual(watchdog.machine_options(),
+                         ["reset-status=0x30", "reboot-flags=0x1",
+                          "boot-count=3"])
+        self.assertEqual(rb.Reset(0x555).partition, 63)
+        self.assertEqual(rb.Reset(0x1000, 0, 255).boot_count, 0)
 
     def test_include(self):
         """An included file is read in place, filters and all"""
@@ -898,10 +944,16 @@ class CardTest(unittest.TestCase):
         self.addCleanup(shutil.rmtree, self.tmp)
         self.image = self.tmp / "card.img"
 
-    def boot_partition(self, requested=None):
+    def boot_partition(self, requested=None, reset=None, explicit=True):
+        """The partition the bootloader boots after @reset (a power-on's
+        by default), asked for @requested by the user (@explicit) or by
+        the reboot: (its number, its file system, what was logged, and
+        whether autoboot.txt makes a tryboot's switch at the partition)"""
         with Logs() as logs:
-            part, fs = rb.boot_partition(str(self.image), requested, False)
-        return part.number, fs, logs
+            part, fs, a_b = rb.boot_partition(
+                str(self.image), requested, reset or rb.Reset(), False,
+                explicit)
+        return part.number, fs, logs, a_b
 
     def test_mbr(self):
         make_card(self.image, dict(BOOT_FILES, **{
@@ -910,7 +962,7 @@ class CardTest(unittest.TestCase):
             [(p.number, p.start, p.size) for p in rb.partitions(self.image)],
             [(1, 2048 * SECTOR, 16384 * SECTOR),
              (2, 18432 * SECTOR, (65536 - 18432) * SECTOR)])
-        number, fs, logs = self.boot_partition()
+        number, fs, logs, _ = self.boot_partition()
         self.assertEqual((number, logs), (1, []))
         # Names are found whatever their case, as the firmware finds them
         self.assertTrue(fs.exists("overlays/test.dtbo"))
@@ -970,22 +1022,26 @@ class CardTest(unittest.TestCase):
             [(1, 2048, 8192), (2, 10240, 8192)])
         self.assertEqual(self.boot_partition()[0], 2)
 
+    def make_fat_card(self, *partitions):
+        """A card of FAT partitions, holding @partitions' files in turn"""
+        blank_image(self.image, 64 << 20)
+        entries = [(0x0c, 2048 + 8192 * i, 8192)
+                   for i in range(len(partitions))]
+        write_at(self.image, 0, mbr(entries))
+        for (_, start, sectors), files in zip(entries, partitions):
+            format_fat(self.image, start, sectors, files)
+
     def make_ab_card(self, autoboot):
         """Partition 1 FAT with autoboot.txt, 2 and 3 FAT boot partitions"""
-        blank_image(self.image, 32 << 20)
-        write_at(self.image, 0, mbr([(0x0c, 2048, 8192),
-                                     (0x0c, 10240, 8192),
-                                     (0x0c, 18432, 8192)]))
-        format_fat(self.image, 2048, 8192, {"autoboot.txt": autoboot})
-        for start in (10240, 18432):
-            format_fat(self.image, start, 8192, BOOT_FILES)
+        self.make_fat_card({"autoboot.txt": autoboot}, BOOT_FILES,
+                           BOOT_FILES)
 
     def test_autoboot(self):
         """autoboot.txt in the first partition names the one to boot, as
         its filters select"""
         self.make_ab_card("[all]\ntryboot_a_b=1\nboot_partition=3\n"
                           "[tryboot]\nboot_partition=2\n")
-        number, _, logs = self.boot_partition()
+        number, _, logs, _ = self.boot_partition()
         self.assertEqual((number, logs), (3, []))
         self.assertEqual(self.boot_partition(2)[0], 2)
         for requested, message in (
@@ -1001,10 +1057,54 @@ class CardTest(unittest.TestCase):
         """A partition autoboot.txt names that cannot boot is passed
         over"""
         self.make_ab_card("boot_partition=1\n")
-        number, _, logs = self.boot_partition()
+        number, _, logs, _ = self.boot_partition()
         self.assertEqual(number, 2)
         self.assertEqual(logs,
                          ["autoboot.txt: partition 1 is not bootable"])
+
+    def test_tryboot(self):
+        """A tryboot boots the partition autoboot.txt's [tryboot] section
+        names; with tryboot_a_b, that partition's config.txt is read, not
+        its tryboot.txt"""
+        for a_b in (0, 1):
+            with self.subTest(tryboot_a_b=a_b):
+                self.make_ab_card(f"[all]\ntryboot_a_b={a_b}\n"
+                                  "boot_partition=2\n"
+                                  "[tryboot]\nboot_partition=3\n")
+                self.assertEqual(self.boot_partition()[::3], (2, bool(a_b)))
+                self.assertEqual(
+                    self.boot_partition(reset=rb.Reset(
+                        0x1000, rb.TRYBOOT_FLAG, 1))[::3], (3, bool(a_b)))
+
+    def test_reboot_partition(self):
+        """The partition the OS asks for at its reboot is booted, whatever
+        autoboot.txt names, and a tryboot's too"""
+        self.make_ab_card("[all]\ntryboot_a_b=1\nboot_partition=2\n"
+                          "[tryboot]\nboot_partition=3\n")
+        self.assertEqual(self.boot_partition(3, explicit=False)[0], 3)
+        self.assertEqual(self.boot_partition(
+            2, rb.Reset(0x1004, rb.TRYBOOT_FLAG, 1), False)[::3], (2, True))
+
+    def test_partition_walk(self):
+        """A partition the OS asks for that cannot boot is passed over for
+        the next that can, up to partition 8, and then the first, as the
+        bootloader's PARTITION_WALK passes over it; as does one
+        autoboot.txt names. One --partition names is an error."""
+        self.make_fat_card({"autoboot.txt": "boot_partition=3\n"},
+                           BOOT_FILES, {"cmdline.txt": ""}, BOOT_FILES)
+        number, _, logs, _ = self.boot_partition()
+        self.assertEqual((number, logs),
+                         (4, ["autoboot.txt: partition 3 is not bootable"]))
+        for requested, number in ((3, 4), (4, 4), (5, 2), (1, 2)):
+            with self.subTest(requested=requested):
+                self.assertEqual(
+                    self.boot_partition(requested, explicit=False)[:3:2],
+                    (number, [] if requested == number else [
+                        f"partition {requested}, which the reboot asks "
+                        "for, is not bootable"]))
+        with self.assertRaisesRegex(rb.BootError, "partition 3 has no "
+                                    "config.txt"):
+            self.boot_partition(3)
 
     def test_no_boot_partition(self):
         make_card(self.image, {"cmdline.txt": ""})
@@ -1043,6 +1143,67 @@ class CardTest(unittest.TestCase):
 
 
 @unittest.skipUnless(HAVE_MTOOLS and HAVE_DTC, "needs mtools and dtc")
+class PrepareTest(unittest.TestCase):
+    """The boot a reset starts, read from the card: a tryboot reads
+    tryboot.txt, and config.txt's filters see the boot count and the
+    partition asked for"""
+
+    CONFIG = ("device_tree=\n"
+              "[boot_count=3]\ncmdline=third.txt\n[all]\n"
+              "[partition=1]\ncmdline=asked.txt\n")
+    FILES = {"kernel8.img": b"", "cmdline.txt": "first",
+             "third.txt": "third", "asked.txt": "asked", "try.txt": "try"}
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp)
+        self.image = self.tmp / "card.img"
+
+    def prepare(self, reset, *options):
+        args = rb.parse_args([*options, str(self.image)])
+        with Logs() as logs:
+            boot = rb.prepare(str(self.image), args, reset)
+        return boot.config.name, boot.cmdline, logs
+
+    def test_config_files(self):
+        make_card(self.image, dict(self.FILES, **{
+            "config.txt": self.CONFIG,
+            "tryboot.txt": "device_tree=\ncmdline=try.txt\n"}))
+        for reset, options, expected in (
+                (rb.Reset(), (), ("config.txt", "first")),
+                # A tryboot, and the boot after it
+                (rb.Reset(0x1000, rb.TRYBOOT_FLAG, 1), (),
+                 ("tryboot.txt", "try")),
+                (rb.Reset(0x1000, 0, 2), (), ("config.txt", "third")),
+                # A reboot to partition 1, and --partition 1
+                (rb.Reset(0x1001, 0, 0), (), ("config.txt", "asked")),
+                (rb.Reset(), ("--partition", "1"), ("config.txt", "asked"))):
+            with self.subTest(reset=vars(reset), options=options):
+                self.assertEqual(self.prepare(reset, *options),
+                                 (*expected, []))
+
+    def test_tryboot_a_b(self):
+        """With tryboot_a_b, a tryboot reads config.txt: autoboot.txt
+        switches partitions for it"""
+        make_card(self.image, dict(self.FILES, **{
+            "config.txt": self.CONFIG, "tryboot.txt": "cmdline=try.txt\n",
+            "autoboot.txt": "tryboot_a_b=1\n"}))
+        self.assertEqual(self.prepare(rb.Reset(0x1000, rb.TRYBOOT_FLAG, 0)),
+                         ("config.txt", "first", []))
+
+    def test_no_tryboot_txt(self):
+        """A tryboot without tryboot.txt boots with the firmware's
+        defaults"""
+        make_card(self.image, dict(self.FILES, **{
+            "config.txt": self.CONFIG,
+            "bcm2712-rpi-5-b.dtb": dtc(BASE_DTS)}))
+        self.assertEqual(
+            self.prepare(rb.Reset(0x1000, rb.TRYBOOT_FLAG, 0)),
+            (None, "first", ["partition 1 has no tryboot.txt for the "
+                             "tryboot: the firmware's defaults apply"]))
+
+
+@unittest.skipUnless(HAVE_MTOOLS and HAVE_DTC, "needs mtools and dtc")
 class PrintTest(unittest.TestCase):
     """--print: one boot's files written, and QEMU's command line"""
 
@@ -1070,7 +1231,8 @@ class PrintTest(unittest.TestCase):
         image = str(self.image).replace(",", ",,")
         cmdline = ("console=ttyAMA10,115200 root=/dev/mmcblk0p2 quiet")
         self.assertEqual(shlex.split(stdout), [
-            "/opt/qemu", "-M", "raspi5b,secure=on,dtb-address=0x1f0000",
+            "/opt/qemu", "-M",
+            "raspi5b,secure=on,dtb-address=0x1f0000,boot-partition=1",
             "-nographic", "-drive", f"if=sd,format=raw,file={image}",
             "-bios", f"{out}/armstub.bin", "-kernel", f"{out}/kernel.img",
             "-dtb", f"{out}/device-tree.dtb", "-initrd", f"{out}/initramfs",
@@ -1095,7 +1257,7 @@ class PrintTest(unittest.TestCase):
                                           "--graphics", self.image)
         self.assertEqual((status, stderr), (0, ""))
         self.assertEqual(shlex.split(stdout)[1:3],
-                         ["-M", "raspi5b,builtin-dtb=off"])
+                         ["-M", "raspi5b,builtin-dtb=off,boot-partition=1"])
         self.assertNotIn("-nographic", stdout)
         self.assertEqual(sorted(p.name for p in out.iterdir()),
                          [".rpi5-boot", "cmdline.txt", "kernel.img"])
@@ -1212,10 +1374,89 @@ class RunTest(unittest.TestCase):
         self.assertIn(status, (0, 128 + signal.SIGINT))
 
 
+@unittest.skipUnless(HAVE_MTOOLS and HAVE_DTC, "needs mtools and dtc")
+@unittest.skipUnless(QEMU.exists() and REBOOT_GUEST.exists(),
+                     "build QEMU and the guests first (make build guest)")
+class ResetStateTest(unittest.TestCase):
+    """What a reboot leaves reaches the boot it starts, as on a Pi 5: the
+    tryboot flag, the partition the OS asked for and the boot count pick
+    the partition and the configuration file, and the machine reports
+    them in /chosen/bootloader. The guest reports each boot, and ends it
+    as the "bootN=" word of its command line says."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp)
+        self.image = self.tmp / "card.img"
+        self.env = dict(os.environ, QEMU=str(QEMU))
+        self.files = {"kernel8.img": REBOOT_GUEST,
+                      "bcm2712-rpi-5-b.dtb": dtc(DTS.read_text())}
+
+    def boots(self):
+        """Run the card to its end: what the guest said of each boot, and
+        what rpi5-boot logged"""
+        status, out, err = run_boot(self.image, env=self.env)
+        self.assertEqual(status, 0, out + err)
+        return [line[len("reboot: "):] for line in out.splitlines()
+                if line.startswith("reboot: ")], err
+
+    def test_tryboot_txt(self):
+        """A tryboot reads tryboot.txt, the boot after it config.txt, in
+        which boot_count selects the third boot's command line"""
+        make_card(self.image, dict(self.files, **{
+            "config.txt": "[boot_count=3]\ncmdline=third.txt\n",
+            "tryboot.txt": "cmdline=try.txt\n",
+            "cmdline.txt": "tag=config boot1=tryboot\n",
+            "try.txt": "tag=tryboot boot2=reboot\n",
+            "third.txt": "tag=third\n"}))
+        boots, err = self.boots()
+        self.assertEqual(boots, [
+            "boot 1 from partition 1, reset status 0x1000, tryboot 0, "
+            "tag config: tryboot",
+            "boot 2 from partition 1, reset status 0x1000, tryboot 1, "
+            "tag tryboot: reboot",
+            "boot 3 from partition 1, reset status 0x1000, tryboot 0, "
+            "tag third: off"])
+        self.assertEqual(err, "rpi5-boot: the guest rebooted: reading the "
+                         "card again\n" * 2)
+
+    def test_a_b(self):
+        """autoboot.txt's A/B boot: a tryboot boots B, the boot after it A
+        again; a reboot to partition 4, which the watchdog's reset status
+        carries, boots it whatever autoboot.txt says; partition 63 halts"""
+        autoboot = ("[all]\ntryboot_a_b=1\nboot_partition=2\n"
+                    "[tryboot]\nboot_partition=3\n")
+        partitions = [{"autoboot.txt": autoboot}] + [
+            dict(self.files, **{"config.txt": "", "cmdline.txt": cmdline})
+            for cmdline in ("tag=A boot1=tryboot boot3=partition4\n",
+                            "tag=B boot2=reboot\n", "tag=C boot4=halt\n")]
+        blank_image(self.image, 64 << 20)
+        entries = [(0x0c, 2048 + 16384 * i, 16384) for i in range(4)]
+        write_at(self.image, 0, mbr(entries))
+        for (_, start, sectors), files in zip(entries, partitions):
+            format_fat(self.image, start, sectors, files)
+        boots, err = self.boots()
+        self.assertEqual(boots, [
+            "boot 1 from partition 2, reset status 0x1000, tryboot 0, "
+            "tag A: tryboot",
+            "boot 2 from partition 3, reset status 0x1000, tryboot 1, "
+            "tag B: reboot",
+            "boot 3 from partition 2, reset status 0x1000, tryboot 0, "
+            "tag A: partition4",
+            # The watchdog's reset: HADWRF, and partition 4 in bit 4
+            "boot 4 from partition 4, reset status 0x30, tryboot 0, "
+            "tag C: halt"])
+        self.assertEqual(err, "rpi5-boot: the guest rebooted: reading the "
+                         "card again\n" * 3)
+
+
 # Stands in for QEMU: speaks QMP as QEMU does, and plays a boot. A command
 # line with "firstboot" is Raspberry Pi OS's first boot: it takes
-# "firstboot" out of cmdline.txt on the card and reboots. Otherwise the
-# guest powers off, or QEMU fails with the status FAKE_QEMU_STATUS gives.
+# "firstboot" out of cmdline.txt on the card and reboots, and then waits
+# for the machine's state to be read (a plain reset's: this boot's
+# count), unless FAKE_QEMU_GONE has it exit as QEMU does without
+# shutdown=pause. Otherwise the guest powers off, or QEMU fails with the
+# status FAKE_QEMU_STATUS gives.
 FAKE_QEMU = """\
 import json, os, re, socket, subprocess, sys
 
@@ -1233,11 +1474,16 @@ def send(message):
     qmp.sendall(json.dumps(message).encode() + b"\\n")
 
 
+def expect(command):
+    message = json.loads(lines.readline())
+    if message["execute"] != command:
+        sys.exit(2)
+    return message
+
+
 send({"QMP": {"version": {}, "capabilities": []}})
 for command in ("qmp_capabilities", "cont"):
-    if json.loads(lines.readline())["execute"] != command:
-        sys.exit(2)
-    send({"return": {}})
+    send({"return": {}, "id": expect(command)["id"]})
 cmdline = args[args.index("-append") + 1]
 if "firstboot" in cmdline:
     new = os.path.join(os.path.dirname(os.environ["FAKE_QEMU_LOG"]),
@@ -1250,6 +1496,17 @@ if "firstboot" in cmdline:
 else:
     reason = "guest-shutdown"
 send({"event": "SHUTDOWN", "data": {"guest": True, "reason": reason}})
+if os.environ.get("FAKE_QEMU_GONE"):
+    sys.exit(0)
+if reason == "guest-reset":
+    count = re.search(r"boot-count=(\\d+)", args[args.index("-M") + 1])
+    state = {"reset-status": 0x1000, "reboot-flags": 0,
+             "boot-count": int(count[1]) + 1 if count else 1}
+    for _ in state:
+        message = expect("qom-get")
+        send({"return": state[message["arguments"]["property"]],
+              "id": message["id"]})
+send({"return": {}, "id": expect("quit")["id"]})
 """
 
 
@@ -1279,18 +1536,41 @@ class RebootTest(unittest.TestCase):
                 self.log.read_text().splitlines()]
 
     def test_reboot(self):
+        """The next boot is the reset's: the machine starts with what the
+        reset left, as QEMU read it"""
         status, _, err = run_boot("--qemu", self.qemu, self.image,
                                   env=self.env)
         self.assertEqual((status, err), (
             0, "rpi5-boot: the guest rebooted: reading the card again\n"))
         boots = self.boots()
         self.assertEqual(len(boots), 2)
-        for args, cmdline in zip(boots, ("root=/dev/mmcblk0p2 firstboot",
-                                         "root=/dev/mmcblk0p2")):
+        for args, cmdline, machine in zip(
+                boots, ("root=/dev/mmcblk0p2 firstboot",
+                        "root=/dev/mmcblk0p2"),
+                ("raspi5b,builtin-dtb=off,boot-partition=1",
+                 "raspi5b,builtin-dtb=off,boot-partition=1,"
+                 "reset-status=0x1000,reboot-flags=0x0,boot-count=1")):
             self.assertEqual(args[args.index("-append") + 1], cmdline)
+            self.assertEqual(args[args.index("-M") + 1], machine)
             self.assertIn("-S", args)
-            self.assertEqual(args[args.index("-action") + 1],
-                             "reboot=shutdown")
+            # QEMU stops the guest at the reboot, for its state to be
+            # read, and at a power-off
+            self.assertEqual([args[i + 1] for i, arg in enumerate(args)
+                              if arg == "-action"],
+                             ["reboot=shutdown", "shutdown=pause"])
+
+    def test_state_lost(self):
+        """A QEMU that ends at the reboot, before it is asked what the
+        reset left, leaves the next boot a power-on's"""
+        status, _, err = run_boot("--qemu", self.qemu, self.image,
+                                  env=dict(self.env, FAKE_QEMU_GONE="1"))
+        self.assertEqual((status, err), (
+            0, "rpi5-boot: QEMU did not say what the reset left: the next "
+               "boot is a power-on's\n"
+               "rpi5-boot: the guest rebooted: reading the card again\n"))
+        self.assertEqual([args[args.index("-M") + 1]
+                          for args in self.boots()],
+                         ["raspi5b,builtin-dtb=off,boot-partition=1"] * 2)
 
     def test_qemu_fails(self):
         status, _, err = run_boot("--qemu", self.qemu, self.image,
