@@ -97,19 +97,39 @@ class BiosOptionsTest(unittest.TestCase):
                                              "-kernel", str(kernel))
                     self.assertIn(" overlaps the armstub at 0x0-0x2fffff", err)
 
-    def test_kernel_too_large(self):
-        """An Image whose declared size, BSS included, reaches the
-        VideoCore's memory"""
+    def test_image_header(self):
+        """Images whose header takes them into the VideoCore's memory: by
+        the size it declares, BSS included, or by values that would wrap
+        around"""
         with tempfile.TemporaryDirectory() as tmp:
             image = Path(tmp) / "Image"
-            header = bytearray(64)
-            header[16:24] = (1 << 30).to_bytes(8, "little")    # image_size
-            header[56:60] = b"ARM\x64"
-            image.write_bytes(header)
-            self.assertRefused("the armstub, kernel, initrd and device tree "
-                               f"must fit below {VC_RAM_BASE:#x}",
-                               "-M", "raspi5b,secure=on",
-                               "-bios", str(GUEST), "-kernel", str(image))
+            for text_offset, image_size in ((0, 1 << 30),
+                                            ((1 << 64) - (1 << 20), 1 << 20),
+                                            (0, (1 << 64) - (1 << 20))):
+                header = bytearray(64)
+                header[8:16] = text_offset.to_bytes(8, "little")
+                header[16:24] = image_size.to_bytes(8, "little")
+                header[56:60] = b"ARM\x64"
+                image.write_bytes(header)
+                with self.subTest(text_offset=hex(text_offset),
+                                  image_size=hex(image_size)):
+                    self.assertRefused(f"could not load kernel '{image}': "
+                                       f"its text_offset {text_offset:#x} "
+                                       f"and size {image_size:#x} take it "
+                                       f"past {VC_RAM_BASE:#x}, where the "
+                                       "VideoCore's memory starts",
+                                       "-M", "raspi5b,secure=on",
+                                       "-bios", str(GUEST),
+                                       "-kernel", str(image))
+
+    def test_past_videocore(self):
+        """A device tree placed where it runs into the VideoCore's memory,
+        which everything -bios loads must stay below"""
+        self.assertRefused("the armstub, kernel, initrd and device tree "
+                           f"must fit below {VC_RAM_BASE:#x}",
+                           "-M", "raspi5b,secure=on,"
+                           f"dtb-address={VC_RAM_BASE - 8:#x}",
+                           "-bios", str(GUEST))
 
 
 if __name__ == "__main__":

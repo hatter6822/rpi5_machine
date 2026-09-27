@@ -1168,6 +1168,34 @@ static void test_bios_kernel(void)
     unlink(initrd_file);
 }
 
+/*
+ * A kernel from before Linux 3.17 has no image_size in its header, and a
+ * text_offset of 0x80000 in its own byte order: a big-endian one's is
+ * taken as that too
+ */
+static void test_bios_old_kernel(void)
+{
+    const uint64_t kernel = BIOS_KERNEL_ADDR + 0x80000;
+    g_autofree char *stub = armstub_file(true);
+    g_autofree char *kernel_file = NULL;
+    uint8_t image[4 * KiB] = { 0 };
+    QTestState *qts;
+
+    stq_be_p(image + IMAGE_TEXT_OFFSET, 0x80000);
+    memcpy(image + IMAGE_MAGIC, "ARM\x64", 4);
+    kernel_file = tmp_file("raspi5b-image-XXXXXX", image, sizeof(image));
+
+    qts = qtest_initf("-machine raspi5b,secure=on -bios %s -kernel %s",
+                      stub, kernel_file);
+    g_assert_cmphex(qtest_readl(qts, ARMSTUB_KERNEL_OFFSET), ==, kernel);
+    g_assert_cmphex(qtest_readl(qts, kernel + IMAGE_MAGIC), ==,
+                    ldl_le_p("ARM\x64"));
+    qtest_quit(qts);
+
+    unlink(stub);
+    unlink(kernel_file);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -1205,6 +1233,7 @@ int main(int argc, char **argv)
     qtest_add_func("/raspi5b/bios/header", test_bios_header);
     qtest_add_func("/raspi5b/bios/no-header", test_bios_no_header);
     qtest_add_func("/raspi5b/bios/kernel", test_bios_kernel);
+    qtest_add_func("/raspi5b/bios/old-kernel", test_bios_old_kernel);
 
     return g_test_run();
 }

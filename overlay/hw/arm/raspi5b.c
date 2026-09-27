@@ -52,6 +52,8 @@ struct Raspi5bMachineState {
     uint32_t board_rev;
     uint64_t serial;
     uint64_t dtb_addr;
+    /* The size of the image -bios loaded, which the built-in tree reserves */
+    uint64_t armstub_size;
     bool secure;
     bool builtin_dtb;
     /*
@@ -87,13 +89,23 @@ struct Raspi5bMachineState {
 #define RASPI5B_ARMSTUB_DTB_OFFSET      0xf8
 #define RASPI5B_ARMSTUB_KERNEL_OFFSET   0xfc
 
-/* The memory the firmware's device tree reserves for BL31 (atf@0) */
+/*
+ * The memory the firmware's device tree reserves for BL31 (atf@0), which
+ * the built-in tree extends to cover a larger armstub, in steps of 64 KiB,
+ * the largest page size of arm64 Linux
+ */
 #define RASPI5B_ARMSTUB_RESERVED        0x80000
+#define RASPI5B_ARMSTUB_RESERVED_ALIGN  (64 * KiB)
 
-/* The arm64 Linux Image header: text_offset, image_size and magic */
+/*
+ * The arm64 Linux Image header: text_offset, image_size and magic. Before
+ * Linux 3.17, image_size is 0 and text_offset 0x80000, in the kernel's
+ * byte order (Documentation/arch/arm64/booting.rst).
+ */
 #define RASPI5B_IMAGE_TEXT_OFFSET       8
 #define RASPI5B_IMAGE_SIZE              16
 #define RASPI5B_IMAGE_MAGIC             56
+#define RASPI5B_IMAGE_OLD_TEXT_OFFSET   0x80000
 
 /*
  * The bootloader configuration the firmware copies into its own memory
@@ -301,8 +313,11 @@ static void *raspi5b_get_dtb(const struct arm_boot_info *info, int *size)
                             "serial10:115200n8");
 
     if (MACHINE(s)->firmware) {
-        /* BL31, as the firmware's tree describes it */
+        /* BL31, as the firmware's tree describes it, or a larger armstub */
         static const char psci_compat[] = "arm,psci-1.0\0arm,psci-0.2";
+        uint64_t reserved = MAX(RASPI5B_ARMSTUB_RESERVED,
+                                QEMU_ALIGN_UP(s->armstub_size,
+                                              RASPI5B_ARMSTUB_RESERVED_ALIGN));
 
         qemu_fdt_add_subnode(fdt, "/psci");
         qemu_fdt_setprop(fdt, "/psci", "compatible", psci_compat,
@@ -311,8 +326,7 @@ static void *raspi5b_get_dtb(const struct arm_boot_info *info, int *size)
 
         qemu_fdt_add_subnode(fdt, "/reserved-memory/atf@0");
         qemu_fdt_setprop_sized_cells(fdt, "/reserved-memory/atf@0", "reg",
-                                     2, BCM2712_RAM_BASE,
-                                     2, RASPI5B_ARMSTUB_RESERVED);
+                                     2, BCM2712_RAM_BASE, 2, reserved);
         qemu_fdt_setprop(fdt, "/reserved-memory/atf@0", "no-map", NULL, 0);
     }
 
@@ -622,7 +636,8 @@ static void raspi5b_cpu_reset(void *opaque)
  * addresses, anything else, such as a Linux Image (gzipped or not), at
  * RASPI5B_KERNEL_ADDR plus the Image's text_offset. Returns the entry
  * point, and in *start and *end the memory the kernel uses, which for an
- * Image includes its BSS.
+ * Image includes the BSS its header declares. An Image whose header takes
+ * it past the VideoCore's memory is refused.
  */
 static hwaddr raspi5b_load_kernel(const char *filename, AddressSpace *as,
                                   hwaddr *start, hwaddr *end)
@@ -659,12 +674,26 @@ static hwaddr raspi5b_load_kernel(const char *filename, AddressSpace *as,
     }
 
     used = size;
-    /* image_size is 0 in the headers of kernels before Linux 3.17 */
     if (size >= RASPI5B_IMAGE_MAGIC + 4 &&
-        !memcmp(buffer + RASPI5B_IMAGE_MAGIC, "ARM\x64", 4) &&
-        ldq_le_p(buffer + RASPI5B_IMAGE_SIZE)) {
-        addr += ldq_le_p(buffer + RASPI5B_IMAGE_TEXT_OFFSET);
-        used = MAX(ldq_le_p(buffer + RASPI5B_IMAGE_SIZE), size);
+        !memcmp(buffer + RASPI5B_IMAGE_MAGIC, "ARM\x64", 4)) {
+        uint64_t text_offset = ldq_le_p(buffer + RASPI5B_IMAGE_TEXT_OFFSET);
+        uint64_t image_size = ldq_le_p(buffer + RASPI5B_IMAGE_SIZE);
+
+        if (!image_size) {
+            /* Linux before 3.17, whatever byte order the field is in */
+            text_offset = RASPI5B_IMAGE_OLD_TEXT_OFFSET;
+        }
+        used = MAX(image_size, size);
+        /* Subtracting, as a header's values could wrap a sum around */
+        if (text_offset > BCM2712_VC_RAM_BASE - addr ||
+            used > BCM2712_VC_RAM_BASE - addr - text_offset) {
+            error_report("could not load kernel '%s': its text_offset "
+                         "0x%" PRIx64 " and size 0x%" PRIx64 " take it past "
+                         "0x%x, where the VideoCore's memory starts",
+                         filename, text_offset, used, BCM2712_VC_RAM_BASE);
+            exit(EXIT_FAILURE);
+        }
+        addr += text_offset;
     }
     rom_add_blob_fixed_as(filename, buffer, size, addr, as);
     *start = addr;
@@ -715,6 +744,7 @@ static void raspi5b_boot_armstub(Raspi5bMachineState *s,
         exit(EXIT_FAILURE);
     }
     stub_end = BCM2712_RAM_BASE + size;
+    s->armstub_size = size;
 
     if (machine->kernel_filename) {
         kernel = raspi5b_load_kernel(machine->kernel_filename, as,

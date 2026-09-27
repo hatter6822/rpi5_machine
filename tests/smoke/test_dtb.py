@@ -181,13 +181,13 @@ class DtbFixupTest(unittest.TestCase):
                        input=dts, text=True, check=True)
         return tmp / "in.dtb"
 
-    def dumped(self, *machine_args):
-        """Dump the tree the machine gives the guest with @machine_args."""
+    def dumped(self, *machine_args, machine="raspi5b"):
+        """Dump the tree @machine gives the guest with @machine_args."""
         tmp = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, tmp)
         out = tmp / "out.dtb"
         result = subprocess.run(
-            [str(QEMU), "-M", f"raspi5b,dumpdtb={out}", "-display", "none",
+            [str(QEMU), "-M", f"{machine},dumpdtb={out}", "-display", "none",
              "-kernel", str(GUEST), *machine_args],
             stdin=subprocess.DEVNULL, capture_output=True, text=True,
             timeout=TIMEOUT)
@@ -340,6 +340,21 @@ class DtbFixupTest(unittest.TestCase):
         qmp = Qmp(self, "-M", "raspi5b", "-S", "-kernel", str(GUEST),
                   "-dtb", str(dtb))
         self.assertEqual(qmp.memory(BLCONFIG_ADDR, len(BLCONFIG)), BLCONFIG)
+
+    def test_armstub_reserved(self):
+        """With -bios, the built-in tree reserves what the firmware's tree
+        reserves for BL31, or all of a larger image in 64 KiB steps"""
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tmp)
+        stub = tmp / "armstub"
+        for size, reserved in ((4096, 0x80000), (0x80001, 0x90000)):
+            with self.subTest(size=hex(size)):
+                stub.write_bytes(bytes(size))
+                tree = fdt.load(self.dumped("-bios", str(stub),
+                                            machine="raspi5b,secure=on"))
+                node = tree["/reserved-memory/atf@0"]
+                self.assertEqual(node["reg"], cells(0, 0, 0, reserved))
+                self.assertIn("no-map", node)
 
     def test_builtin_tree(self):
         """The built-in tree, fix-ups included, as checked in"""

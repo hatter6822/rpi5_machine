@@ -84,7 +84,9 @@ stock Pi 5) and hands it the rest the way the firmware does:
   in EL3; PSCI is left to the image;
 * ``-kernel`` is loaded at ``0x20_0000``, the firmware's
   ``kernel_address`` for 64-bit kernels (a Linux ``Image`` at that address
-  plus its ``text_offset``, an ELF file at its own addresses);
+  plus its ``text_offset``, taken as ``0x8_0000`` for kernels before
+  Linux 3.17, whose header has no ``image_size``; an ELF file at its own
+  addresses);
 * ``-initrd`` goes at 128 MiB or above the kernel, whichever is higher,
   and the device tree at the next 2 MiB boundary, or at
   ``-machine dtb-address=<addr>``, the counterpart of
@@ -98,8 +100,10 @@ stock Pi 5) and hands it the rest the way the firmware does:
 
 The built-in device tree then describes PSCI through ``SMC`` and reserves
 the first 512 KiB of RAM for BL31 (``/reserved-memory/atf@0``), as the
-firmware's tree does. A system reset loads every image again, and the
-firmware starts over.
+firmware's tree does, or all of a larger image, rounded up to 64 KiB. A
+tree given with ``-dtb`` keeps its own reservations, as the firmware
+leaves them: ``bcm2712-rpi-5-b.dtb`` reserves the same 512 KiB. A system
+reset loads every image again, and the firmware starts over.
 
 TF-A's ``rpi5`` port counts on all four cores: with fewer (``-smp``), PSCI
 ``CPU_ON`` of a missing core succeeds but the core never starts. Its
