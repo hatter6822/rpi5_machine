@@ -1,5 +1,5 @@
 /*
- * VideoCore mailbox and firmware property tests (WS2.2, WS2.3a).
+ * VideoCore mailbox and firmware property tests (WS2.2, WS2.3).
  *
  * Copyright (c) 2026 A7om
  *
@@ -7,9 +7,12 @@
  */
 
 #include <bm/fdt.h>
+#include <bm/io.h>
 #include <bm/mbox.h>
+#include <bm/pm.h>
 #include <bm/runtime.h>
 #include <bm/test.h>
+#include <bm/timer.h>
 
 /* The firmware answers with the board revision the DT publishes */
 TEST(mbox_board_revision, "mbox/board-revision")
@@ -139,4 +142,110 @@ TEST(mbox_identity, "mbox/identity")
         ASSERT_EQ(serial, (uint64_t)id_value(buf, ID_SERIAL, 1) << 32 |
                           id_value(buf, ID_SERIAL, 0));
     }
+}
+
+/*
+ * The clocks the Raspberry Pi 5's firmware lists, with config.txt's
+ * defaults for their least and most rates: the table the model starts
+ * from (TODO(WS0.4): check it against a hardware transcript)
+ */
+static const struct {
+    uint32_t id;
+    const char *name;
+    uint32_t min_mhz, max_mhz;
+} clocks[] = {
+    { 3, "arm", 1500, 2400 },
+    { 4, "core", 500, 910 },
+    { 5, "v3d", 500, 960 },
+    { 7, "isp", 500, 910 },
+    { 11, "hevc", 500, 910 },
+};
+
+/* A clock tag's answer for clock @id, which comes back with it */
+static bool clock_query(uint32_t tag, uint32_t id, uint32_t *answer)
+{
+    uint32_t val[2] = { id, 0 };
+
+    if (mbox_tag(tag, val, 2) != 8 || val[0] != id) {
+        return false;
+    }
+    *answer = val[1];
+    return true;
+}
+
+/*
+ * What vcgencmd's measure_clock and get_config report, for every clock
+ * the firmware lists: each runs, at its most, and its range and the
+ * temperature limit are the Raspberry Pi 5's defaults
+ */
+TEST(mbox_clocks, "mbox/clocks")
+{
+    uint32_t list[2 * (ARRAY_SIZE(clocks) + 1)] = { 0 };
+    uint32_t state, rate, measured, min, max, limit;
+    int len;
+
+    len = mbox_tag(FW_TAG_GET_CLOCKS, list, ARRAY_SIZE(list));
+    ASSERT_MSG(len >= 0, "no answer from the firmware");
+    ASSERT_EQ(len, 8 * ARRAY_SIZE(clocks));
+    for (unsigned i = 0; i < ARRAY_SIZE(clocks); i++) {
+        const uint32_t id = clocks[i].id;
+
+        ASSERT_EQ(list[2 * i], 0);              /* no parent */
+        ASSERT_EQ(list[2 * i + 1], id);
+        ASSERT(clock_query(FW_TAG_CLOCK_STATE, id, &state));
+        ASSERT(clock_query(FW_TAG_CLOCK_RATE, id, &rate));
+        ASSERT(clock_query(FW_TAG_CLOCK_MEASURED, id, &measured));
+        ASSERT(clock_query(FW_TAG_MIN_CLOCK_RATE, id, &min));
+        ASSERT(clock_query(FW_TAG_MAX_CLOCK_RATE, id, &max));
+        bm_test_note("clock %s: state 0x%x, %u Hz, measured %u Hz, "
+                     "range %u-%u Hz", clocks[i].name, state, rate, measured,
+                     min, max);
+        ASSERT_EQ(state, 1);                    /* on, and it exists */
+        ASSERT_EQ(min, clocks[i].min_mhz * 1000000u);
+        ASSERT_EQ(max, clocks[i].max_mhz * 1000000u);
+        ASSERT_EQ(rate, max);
+        /* Within 1%: hardware measures what the model reports exactly */
+        ASSERT_LE(measured > rate ? measured - rate : rate - measured,
+                  rate / 100);
+    }
+
+    ASSERT(clock_query(FW_TAG_MAX_TEMPERATURE, 0, &limit));
+    bm_test_note("temperature limit %u", limit);
+    ASSERT_EQ(limit, 85000);                    /* 85 degrees C */
+}
+
+/*
+ * The reboot flags a boot leaves are for the next boot only: the
+ * bootloader takes them, and the firmware reports a tryboot in the device
+ * tree it gives. The second of three boots is a tryboot, as after Linux's
+ * "reboot 0 tryboot". On hardware, a tryboot reads tryboot.txt instead of
+ * config.txt, so the boot partition needs a copy of it by that name.
+ */
+TEST(mbox_tryboot, "mbox/tryboot")
+{
+    const unsigned resets = bm_test_resets();
+    const bool is_tryboot = resets == 1;
+    int fw = fdt_path_offset("/chosen/bootloader");
+    uint32_t flags = 0xa5a5a5a5, tryboot;
+
+    ASSERT_EQ(mbox_tag(FW_TAG_REBOOT_FLAGS, &flags, 1), 4);
+    ASSERT_EQ(flags, 0);
+    if (fw >= 0) {
+        ASSERT(fdt_prop_u32(fw, "tryboot", &tryboot));
+        ASSERT_EQ(tryboot, is_tryboot);
+    }
+    if (resets == 2) {
+        return;
+    }
+
+    if (resets == 0) {
+        /* Linux's rpi_firmware_notify_reboot() */
+        flags = 1;
+        ASSERT_EQ(mbox_tag(FW_TAG_SET_REBOOT_FLAGS, &flags, 1), 4);
+        ASSERT_EQ(flags, 1);
+        ASSERT_EQ(mbox_tag(FW_TAG_NOTIFY_REBOOT, 0, 0), 0);
+    }
+    pm_watchdog_start(10);
+    wait_until(false, 100000);
+    ASSERT_MSG(false, "no reset 100 ms after arming the watchdog");
 }

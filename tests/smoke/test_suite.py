@@ -265,7 +265,8 @@ class SuiteTest(SuiteChecks, unittest.TestCase):
 
     def test_resets(self):
         """The resetting tests really reset the machine, and only once each
-        time they ask: once for pm/watchdog-reset, four times (three PSCI
+        time they ask: twice for mbox/tryboot (into a tryboot and out of
+        it), once for pm/watchdog-reset, four times (three PSCI
         SYSTEM_RESETs, then the watchdog) for reset/system-reset."""
         for secure in (False, True):
             with self.subTest(secure=secure):
@@ -274,12 +275,15 @@ class SuiteTest(SuiteChecks, unittest.TestCase):
                 out = run.out
                 self.assertIn("# pm 0x107d200000 (dt), boot 1, reset "
                               "status 0x1000", out)
-                self.assertIn("# boot 2: pm/watchdog-reset reset", out)
-                for boot in range(3, 7):
+                for boot in (2, 3):
+                    self.assertIn(f"# boot {boot}: mbox/tryboot reset", out)
+                self.assertIn("# boot 4: pm/watchdog-reset reset", out)
+                for boot in range(5, 9):
                     self.assertIn(f"# boot {boot}: reset/system-reset "
                                   "reset", out)
-                self.assertNotIn("boot 7", out)
-                for name in ("pm/watchdog-reset", "reset/system-reset"):
+                self.assertNotIn("boot 9", out)
+                for name in ("mbox/tryboot", "pm/watchdog-reset",
+                             "reset/system-reset"):
                     self.assertEqual(out.count(f"PASS: {name}\n"), 1, out)
 
 if __name__ == "__main__":

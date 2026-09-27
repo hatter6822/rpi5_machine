@@ -254,7 +254,6 @@ static const char *const raspi5b_unmodelled_compatibles[] = {
     /* Clients of the VideoCore firmware (mailbox) or of RP1's */
     "brcm,bcm2708-fb",
     "raspberrypi,rpi-otp",
-    "raspberrypi,bcm2835-power",
     "raspberrypi,rpi-rtc",
     "raspberrypi,rp1-firmware",
     /*
@@ -614,7 +613,7 @@ static void raspi5b_fdt_bootargs(const Raspi5bMachineState *s, void *fdt,
 {
     g_autofree char *base = raspi5b_dtb_bootargs(dtb_filename);
     const char *append = MACHINE(s)->kernel_cmdline;
-    const uint8_t *mac = s->soc.property.macaddr.a;
+    const uint8_t *mac = s->soc.property.parent_obj.macaddr.a;
     g_autoptr(GString) args = g_string_new(base);
 
     if (args->len) {
@@ -655,6 +654,7 @@ static void raspi5b_fdt_chosen(const Raspi5bMachineState *s, void *fdt,
                           RASPI5B_BOOT_MODE_RPIBOOT);
     qemu_fdt_setprop_cell(fdt, "/chosen/bootloader", "partition", partition);
     qemu_fdt_setprop_cell(fdt, "/chosen/bootloader", "rsts", rsts);
+    /* No reboot flags at power-on: see raspi5b_bootloader() */
     qemu_fdt_setprop_cell(fdt, "/chosen/bootloader", "tryboot", 0);
     /* No USB, network, tryboot, RAM disk, NVMe or secure boot */
     qemu_fdt_setprop_cell(fdt, "/chosen/bootloader", "capabilities", 0);
@@ -735,8 +735,8 @@ static void raspi5b_fdt_mac(const Raspi5bMachineState *s, void *fdt)
         g_autofree char *node = g_strdup(path);
 
         qemu_fdt_setprop(fdt, node, "local-mac-address",
-                         s->soc.property.macaddr.a,
-                         sizeof(s->soc.property.macaddr.a));
+                         s->soc.property.parent_obj.macaddr.a,
+                         sizeof(s->soc.property.parent_obj.macaddr.a));
     }
 }
 
@@ -773,23 +773,31 @@ static void raspi5b_modify_dtb(const struct arm_boot_info *info, void *fdt)
 }
 
 /*
- * QEMU copies the same tree back into memory at every reset, where the
+ * What the bootloader does for each boot. It takes the reboot flags the
+ * last boot left in the firmware, which are for this boot only. QEMU
+ * copies the same tree back into memory at every reset, where the
  * firmware writes a new one for each boot: bring the values that change
  * from boot to boot up to date first, including a new KASLR seed (QEMU
  * renews rng-seed itself). Registered before the ROMs' own reset, so the
  * boot the reset starts sees them.
  */
-static void raspi5b_fdt_boot(void *opaque)
+static void raspi5b_bootloader(void *opaque)
 {
     Raspi5bMachineState *s = opaque;
     AddressSpace *as = arm_boot_address_space(&s->soc.cpu[0], &s->binfo);
-    void *fdt = rom_ptr_for_as(as, s->binfo.dtb_start,
-                               sizeof(struct fdt_header));
+    uint32_t reboot_flags = s->soc.property.reboot_flags;
+    void *fdt;
     int node;
     uint64_t kaslr_seed;
     uint32_t rsts, partition;
     uint8_t count;
 
+    s->soc.property.reboot_flags = 0;
+    /* arm_load_dtb() has left the tree here if it loaded one */
+    if (!MACHINE(s)->fdt) {
+        return;
+    }
+    fdt = rom_ptr_for_as(as, s->binfo.dtb_start, sizeof(struct fdt_header));
     if (!fdt || fdt_check_header(fdt) ||
         !rom_ptr_for_as(as, s->binfo.dtb_start, fdt_totalsize(fdt))) {
         return;
@@ -801,6 +809,8 @@ static void raspi5b_fdt_boot(void *opaque)
         fdt_setprop_inplace_u32(fdt, node, "rsts", rsts);
         fdt_setprop_inplace_u32(fdt, node, "partition", partition);
         fdt_setprop_inplace_u32(fdt, node, "count", count);
+        fdt_setprop_inplace_u32(fdt, node, "tryboot",
+                                !!(reboot_flags & BCM2712_REBOOT_FLAG_TRYBOOT));
     }
     qemu_guest_getrandom_nofail(&kaslr_seed, sizeof(kaslr_seed));
     fdt_setprop_inplace_u64(fdt, fdt_path_offset(fdt, "/chosen"),
@@ -1199,10 +1209,7 @@ static void raspi5b_machine_init(MachineState *machine)
     } else {
         arm_load_kernel(&s->soc.cpu[0], machine, &s->binfo);
     }
-    /* arm_load_dtb() has left the tree here if it loaded one */
-    if (machine->fdt) {
-        qemu_register_reset_nosnapshotload(raspi5b_fdt_boot, s);
-    }
+    qemu_register_reset_nosnapshotload(raspi5b_bootloader, s);
     vmstate_register(NULL, 0, &vmstate_raspi5b, s);
 }
 

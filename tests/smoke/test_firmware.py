@@ -200,11 +200,13 @@ class TfaTest(SuiteChecks, unittest.TestCase):
         out = run.out
         self.assertIn("# pm 0x107d200000 (dt), boot 1, reset status 0x1000",
                       out)
-        self.assertIn("# boot 2: pm/watchdog-reset reset", out)
-        for boot_nr in range(3, 7):
+        for boot_nr in (2, 3):
+            self.assertIn(f"# boot {boot_nr}: mbox/tryboot reset", out)
+        self.assertIn("# boot 4: pm/watchdog-reset reset", out)
+        for boot_nr in range(5, 9):
             self.assertIn(f"# boot {boot_nr}: reset/system-reset reset", out)
-        self.assertNotIn("boot 7", out)
-        self.assertEqual(out.count(TFA_BANNER), 6, out)
+        self.assertNotIn("boot 9", out)
+        self.assertEqual(out.count(TFA_BANNER), 8, out)
 
 
 @unittest.skipUnless(os.environ.get("FIRMWARE"),

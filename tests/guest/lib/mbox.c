@@ -47,3 +47,38 @@ bool mbox_property(volatile uint32_t *buf, uint64_t wait_us)
     dsb_sy();
     return buf[1] == FW_SUCCESS;
 }
+
+int mbox_tag(uint32_t tag, uint32_t *val, unsigned words)
+{
+    /* Header, tag header, value buffer and end tag, in whole 16 bytes */
+    static volatile uint32_t buf[(2 + 3 + MBOX_TAG_MAX_WORDS + 1 + 3) & ~3]
+        __attribute__((aligned(16)));
+    const unsigned size = (2 + 3 + words + 1 + 3) & ~3;
+    uint32_t code;
+
+    if (words > MBOX_TAG_MAX_WORDS) {
+        return -1;
+    }
+    buf[0] = size * 4;
+    buf[1] = FW_REQUEST;
+    buf[2] = tag;
+    buf[3] = words * 4;
+    buf[4] = 0;
+    for (unsigned i = 0; i < words; i++) {
+        buf[5 + i] = val[i];
+    }
+    for (unsigned i = 5 + words; i < size; i++) {
+        buf[i] = 0;                     /* the end tag, then padding */
+    }
+    if (!mbox_property(buf, 100000)) {
+        return -1;
+    }
+    code = buf[4];
+    if (!(code & FW_TAG_RESPONSE)) {
+        return -1;
+    }
+    for (unsigned i = 0; i < words; i++) {
+        val[i] = buf[5 + i];
+    }
+    return code & ~FW_TAG_RESPONSE;
+}

@@ -95,8 +95,7 @@ with ``-d unimp``.
 Missing devices
 ---------------
 
-* Firmware property tags specific to the Pi 5 (clocks, power, RTC, GPIO
-  expander); the BCM283x set is answered
+* The firmware's real-time clock, behind its property interface
 * PCIe root complexes and the RP1 south bridge
 * The Bluetooth radio on UARTA and the Wi-Fi radio on SDIO2
 * The power LED, which RP1 drives
@@ -190,6 +189,29 @@ the board and the firmware answer as follows:
 * DMA channels: 0 to 10, the channels of the ``dma32`` and ``dma40``
   device tree nodes.
 
+Where the Pi 5's firmware answers the tag set differently, or knows tags
+the older Pis' firmware does not, the channel answers as the Pi 5's:
+
+* clocks: the list holds the five clocks the Pi 5's device trees take from
+  the firmware, ARM, CORE, V3D, ISP and HEVC, each on and at its most at
+  boot, with ``config.txt``'s default ranges: 1.5 to 2.4 GHz for the ARM,
+  500 to 960 MHz for V3D and 500 to 910 MHz for the others. A guest turns
+  a clock off and on, and sets its rate, which the firmware keeps within
+  the range, as Linux's ``raspberrypi-cpufreq`` sets the ARM's; the
+  rates change what the firmware reports, not how fast anything runs. A
+  clock that is not in the list has a rate of 0 and reports that it does
+  not exist;
+* power: the domains of the newer power interface, 1 to 23, of which only
+  the ARM's is on at boot, and the devices of the older one, 0 to 8, all
+  off at boot. Linux's ``raspberrypi-power`` switches them; no modelled
+  device depends on their states. A domain that does not exist stays off,
+  and a device that does not exist says so;
+* the temperature limit: 85 degrees C, ``config.txt``'s ``temp_limit``;
+* reboot flags: a guest sets them before a reset, as Linux does for
+  ``reboot "0 tryboot"``, and the next boot takes them: its device tree
+  reports the tryboot, as described below. The reboot notification that
+  follows has nothing to answer.
+
 Every answer stays within the value buffer its tag declares: a buffer too
 small for it gets as much as fits, and the tag's response length says how
 much the whole answer needs (the command line is the exception, copied
@@ -206,9 +228,10 @@ reset the machine the same way: every device returns to its reset state,
 RAM is kept, the images given with ``-bios``, ``-kernel`` and ``-dtb`` are
 loaded again and the boot starts over as from power-on, except that the PM
 block's reset status register (``RSTS``) keeps its value and records a
-watchdog reset. PSCI ``SYSTEM_OFF`` and Linux's halt request through the
-watchdog (boot partition 63 in ``RSTS``) power the machine off, and QEMU
-exits with status 0.
+watchdog reset, and the reboot flags a guest set in the firmware reach
+the boot the reset starts. PSCI ``SYSTEM_OFF`` and Linux's halt request
+through the watchdog (boot partition 63 in ``RSTS``) power the machine
+off, and QEMU exits with status 0.
 
 The monitor's ``system_powerdown`` presses the board's power button for
 200 ms, as a user would; a press carries on through a reset. Linux's
@@ -229,11 +252,12 @@ need only be a multiple of 512 KiB. To pad an image that is neither:
 Without ``-drive if=sd``, the slot is empty. Cards go in and come out
 while the machine runs: ``change sd0 <image>`` in the monitor, or
 ``blockdev-change-medium`` in QMP with ``"id": "/machine/sd-card"``,
-inserts one, and ``eject`` takes it out. The slot's card-detect switch drives GIO
-AON 5 (``SD_CDET_N``) low while a card is in, and the controller reports
-the card's arrival and removal as well. Linux checks the line every
-second, as neither device tree gives the always-on GPIO block an
-interrupt. With ``-nodefaults``, the slot has no drive and stays empty.
+inserts one, and ``eject`` takes it out. The slot's card-detect switch
+drives GIO AON 5 (``SD_CDET_N``) low while a card is in, and the
+controller reports the card's arrival and removal as well. Linux checks
+the line every second, as neither device tree gives the always-on GPIO
+block an interrupt. With ``-nodefaults``, the slot has no drive and stays
+empty.
 
 QEMU's cards move data 512 bytes at a time, at a few MB/s.
 
@@ -279,7 +303,8 @@ firmware does before it starts the OS:
   block's reset status as the boot found it; ``partition``, the
   partition asked for there (0 at power-on), which files the host
   supplies come from; ``count``, the boots since power-on, in 8 bits;
-  and 0 for ``tryboot``, ``arg1`` and ``capabilities``;
+  ``tryboot``, 1 when the boot before set the reboot flag that asks for
+  one; and 0 for ``arg1`` and ``capabilities``;
 * ``/chosen/power`` reports a 5 A bench supply (``max_current``), which
   turns the USB ports' high current limit on;
 * the memory node leaves out the VideoCore's memory, and a
@@ -295,8 +320,8 @@ firmware does before it starts the OS:
   and CPU nodes of cores ``-smp`` leaves out ``status = "fail"``.
 
 Every reset gives the next boot its own tree, as the firmware writes one
-for each boot: ``rsts``, ``partition``, ``count`` and the seeds are the
-new boot's. The count moves with the machine in migration.
+for each boot: ``rsts``, ``partition``, ``count``, ``tryboot`` and the
+seeds are the new boot's. The count moves with the machine in migration.
 
 Compared with the tree the firmware gives a Pi 5, the machine's lacks:
 
@@ -316,9 +341,9 @@ Compared with the tree the firmware gives a Pi 5, the machine's lacks:
 * anything ``config.txt`` would change: no overlays and no ``dtparam``, as
   with an empty ``config.txt``.
 
-``arg1`` and ``tryboot`` stay 0, as the property interface does not
-model the requests that set them, and its command line tag answers with
-``-append`` alone.
+``arg1`` stays 0, as nothing sets the reboot argument it reports
+(``config.txt``'s ``set_reboot_arg1``), and the property interface's
+command line tag answers with ``-append`` alone.
 
 Examples
 --------

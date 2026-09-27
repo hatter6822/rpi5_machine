@@ -66,9 +66,37 @@
 #define FW_TAG_VC_MEMORY        0x00010006
 #define FW_TAG_DMA_CHANNELS     0x00060001
 #define FW_TAG_COMMAND_LINE     0x00050001
-#define FW_TAG_CLOCK_RATE       0x00030002
 #define FW_TAG_OVERSCAN         0x0004000a
+#define FW_TAG_GET_CLOCKS       0x00010007
+#define FW_TAG_CLOCK_STATE      0x00030001
+#define FW_TAG_SET_CLOCK_STATE  0x00038001
+#define FW_TAG_CLOCK_RATE       0x00030002
+#define FW_TAG_SET_CLOCK_RATE   0x00038002
+#define FW_TAG_MAX_CLOCK_RATE   0x00030004
+#define FW_TAG_MIN_CLOCK_RATE   0x00030007
+#define FW_TAG_CLOCK_MEASURED   0x00030047
+#define FW_TAG_POWER_STATE      0x00020001
+#define FW_TAG_SET_POWER_STATE  0x00028001
+#define FW_TAG_DOMAIN_STATE     0x00030030
+#define FW_TAG_SET_DOMAIN_STATE 0x00038030
+#define FW_TAG_MAX_TEMPERATURE  0x0003000a
+#define FW_TAG_NOTIFY_REBOOT    0x00030048
+#define FW_TAG_REBOOT_FLAGS     0x00030064
+#define FW_TAG_SET_REBOOT_FLAGS 0x00038064
 #define FW_TAG_RESPONSE         BIT(31)
+
+/* The state word of the clock and power device tags */
+#define FW_STATE_ON             BIT(0)
+#define FW_STATE_WAIT           BIT(1)          /* in a power request */
+#define FW_STATE_NO_DEVICE      BIT(1)          /* in an answer */
+
+#define FW_CLK_ARM              3
+#define FW_CLK_V3D              5
+#define FW_DEV_USB              3               /* of the older interface */
+#define FW_DEVICES              9
+/* Linux's raspberrypi-power binding numbers the domains from 0 */
+#define FW_DOMAIN_ARM           23
+#define FW_DOMAINS              23
 
 /* The alias of the first GiB of RAM that code for older Pis uses */
 #define VC_BUS_RAM              0xc0000000u
@@ -699,12 +727,12 @@ static void test_mbox_memory_split(void)
 }
 
 /*
- * Ask for @tag with a @size-byte value buffer, filled with a marker so
- * that words the firmware leaves alone stand out, and copy the value
- * back into @val. Returns the tag's response code and length.
+ * Ask for @tag with a @size-byte value buffer that holds the request in
+ * @val, and copy the value back into @val. Returns the tag's response
+ * code and length.
  */
-static uint32_t mbox_tag(QTestState *qts, uint32_t tag, uint32_t size,
-                         uint32_t *val)
+static uint32_t mbox_call(QTestState *qts, uint32_t tag, uint32_t size,
+                          uint32_t *val)
 {
     const uint64_t buf = 0x10000;
     const uint32_t words = DIV_ROUND_UP(size, 4);
@@ -715,7 +743,7 @@ static uint32_t mbox_tag(QTestState *qts, uint32_t tag, uint32_t size,
     qtest_writel(qts, buf + 12, size);
     qtest_writel(qts, buf + 16, 0);
     for (int i = 0; i < words; i++) {
-        qtest_writel(qts, buf + 20 + 4 * i, 0xa5a5a5a5);
+        qtest_writel(qts, buf + 20 + 4 * i, val[i]);
     }
     qtest_writel(qts, buf + 20 + 4 * words, 0);
     qtest_writel(qts, MBOX_BASE + MBOX_WRITE,
@@ -729,6 +757,20 @@ static uint32_t mbox_tag(QTestState *qts, uint32_t tag, uint32_t size,
         val[i] = qtest_readl(qts, buf + 20 + 4 * i);
     }
     return qtest_readl(qts, buf + 16);
+}
+
+/*
+ * Ask for @tag with a @size-byte value buffer, filled with a marker so
+ * that words the firmware leaves alone stand out, and copy the value
+ * back into @val. Returns the tag's response code and length.
+ */
+static uint32_t mbox_tag(QTestState *qts, uint32_t tag, uint32_t size,
+                         uint32_t *val)
+{
+    for (int i = 0; i < DIV_ROUND_UP(size, 4); i++) {
+        val[i] = 0xa5a5a5a5;
+    }
+    return mbox_call(qts, tag, size, val);
 }
 
 /* The tags Linux's firmware driver and bare-metal code identify us by */
@@ -808,11 +850,11 @@ static void test_mbox_short_buffer(void)
     g_assert_cmphex(val[0], ==, 0);
     g_assert_cmphex(qtest_readl(qts, 0x10000 + 24), ==, 0);
 
-    /* A clock rate: the marker is an unknown clock id, so the default */
+    /* A clock rate: the marker is a clock that does not exist, rate 0 */
     g_assert_cmphex(mbox_tag(qts, FW_TAG_CLOCK_RATE, 8, val), ==,
                     FW_TAG_RESPONSE | 8);
     g_assert_cmphex(val[0], ==, 0xa5a5a5a5);
-    g_assert_cmphex(val[1], ==, 700000000);
+    g_assert_cmphex(val[1], ==, 0);
     /* With room for the id only, the rate is not written anywhere */
     g_assert_cmphex(mbox_tag(qts, FW_TAG_CLOCK_RATE, 4, val), ==,
                     FW_TAG_RESPONSE | 8);
@@ -868,6 +910,322 @@ static void test_mbox_command_line(void)
 
     qtest_quit(qts);
     unlink(kernel);
+}
+
+/*
+ * Send @tag with the two-word request (@id, @arg) of the clock and power
+ * tags, and return the answer's second word; the first keeps the id
+ */
+static uint32_t fw_request(QTestState *qts, uint32_t tag, uint32_t id,
+                           uint32_t arg)
+{
+    uint32_t val[2] = { id, arg };
+
+    g_assert_cmphex(mbox_call(qts, tag, sizeof(val), val), ==,
+                    FW_TAG_RESPONSE | sizeof(val));
+    g_assert_cmphex(val[0], ==, id);
+    return val[1];
+}
+
+/*
+ * Linux's raspberrypi_fw_set_rate(): the id, the rate and skip_turbo, of
+ * which the answer has the first two. Returns the rate the clock got.
+ */
+static uint32_t fw_set_clock_rate(QTestState *qts, uint32_t id, uint32_t rate)
+{
+    uint32_t val[3] = { id, rate, 0 };
+
+    g_assert_cmphex(mbox_call(qts, FW_TAG_SET_CLOCK_RATE, sizeof(val), val),
+                    ==, FW_TAG_RESPONSE | 8);
+    g_assert_cmphex(val[0], ==, id);
+    return val[1];
+}
+
+/*
+ * The clocks the Raspberry Pi 5's firmware lists, with the least and the
+ * most rate of each: config.txt's defaults
+ */
+static const struct {
+    uint32_t id;
+    uint32_t min, max;                  /* Hz */
+} fw_clocks[] = {
+    { FW_CLK_ARM, 1500000000, 2400000000u },
+    { 4, 500000000, 910000000 },        /* CORE */
+    { FW_CLK_V3D, 500000000, 960000000 },
+    { 7, 500000000, 910000000 },        /* ISP */
+    { 11, 500000000, 910000000 },       /* HEVC */
+};
+
+/*
+ * The firmware lists its clocks, as Linux's raspberrypi-clk driver asks,
+ * each on and at its most: the rate, the rate measured, and the range
+ */
+static void test_mbox_clocks(void)
+{
+    QTestState *qts = qtest_init("-machine raspi5b");
+    uint32_t val[12];
+
+    /* Each clock's parent, none, and id; the rest of the buffer is left */
+    g_assert_cmphex(mbox_tag(qts, FW_TAG_GET_CLOCKS, sizeof(val), val), ==,
+                    FW_TAG_RESPONSE | (8 * ARRAY_SIZE(fw_clocks)));
+    for (int i = 0; i < ARRAY_SIZE(fw_clocks); i++) {
+        g_assert_cmphex(val[2 * i], ==, 0);
+        g_assert_cmphex(val[2 * i + 1], ==, fw_clocks[i].id);
+    }
+    for (int i = 2 * ARRAY_SIZE(fw_clocks); i < ARRAY_SIZE(val); i++) {
+        g_assert_cmphex(val[i], ==, 0xa5a5a5a5);
+    }
+
+    for (int i = 0; i < ARRAY_SIZE(fw_clocks); i++) {
+        uint32_t id = fw_clocks[i].id;
+
+        g_assert_cmphex(fw_request(qts, FW_TAG_CLOCK_STATE, id, 0), ==,
+                        FW_STATE_ON);
+        g_assert_cmpuint(fw_request(qts, FW_TAG_CLOCK_RATE, id, 0), ==,
+                         fw_clocks[i].max);
+        g_assert_cmpuint(fw_request(qts, FW_TAG_CLOCK_MEASURED, id, 0), ==,
+                         fw_clocks[i].max);
+        g_assert_cmpuint(fw_request(qts, FW_TAG_MAX_CLOCK_RATE, id, 0), ==,
+                         fw_clocks[i].max);
+        g_assert_cmpuint(fw_request(qts, FW_TAG_MIN_CLOCK_RATE, id, 0), ==,
+                         fw_clocks[i].min);
+    }
+
+    qtest_quit(qts);
+}
+
+/*
+ * The firmware sets a clock to the rate nearest the one asked for, within
+ * its range, as raspberrypi-cpufreq sets the ARM clock's. A clock off
+ * keeps its rate for when it is on again, and measures 0. A reset brings
+ * back the boot's rates and states.
+ */
+static void test_mbox_clock_set(void)
+{
+    QTestState *qts = qtest_init("-machine raspi5b");
+
+    g_assert_cmpuint(fw_set_clock_rate(qts, FW_CLK_ARM, 1800000000), ==,
+                     1800000000);
+    g_assert_cmpuint(fw_request(qts, FW_TAG_CLOCK_RATE, FW_CLK_ARM, 0), ==,
+                     1800000000);
+    g_assert_cmpuint(fw_request(qts, FW_TAG_CLOCK_MEASURED, FW_CLK_ARM, 0),
+                     ==, 1800000000);
+    g_assert_cmpuint(fw_set_clock_rate(qts, FW_CLK_ARM, 3000000000u), ==,
+                     2400000000u);
+    g_assert_cmpuint(fw_set_clock_rate(qts, FW_CLK_ARM, 600000000), ==,
+                     1500000000);
+    g_assert_cmpuint(fw_request(qts, FW_TAG_CLOCK_RATE, FW_CLK_V3D, 0), ==,
+                     960000000);
+
+    g_assert_cmphex(fw_request(qts, FW_TAG_SET_CLOCK_STATE, FW_CLK_V3D, 0),
+                    ==, 0);
+    g_assert_cmphex(fw_request(qts, FW_TAG_CLOCK_STATE, FW_CLK_V3D, 0), ==,
+                    0);
+    g_assert_cmpuint(fw_request(qts, FW_TAG_CLOCK_MEASURED, FW_CLK_V3D, 0),
+                     ==, 0);
+    g_assert_cmpuint(fw_set_clock_rate(qts, FW_CLK_V3D, 700000000), ==,
+                     700000000);
+    g_assert_cmpuint(fw_request(qts, FW_TAG_CLOCK_RATE, FW_CLK_V3D, 0), ==,
+                     700000000);
+    g_assert_cmpuint(fw_request(qts, FW_TAG_CLOCK_MEASURED, FW_CLK_V3D, 0),
+                     ==, 0);
+    g_assert_cmphex(fw_request(qts, FW_TAG_SET_CLOCK_STATE, FW_CLK_V3D,
+                               FW_STATE_ON), ==, FW_STATE_ON);
+    g_assert_cmpuint(fw_request(qts, FW_TAG_CLOCK_MEASURED, FW_CLK_V3D, 0),
+                     ==, 700000000);
+    g_assert_cmphex(fw_request(qts, FW_TAG_SET_CLOCK_STATE, FW_CLK_V3D, 0),
+                    ==, 0);
+
+    qtest_system_reset(qts);
+    g_assert_cmpuint(fw_request(qts, FW_TAG_CLOCK_RATE, FW_CLK_ARM, 0), ==,
+                     2400000000u);
+    g_assert_cmphex(fw_request(qts, FW_TAG_CLOCK_STATE, FW_CLK_V3D, 0), ==,
+                    FW_STATE_ON);
+    g_assert_cmpuint(fw_request(qts, FW_TAG_CLOCK_MEASURED, FW_CLK_V3D, 0),
+                     ==, 960000000);
+
+    qtest_quit(qts);
+}
+
+/*
+ * A clock the firmware does not list, such as the older Pis' EMMC clock
+ * or the display's, has a rate of 0 and reports that it does not exist,
+ * whatever a guest asks of it
+ */
+static void test_mbox_clock_unknown(void)
+{
+    QTestState *qts = qtest_init("-machine raspi5b");
+    const uint32_t ids[] = { 0, 1, 14, 16, 17, 0xa5a5a5a5 };
+
+    for (int i = 0; i < ARRAY_SIZE(ids); i++) {
+        g_assert_cmphex(fw_request(qts, FW_TAG_SET_CLOCK_STATE, ids[i],
+                                   FW_STATE_ON), ==, FW_STATE_NO_DEVICE);
+        g_assert_cmphex(fw_request(qts, FW_TAG_CLOCK_STATE, ids[i], 0), ==,
+                        FW_STATE_NO_DEVICE);
+        g_assert_cmpuint(fw_set_clock_rate(qts, ids[i], 500000000), ==, 0);
+        g_assert_cmpuint(fw_request(qts, FW_TAG_CLOCK_RATE, ids[i], 0), ==,
+                         0);
+        g_assert_cmpuint(fw_request(qts, FW_TAG_CLOCK_MEASURED, ids[i], 0),
+                         ==, 0);
+        g_assert_cmpuint(fw_request(qts, FW_TAG_MAX_CLOCK_RATE, ids[i], 0),
+                         ==, 0);
+        g_assert_cmpuint(fw_request(qts, FW_TAG_MIN_CLOCK_RATE, ids[i], 0),
+                         ==, 0);
+    }
+
+    qtest_quit(qts);
+}
+
+/* At boot, the ARM's power domain is on, and nothing else */
+static void fw_check_boot_power(QTestState *qts)
+{
+    for (uint32_t domain = 0; domain <= FW_DOMAINS + 1; domain++) {
+        g_assert_cmphex(fw_request(qts, FW_TAG_DOMAIN_STATE, domain, 0), ==,
+                        domain == FW_DOMAIN_ARM);
+    }
+    for (uint32_t dev = 0; dev < FW_DEVICES; dev++) {
+        g_assert_cmphex(fw_request(qts, FW_TAG_POWER_STATE, dev, 0), ==, 0);
+    }
+}
+
+/*
+ * Linux's raspberrypi-power driver switches the power domains, 1 to 23,
+ * through the newer interface, and USB, one of the devices of the older
+ * interface, 0 to 8, as U-Boot does too. A domain that does not exist
+ * stays off; a device that does not exist says so. A reset switches back.
+ */
+static void test_mbox_power(void)
+{
+    QTestState *qts = qtest_init("-machine raspi5b");
+
+    fw_check_boot_power(qts);
+    /* raspberrypi-power's probe for the newer interface: an answer */
+    g_assert_cmphex(fw_request(qts, FW_TAG_DOMAIN_STATE, FW_DOMAIN_ARM, ~0u),
+                    ==, 1);
+
+    g_assert_cmphex(fw_request(qts, FW_TAG_SET_DOMAIN_STATE, 1, 1), ==, 1);
+    g_assert_cmphex(fw_request(qts, FW_TAG_SET_DOMAIN_STATE, 22, 1), ==, 1);
+    g_assert_cmphex(fw_request(qts, FW_TAG_SET_DOMAIN_STATE, FW_DOMAIN_ARM,
+                               0), ==, 0);
+    g_assert_cmphex(fw_request(qts, FW_TAG_SET_DOMAIN_STATE, 0, 1), ==, 0);
+    g_assert_cmphex(fw_request(qts, FW_TAG_SET_DOMAIN_STATE, FW_DOMAINS + 1,
+                               1), ==, 0);
+    for (uint32_t domain = 0; domain <= FW_DOMAINS + 1; domain++) {
+        g_assert_cmphex(fw_request(qts, FW_TAG_DOMAIN_STATE, domain, 0), ==,
+                        domain == 1 || domain == 22);
+    }
+
+    /* U-Boot's bcm2835_power_on_module(), which waits for it */
+    g_assert_cmphex(fw_request(qts, FW_TAG_SET_POWER_STATE, FW_DEV_USB,
+                               FW_STATE_ON | FW_STATE_WAIT), ==, FW_STATE_ON);
+    g_assert_cmphex(fw_request(qts, FW_TAG_POWER_STATE, FW_DEV_USB, 0), ==,
+                    FW_STATE_ON);
+    g_assert_cmphex(fw_request(qts, FW_TAG_SET_POWER_STATE, FW_DEVICES,
+                               FW_STATE_ON), ==, FW_STATE_NO_DEVICE);
+    g_assert_cmphex(fw_request(qts, FW_TAG_POWER_STATE, FW_DEVICES, 0), ==,
+                    FW_STATE_NO_DEVICE);
+
+    qtest_system_reset(qts);
+    fw_check_boot_power(qts);
+
+    qtest_quit(qts);
+}
+
+/* config.txt's temp_limit: 85 degrees C */
+static void test_mbox_temperature(void)
+{
+    QTestState *qts = qtest_init("-machine raspi5b");
+
+    g_assert_cmpuint(fw_request(qts, FW_TAG_MAX_TEMPERATURE, 0, 0), ==,
+                     85000);
+
+    qtest_quit(qts);
+}
+
+static uint32_t fw_reboot_flags(QTestState *qts)
+{
+    uint32_t val[1];
+
+    g_assert_cmphex(mbox_tag(qts, FW_TAG_REBOOT_FLAGS, sizeof(val), val),
+                    ==, FW_TAG_RESPONSE | sizeof(val));
+    return val[0];
+}
+
+/*
+ * Linux's rpi_firmware_notify_reboot() for "reboot 0 tryboot": the flags,
+ * then the notification, which has nothing to answer. The flags are for
+ * the next boot only: the bootloader takes them at the reset, with a
+ * device tree or without; the guest suite's mbox/tryboot checks what the
+ * tree reports.
+ */
+static void check_reboot_flags(const char *args)
+{
+    QTestState *qts = qtest_init(args);
+    uint32_t val[1] = { 1 };
+
+    g_assert_cmphex(fw_reboot_flags(qts), ==, 0);
+    g_assert_cmphex(mbox_call(qts, FW_TAG_SET_REBOOT_FLAGS, sizeof(val), val),
+                    ==, FW_TAG_RESPONSE | sizeof(val));
+    g_assert_cmphex(val[0], ==, 1);
+    g_assert_cmphex(mbox_tag(qts, FW_TAG_NOTIFY_REBOOT, 0, val), ==,
+                    FW_TAG_RESPONSE);
+    g_assert_cmphex(fw_reboot_flags(qts), ==, 1);
+
+    qtest_system_reset(qts);
+    g_assert_cmphex(fw_reboot_flags(qts), ==, 0);
+
+    qtest_quit(qts);
+}
+
+static void test_mbox_reboot_flags(void)
+{
+    check_reboot_flags("-machine raspi5b");
+    check_reboot_flags("-machine raspi5b,builtin-dtb=off");
+}
+
+/* What a guest sets through the firmware survives migration */
+static void test_mbox_firmware_migrate(void)
+{
+    g_autofree char *file = g_strdup_printf("%s/raspi5b-firmware-%d.mig",
+                                            g_get_tmp_dir(), getpid());
+    g_autofree char *out = g_strdup_printf("exec:cat > %s", file);
+    g_autofree char *in = g_strdup_printf("exec:cat %s", file);
+    const char *args = "-machine raspi5b -m 1G";
+    QTestState *src, *dst;
+    uint32_t val[1] = { 1 };
+
+    src = qtest_init(args);
+    fw_set_clock_rate(src, FW_CLK_ARM, 1800000000);
+    fw_request(src, FW_TAG_SET_CLOCK_STATE, FW_CLK_V3D, 0);
+    fw_request(src, FW_TAG_SET_DOMAIN_STATE, 5, 1);
+    fw_request(src, FW_TAG_SET_POWER_STATE, FW_DEV_USB, FW_STATE_ON);
+    mbox_call(src, FW_TAG_SET_REBOOT_FLAGS, sizeof(val), val);
+    qtest_qmp_assert_success(src, "{ 'execute': 'migrate',"
+                             "  'arguments': { 'uri': %s } }", out);
+    wait_for_migration(src);
+    qtest_quit(src);
+
+    dst = qtest_initf("%s -incoming defer", args);
+    qtest_qmp_assert_success(dst, "{ 'execute': 'migrate-incoming',"
+                             "  'arguments': { 'uri': %s } }", in);
+    wait_for_migration(dst);
+
+    g_assert_cmpuint(fw_request(dst, FW_TAG_CLOCK_RATE, FW_CLK_ARM, 0), ==,
+                     1800000000);
+    g_assert_cmphex(fw_request(dst, FW_TAG_CLOCK_STATE, FW_CLK_V3D, 0), ==,
+                    0);
+    g_assert_cmphex(fw_request(dst, FW_TAG_DOMAIN_STATE, 5, 0), ==, 1);
+    g_assert_cmphex(fw_request(dst, FW_TAG_DOMAIN_STATE, FW_DOMAIN_ARM, 0),
+                    ==, 1);
+    g_assert_cmphex(fw_request(dst, FW_TAG_POWER_STATE, FW_DEV_USB, 0), ==,
+                    FW_STATE_ON);
+    g_assert_cmphex(fw_reboot_flags(dst), ==, 1);
+
+    qtest_system_reset(dst);
+    g_assert_cmphex(fw_reboot_flags(dst), ==, 0);
+
+    qtest_quit(dst);
+    unlink(file);
 }
 
 /* RNG200, registers as in Linux drivers/char/hw_random/iproc-rng200.c */
@@ -3795,6 +4153,14 @@ int main(int argc, char **argv)
     qtest_add_func("/raspi5b/mbox/identity", test_mbox_identity);
     qtest_add_func("/raspi5b/mbox/short-buffer", test_mbox_short_buffer);
     qtest_add_func("/raspi5b/mbox/command-line", test_mbox_command_line);
+    qtest_add_func("/raspi5b/mbox/clocks", test_mbox_clocks);
+    qtest_add_func("/raspi5b/mbox/clock-set", test_mbox_clock_set);
+    qtest_add_func("/raspi5b/mbox/clock-unknown", test_mbox_clock_unknown);
+    qtest_add_func("/raspi5b/mbox/power", test_mbox_power);
+    qtest_add_func("/raspi5b/mbox/temperature", test_mbox_temperature);
+    qtest_add_func("/raspi5b/mbox/reboot-flags", test_mbox_reboot_flags);
+    qtest_add_func("/raspi5b/mbox/firmware-migrate",
+                   test_mbox_firmware_migrate);
     qtest_add_func("/raspi5b/rng/stopped", test_rng_stopped);
     qtest_add_func("/raspi5b/rng/start", test_rng_start);
     qtest_add_func("/raspi5b/rng/soft-reset", test_rng_soft_reset);

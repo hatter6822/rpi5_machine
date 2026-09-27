@@ -37,7 +37,7 @@ values not documented publicly are marked for checking on hardware.
  2 files changed, 21 insertions(+)
 
 diff --git a/hw/arm/Kconfig b/hw/arm/Kconfig
-index 16f83f0..644601c 100644
+index 16f83f0..2236529 100644
 --- a/hw/arm/Kconfig
 +++ b/hw/arm/Kconfig
 @@ -384,6 +384,26 @@ config RASPI
@@ -48,12 +48,12 @@ index 16f83f0..644601c 100644
 +    bool
 +    select ARM_GIC
 +    select BCM2711_RNG200
++    select BCM2712_PROPERTY
 +    select BCM2712_SDHCI
 +    select BCM2835_FB
 +    select BCM2835_MBOX
 +    select BCM2835_OTP
 +    select BCM2835_POWERMGT
-+    select BCM2835_PROPERTY
 +    select BCM2835_SYSTMR
 +    select BRCMSTB_GPIO
 +    select BRCMSTB_I2C

@@ -50,7 +50,7 @@
     partition = <0x0>
     boot-mode = <0x3>
 /sd-io-1v8-reg
-    phandle = <0x8019>
+    phandle = <0x801a>
     states = <0x1b7740 0x1 0x325aa0 0x0>
     gpios = <0x8011 0x3 0x0>
     regulator-settling-time-us = <0x1388>
@@ -61,7 +61,7 @@
     regulator-name = "vdd-sd-io"
     compatible = "regulator-gpio"
 /sd-vcc-reg
-    phandle = <0x801a>
+    phandle = <0x801b>
     gpios = <0x8011 0x4 0x0>
     enable-active-high
     regulator-boot-on
@@ -77,7 +77,7 @@
     gpios = <0x8011 0x9 0x1>
     label = "ACT"
 /gpio-keys
-    pinctrl-0 = <0x8016>
+    pinctrl-0 = <0x8017>
     pinctrl-names = "default"
     compatible = "gpio-keys"
 /gpio-keys/power-button
@@ -170,21 +170,32 @@
     #address-cells = <0x1>
     compatible = "simple-bus"
 /soc@107c000000/firmware
+    phandle = <0x8016>
     mboxes = <0x8015>
     dma-ranges
     #size-cells = <0x1>
     #address-cells = <0x1>
     compatible = "raspberrypi,bcm2835-firmware", "simple-mfd"
+/soc@107c000000/firmware/clocks
+    #clock-cells = <0x1>
+    compatible = "raspberrypi,firmware-clocks"
+/soc@107c000000/firmware/reset
+    #reset-cells = <0x1>
+    compatible = "raspberrypi,firmware-reset"
+/soc@107c000000/power
+    #power-domain-cells = <0x1>
+    firmware = <0x8016>
+    compatible = "raspberrypi,bcm2835-power"
 /soc@107c000000/mmc@fff000
     cd-gpios = <0x8011 0x5 0x1>
     sd-uhs-sdr104
     sd-uhs-ddr50
     sd-uhs-sdr50
     bus-width = <0x4>
-    vmmc-supply = <0x801a>
-    vqmmc-supply = <0x8019>
+    vmmc-supply = <0x801b>
+    vqmmc-supply = <0x801a>
     pinctrl-names = "default"
-    pinctrl-0 = <0x8017 0x8018>
+    pinctrl-0 = <0x8018 0x8019>
     mmc-ddr-3_3v
     clock-names = "sw_sdio"
     clocks = <0x8001>
@@ -260,11 +271,11 @@
     reg = <0x7d504100 0x30>
     compatible = "brcm,bcm2712c0-pinctrl"
 /soc@107c000000/pinctrl@7d504100/emmc-sd-default-state
-    phandle = <0x8017>
+    phandle = <0x8018>
     bias-pull-up
     pins = "emmc_cmd", "emmc_dat0", "emmc_dat1", "emmc_dat2", "emmc_dat3"
 /soc@107c000000/pinctrl@7d504100/pwr-button-default-state
-    phandle = <0x8016>
+    phandle = <0x8017>
     bias-pull-up
     pins = "gpio20"
     function = "gpio"
@@ -273,7 +284,7 @@
     reg = <0x7d510700 0x20>
     compatible = "brcm,bcm2712c0-aon-pinctrl"
 /soc@107c000000/pinctrl@7d510700/emmc-aon-cd-default-state
-    phandle = <0x8018>
+    phandle = <0x8019>
     bias-pull-up
     pins = "aon_gpio5"
     function = "sd_card_g"

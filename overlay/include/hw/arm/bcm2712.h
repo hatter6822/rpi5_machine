@@ -21,7 +21,7 @@
 #include "hw/misc/bcm2711_rng200.h"
 #include "hw/misc/bcm2835_mbox.h"
 #include "hw/misc/bcm2835_powermgt.h"
-#include "hw/misc/bcm2835_property.h"
+#include "hw/misc/bcm2712_property.h"
 #include "hw/nvram/bcm2835_otp.h"
 #include "hw/sd/bcm2712_sdhci.h"
 #include "hw/timer/bcm2835_systmr.h"
@@ -220,7 +220,7 @@ struct BCM2712State {
     MemoryRegion mbox_chans;
     MemoryRegion vc_bus;        /* the VideoCore's view of memory */
     MemoryRegion vc_ram[2];     /* aliases of the first GiB of RAM in it */
-    BCM2835PropertyState property;
+    BCM2712PropertyState property;
     BCM2835FBState fb;
     BCM2835OTPState otp;
 };

@@ -1,0 +1,34 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: A7om <hatter6822@gmail.com>
+Date: Sat, 26 Sep 2026 00:00:00 +0000
+Subject: [PATCH] hw/misc/bcm2835_property: Answer the reboot notification
+
+Linux's raspberrypi-firmware driver sends NOTIFY_REBOOT before it
+resets or powers off the machine, for the firmware to stop what it
+drives. The model does not know the tag, so every reboot or power-off
+of a Raspberry Pi 3 or 4 guest logs it as unimplemented.
+
+Answer it with an empty value: the model has nothing to stop.
+---
+ hw/misc/bcm2835_property.c | 8 ++++++++
+ 1 file changed, 8 insertions(+)
+
+diff --git a/hw/misc/bcm2835_property.c b/hw/misc/bcm2835_property.c
+index d4d9a03..48404a8 100644
+--- a/hw/misc/bcm2835_property.c
++++ b/hw/misc/bcm2835_property.c
+@@ -410,6 +410,14 @@ static void bcm2835_property_mbox_push(BCM2835PropertyState *s, uint32_t value)
+             resplen = bcm2835_property_answer32(s, value, bufsize, 0);
+             break;
+ 
++        case RPI_FWREQ_NOTIFY_REBOOT:
++            /*
++             * Sent before a reset or a power-off, for the firmware to stop
++             * what it drives; the model has nothing to stop
++             */
++            resplen = 0;
++            break;
++
+         case RPI_FWREQ_VCHIQ_INIT:
+             bcm2835_property_put32(s, value, bufsize, 0, 0);
+             resplen = VCHI_BUSADDR_SIZE;

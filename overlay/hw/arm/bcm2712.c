@@ -367,7 +367,7 @@ static void bcm2712_init(Object *obj)
                                    OBJECT(&s->vc_bus));
     object_initialize_child(obj, "otp", &s->otp, TYPE_BCM2835_OTP);
     object_initialize_child(obj, "property", &s->property,
-                            TYPE_BCM2835_PROPERTY);
+                            TYPE_BCM2712_PROPERTY);
     object_property_add_alias(obj, "board-rev", OBJECT(&s->property),
                               "board-rev");
     object_property_add_alias(obj, "command-line", OBJECT(&s->property),
@@ -1030,7 +1030,10 @@ void bcm2712_fdt_populate(BCM2712State *s, void *fdt)
     g_autofree char *systimer = NULL, *mailbox = NULL, *uart = NULL;
     g_autofree char *uarta = NULL, *pm = NULL, *rng = NULL;
     const char *firmware = BCM2712_FDT_SOC_PATH "/firmware";
-    uint32_t spi;
+    const char *fw_clocks = BCM2712_FDT_SOC_PATH "/firmware/clocks";
+    const char *fw_reset = BCM2712_FDT_SOC_PATH "/firmware/reset";
+    const char *power = BCM2712_FDT_SOC_PATH "/power";
+    uint32_t spi, fw;
 
     /* libfdt adds each subnode first: create them in reverse order */
     qemu_fdt_add_subnode(fdt, BCM2712_FDT_SOC_PATH);
@@ -1131,8 +1134,17 @@ void bcm2712_fdt_populate(BCM2712State *s, void *fdt)
 
     /*
      * The firmware interface, behind the mailbox, as in the firmware's
-     * tree: Linux passes it buffers by their "soc" bus address.
+     * tree: Linux passes it buffers by their "soc" bus address. Its clocks
+     * and reset controller, and beside it the power domains it switches,
+     * as mainline's tree has them.
      */
+    fw = qemu_fdt_alloc_phandle(fdt);
+    qemu_fdt_add_subnode(fdt, power);
+    qemu_fdt_setprop_string(fdt, power, "compatible",
+                            "raspberrypi,bcm2835-power");
+    qemu_fdt_setprop_cell(fdt, power, "firmware", fw);
+    qemu_fdt_setprop_cell(fdt, power, "#power-domain-cells", 1);
+
     qemu_fdt_add_subnode(fdt, firmware);
     qemu_fdt_setprop(fdt, firmware, "compatible", firmware_compat,
                      sizeof(firmware_compat));
@@ -1140,6 +1152,15 @@ void bcm2712_fdt_populate(BCM2712State *s, void *fdt)
     qemu_fdt_setprop_cell(fdt, firmware, "#size-cells", 1);
     qemu_fdt_setprop(fdt, firmware, "dma-ranges", NULL, 0);
     qemu_fdt_setprop_cell(fdt, firmware, "mboxes", mbox);
+    qemu_fdt_setprop_cell(fdt, firmware, "phandle", fw);
+    qemu_fdt_add_subnode(fdt, fw_reset);
+    qemu_fdt_setprop_string(fdt, fw_reset, "compatible",
+                            "raspberrypi,firmware-reset");
+    qemu_fdt_setprop_cell(fdt, fw_reset, "#reset-cells", 1);
+    qemu_fdt_add_subnode(fdt, fw_clocks);
+    qemu_fdt_setprop_string(fdt, fw_clocks, "compatible",
+                            "raspberrypi,firmware-clocks");
+    qemu_fdt_setprop_cell(fdt, fw_clocks, "#clock-cells", 1);
 
     /*
      * Keep the default CMA pool, where Linux allocates the buffers it

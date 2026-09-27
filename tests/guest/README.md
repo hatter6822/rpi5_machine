@@ -155,7 +155,7 @@ one, which checks that `sd/mbr` skips without a card.
 | Generic timers | frequency; the EL1, EL2 and Secure physical timers; the EL1 physical and virtual timers on every core, with a virtual offset above the count |
 | SMP | each core's `MPIDR_EL1`, PSCI `CPU_ON` of every core, SGIs between every pair of cores and to all others, an SPI routed to each core in turn; `CPU_ON`/`CPU_OFF`/`AFFINITY_INFO` statuses |
 | System timer | rate against the generic counter, every comparator's interrupt |
-| Firmware | the mailbox's board revision, the identity tags |
+| Firmware | the mailbox's board revision, the identity tags, the clocks and the temperature limit as vcgencmd reports them, a tryboot's reboot flag |
 | PM, reset | watchdog countdown and reset, three PSCI `SYSTEM_RESET`s and a watchdog reset that must restore the boot state |
 | RNG | a 1 KiB draw, Linux's recovery sequence |
 | L2 interrupt controllers | on each enabled `brcm,l2-intc`, a masked software-raised bit, then taken through the SPI and acked as Linux does |

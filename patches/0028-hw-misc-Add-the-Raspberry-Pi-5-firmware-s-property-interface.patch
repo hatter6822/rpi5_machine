@@ -1,0 +1,72 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: A7om <hatter6822@gmail.com>
+Date: Sat, 26 Sep 2026 00:00:00 +0000
+Subject: [PATCH] hw/misc: Add the Raspberry Pi 5 firmware's property interface
+
+Linux's raspberrypi-clk driver registers the clocks the firmware lists
+in answer to GET_CLOCKS, and raspberrypi-cpufreq scales the CPUs through
+the ARM clock, between the least and the most rate the firmware gives
+for it. Its raspberrypi-power driver switches the SoC's power domains
+through the domain interface that the firmware of the BCM2711 and later
+SoCs adds, GET_DOMAIN_STATE and SET_DOMAIN_STATE. bcm2835-property lists
+the ARM clock only, answers each clock's rates with a fixed value
+whatever a guest sets, and does not know the domain interface, or the
+reboot flags through which Linux asks the bootloader for a tryboot.
+
+Add bcm2712-property, a bcm2835-property that answers those tags as the
+Raspberry Pi 5's firmware does, and keeps what a guest sets through
+them: the rate and state of each of the five clocks the Pi 5's device
+trees take from the firmware, at the ranges the Raspberry Pi
+documentation gives, the state of each power domain and power device,
+and the reboot flags. The flags outlive a reset, for the board to report
+a tryboot in the device tree of the boot the reset starts.
+---
+ hw/misc/Kconfig      | 4 ++++
+ hw/misc/meson.build  | 1 +
+ hw/misc/trace-events | 6 ++++++
+ 3 files changed, 11 insertions(+)
+
+diff --git a/hw/misc/Kconfig b/hw/misc/Kconfig
+index 9b2f207..928ad1a 100644
+--- a/hw/misc/Kconfig
++++ b/hw/misc/Kconfig
+@@ -262,6 +262,10 @@ source macio/Kconfig
+ config BCM2711_RNG200
+     bool
+ 
++config BCM2712_PROPERTY
++    bool
++    select BCM2835_PROPERTY
++
+ config BCM2835_CPRMAN
+     bool
+ 
+diff --git a/hw/misc/meson.build b/hw/misc/meson.build
+index f4f8cf7..106ddf9 100644
+--- a/hw/misc/meson.build
++++ b/hw/misc/meson.build
+@@ -87,6 +87,7 @@ system_ss.add(when: 'CONFIG_OMAP', if_true: files(
+   'omap_clk.c',
+ ))
+ system_ss.add(when: 'CONFIG_BCM2711_RNG200', if_true: files('bcm2711_rng200.c'))
++system_ss.add(when: 'CONFIG_BCM2712_PROPERTY', if_true: files('bcm2712_property.c'))
+ system_ss.add(when: 'CONFIG_BCM2835_CPRMAN', if_true: files('bcm2835_cprman.c'))
+ system_ss.add(when: 'CONFIG_BCM2835_MBOX', if_true: files('bcm2835_mbox.c'))
+ system_ss.add(when: 'CONFIG_BCM2835_MPHI', if_true: files('bcm2835_mphi.c'))
+diff --git a/hw/misc/trace-events b/hw/misc/trace-events
+index b29b0ed..80a80b1 100644
+--- a/hw/misc/trace-events
++++ b/hw/misc/trace-events
+@@ -343,6 +343,12 @@ aspeed_hace_hexdump(const char *desc, uint32_t offset, char *s) "%s: 0x%08x: %s"
+ bcm2711_rng200_read(uint64_t offset, uint32_t value) "offset 0x%02" PRIx64 " value 0x%08" PRIx32
+ bcm2711_rng200_write(uint64_t offset, uint64_t value) "offset 0x%02" PRIx64 " value 0x%08" PRIx64
+ 
++# bcm2712_property.c
++bcm2712_property_clock(uint32_t id, uint32_t rate, int on) "clock %" PRIu32 ": %" PRIu32 " Hz, on %d"
++bcm2712_property_domain(uint32_t domain, int on) "power domain %" PRIu32 ": on %d"
++bcm2712_property_device(uint32_t device, int on) "power device %" PRIu32 ": on %d"
++bcm2712_property_reboot_flags(uint32_t flags) "reboot flags 0x%" PRIx32
++
+ # bcm2835_property.c
+ bcm2835_mbox_property(uint32_t tag, uint32_t bufsize, size_t resplen) "mbox property tag:0x%08x in_sz:%u out_sz:%zu"
+ 
