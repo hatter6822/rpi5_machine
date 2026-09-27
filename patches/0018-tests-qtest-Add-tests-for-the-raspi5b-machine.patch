@@ -8,17 +8,18 @@ the RAM sizes, the placeholders of unmodelled blocks, the UART10 IDs,
 the GIC's geometry, priority bits and Security Extensions, the system
 timer's counter, comparators, reset and migration, the watchdog and
 reset status, the mailbox through both VideoCore aliases (including a
-buffer outside them), the firmware identity tags, and the RNG200.
+buffer outside them), the firmware identity tags, the RNG200, and the
+level 2 interrupt controllers.
 ---
  MAINTAINERS             | 1 +
  tests/qtest/meson.build | 1 +
  2 files changed, 2 insertions(+)
 
 diff --git a/MAINTAINERS b/MAINTAINERS
-index da5355f..d2fc7ba 100644
+index fe588e2..9b0d2be 100644
 --- a/MAINTAINERS
 +++ b/MAINTAINERS
-@@ -1026,6 +1026,7 @@ F: include/hw/*/bcm283*
+@@ -1028,6 +1028,7 @@ F: include/hw/intc/brcmstb_l2_intc.h
  F: docs/system/arm/raspi.rst
  F: tests/functional/arm/test_raspi2.py
  F: tests/functional/aarch64/test_raspi*.py

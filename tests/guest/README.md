@@ -156,5 +156,6 @@ others.
 | Firmware | the mailbox's board revision, the identity tags |
 | PM, reset | watchdog countdown and reset, three PSCI `SYSTEM_RESET`s and a watchdog reset that must restore the boot state |
 | RNG | a 1 KiB draw, Linux's recovery sequence |
+| L2 interrupt controllers | on each enabled `brcm,l2-intc`, a masked software-raised bit, then taken through the SPI and acked as Linux does |
 | UART | a line from the peer, internal loopback polled and by interrupt |
 | Platform | device-tree discovery, PSCI version, an identification-register dump (`# probe: name=value`, sorted) |

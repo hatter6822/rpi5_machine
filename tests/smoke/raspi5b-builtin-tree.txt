@@ -154,6 +154,48 @@
 /soc@107c000000/rng@7d208000
     reg = <0x7d208000 0x28>
     compatible = "brcm,bcm2711-rng200"
+/soc@107c000000/interrupt-controller@7c502000
+    #interrupt-cells = <0x1>
+    interrupt-controller
+    interrupts = <0x0 0x61 0x4>
+    reg = <0x7c502000 0x30>
+    compatible = "brcm,bcm2711-l2-intc", "brcm,l2-intc"
+/soc@107c000000/interrupt-controller@7d503000
+    #interrupt-cells = <0x1>
+    interrupt-controller
+    interrupts = <0x0 0xee 0x4>
+    reg = <0x7d503000 0x18>
+    compatible = "brcm,l2-intc"
+/soc@107c000000/interrupt-controller@7d508380
+    #interrupt-cells = <0x1>
+    interrupt-controller
+    interrupts = <0x0 0xf2 0x4>
+    reg = <0x7d508380 0x10>
+    compatible = "brcm,bcm7271-l2-intc"
+/soc@107c000000/interrupt-controller@7d508400
+    #interrupt-cells = <0x1>
+    interrupt-controller
+    interrupts = <0x0 0xf4 0x4>
+    reg = <0x7d508400 0x10>
+    compatible = "brcm,bcm7271-l2-intc"
+/soc@107c000000/interrupt-controller@7d510600
+    #interrupt-cells = <0x1>
+    interrupt-controller
+    interrupts = <0x0 0xef 0x4>
+    reg = <0x7d510600 0x30>
+    compatible = "brcm,bcm2711-l2-intc", "brcm,l2-intc"
+/soc@107c000000/interrupt-controller@7d517000
+    #interrupt-cells = <0x1>
+    interrupt-controller
+    interrupts = <0x0 0xf7 0x4>
+    reg = <0x7d517000 0x10>
+    compatible = "brcm,bcm7271-l2-intc"
+/soc@107c000000/interrupt-controller@7d517ac0
+    #interrupt-cells = <0x1>
+    interrupt-controller
+    interrupts = <0x0 0xf5 0x4>
+    reg = <0x7d517ac0 0x10>
+    compatible = "brcm,bcm7271-l2-intc"
 /soc@107c000000/interrupt-controller@7fff9000
     phandle = <0x8007>
     interrupts = <0x1 0x9 0xf04>

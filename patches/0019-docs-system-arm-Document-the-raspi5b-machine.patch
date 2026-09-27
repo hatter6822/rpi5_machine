@@ -14,12 +14,12 @@ to the other Raspberry Pi boards.
  2 files changed, 2 insertions(+)
 
 diff --git a/MAINTAINERS b/MAINTAINERS
-index d2fc7ba..f109d0b 100644
+index 9b0d2be..5e7f379 100644
 --- a/MAINTAINERS
 +++ b/MAINTAINERS
-@@ -1024,6 +1024,7 @@ F: include/hw/arm/rasp*
- F: include/hw/*/bcm27*
+@@ -1026,6 +1026,7 @@ F: include/hw/*/bcm27*
  F: include/hw/*/bcm283*
+ F: include/hw/intc/brcmstb_l2_intc.h
  F: docs/system/arm/raspi.rst
 +F: docs/system/arm/raspi5b.rst
  F: tests/functional/arm/test_raspi2.py

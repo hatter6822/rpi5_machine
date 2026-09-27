@@ -79,6 +79,14 @@
             reg = <0x7d208000 0x28>;
         };
 
+        intc@7d503000 {
+            compatible = "brcm,l2-intc";
+            reg = <0x7d503000 0x18>;
+            interrupts = <0 238 4>;
+            interrupt-controller;
+            #interrupt-cells = <1>;
+        };
+
         gicv2: interrupt-controller@7fff9000 {
             compatible = "arm,gic-400";
             reg = <0x7fff9000 0x1000>,

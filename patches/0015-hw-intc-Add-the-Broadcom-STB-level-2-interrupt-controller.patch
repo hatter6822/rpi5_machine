@@ -1,0 +1,83 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: A7om <hatter6822@gmail.com>
+Date: Sat, 26 Sep 2026 00:00:00 +0000
+Subject: [PATCH] hw/intc: Add the Broadcom STB level 2 interrupt controller
+
+Broadcom set-top-box SoCs, including the BCM2711 and BCM2712 of the
+Raspberry Pi 4 and 5, gather peripheral interrupts into small level 2
+controllers, each with one output to the GIC. Linux drives them with
+irq-brcmstb-l2.c. On BCM2712 they sit in front of the GPIO blocks, the
+I2C controllers, the display and the firmware's doorbells.
+
+There are two register layouts, selected by the "edge" property:
+
+- edge ("brcm,l2-intc", "brcm,bcm2711-l2-intc"): STATUS latches a
+  rising input until the guest writes it to CLEAR, and SET raises
+  status bits from software;
+- level ("brcm,bcm7271-l2-intc"): STATUS follows the inputs.
+
+Both have a mask with set and clear views, and one output: the OR of
+STATUS & ~MASK. Reset masks every input.
+---
+ MAINTAINERS          | 2 ++
+ hw/intc/Kconfig      | 3 +++
+ hw/intc/meson.build  | 1 +
+ hw/intc/trace-events | 6 ++++++
+ 4 files changed, 12 insertions(+)
+
+diff --git a/MAINTAINERS b/MAINTAINERS
+index da5355f..fe588e2 100644
+--- a/MAINTAINERS
++++ b/MAINTAINERS
+@@ -1020,9 +1020,11 @@ S: Odd Fixes
+ F: hw/arm/raspi*.c
+ F: hw/*/bcm27*
+ F: hw/*/bcm283*
++F: hw/intc/brcmstb_l2_intc.c
+ F: include/hw/arm/rasp*
+ F: include/hw/*/bcm27*
+ F: include/hw/*/bcm283*
++F: include/hw/intc/brcmstb_l2_intc.h
+ F: docs/system/arm/raspi.rst
+ F: tests/functional/arm/test_raspi2.py
+ F: tests/functional/aarch64/test_raspi*.py
+diff --git a/hw/intc/Kconfig b/hw/intc/Kconfig
+index bfa8cde..ef03dc7 100644
+--- a/hw/intc/Kconfig
++++ b/hw/intc/Kconfig
+@@ -123,3 +123,6 @@ config BCM2835_IC
+ 
+ config BCM2836_CONTROL
+     bool
++
++config BRCMSTB_L2_INTC
++    bool
+diff --git a/hw/intc/meson.build b/hw/intc/meson.build
+index 496360f..6793fe8 100644
+--- a/hw/intc/meson.build
++++ b/hw/intc/meson.build
+@@ -30,6 +30,7 @@ system_ss.add(when: 'CONFIG_OPENPIC', if_true: files('openpic.c'))
+ system_ss.add(when: 'CONFIG_PL190', if_true: files('pl190.c'))
+ system_ss.add(when: 'CONFIG_BCM2835_IC', if_true: files('bcm2835_ic.c'))
+ system_ss.add(when: 'CONFIG_BCM2836_CONTROL', if_true: files('bcm2836_control.c'))
++system_ss.add(when: 'CONFIG_BRCMSTB_L2_INTC', if_true: files('brcmstb_l2_intc.c'))
+ system_ss.add(when: 'CONFIG_REALVIEW', if_true: files('realview_gic.c'))
+ system_ss.add(when: 'CONFIG_SLAVIO', if_true: files('slavio_intctl.c'))
+ system_ss.add(when: 'CONFIG_XILINX', if_true: files('xilinx_intc.c'))
+diff --git a/hw/intc/trace-events b/hw/intc/trace-events
+index e7d6c30..16af32e 100644
+--- a/hw/intc/trace-events
++++ b/hw/intc/trace-events
+@@ -276,6 +276,12 @@ heathrow_set_irq(int num, int level) "set_irq: num=0x%02x level=%d"
+ bcm2835_ic_set_gpu_irq(int irq, int level) "GPU irq #%d level %d"
+ bcm2835_ic_set_cpu_irq(int irq, int level) "CPU irq #%d level %d"
+ 
++# brcmstb_l2_intc.c
++brcmstb_l2_intc_set_irq(const char *id, int line, int level) "%s: input %d level %d"
++brcmstb_l2_intc_update(const char *id, uint32_t pending) "%s: pending 0x%08" PRIx32
++brcmstb_l2_intc_read(const char *id, uint64_t offset, uint32_t value) "%s: offset 0x%02" PRIx64 " value 0x%08" PRIx32
++brcmstb_l2_intc_write(const char *id, uint64_t offset, uint64_t value) "%s: offset 0x%02" PRIx64 " value 0x%08" PRIx64
++
+ # spapr_xive.c
+ spapr_xive_claim_irq(uint32_t lisn, bool lsi) "lisn=0x%x lsi=%d"
+ spapr_xive_free_irq(uint32_t lisn) "lisn=0x%x"

@@ -1019,6 +1019,278 @@ static void test_rng_seed(void)
     g_assert_cmpmem(words[0], sizeof(words[0]), words[1], sizeof(words[1]));
 }
 
+/*
+ * brcmstb level 2 interrupt controllers (Linux irq-brcmstb-l2.c). Their
+ * inputs are driven from qtest through the SoC's children.
+ */
+#define L2_EDGE_STATUS          0x00
+#define L2_EDGE_SET             0x04
+#define L2_EDGE_CLEAR           0x08
+#define L2_EDGE_MASK_STATUS     0x0c
+#define L2_EDGE_MASK_SET        0x10
+#define L2_EDGE_MASK_CLEAR      0x14
+#define L2_LEVEL_STATUS         0x00
+#define L2_LEVEL_MASK_STATUS    0x04
+#define L2_LEVEL_MASK_SET       0x08
+#define L2_LEVEL_MASK_CLEAR     0x0c
+
+typedef struct L2Intc {
+    const char *name;           /* child of /machine/soc */
+    uint64_t base;
+    int spi;                    /* bcm2712-rpi-5-b.dtb */
+    bool edge;
+} L2Intc;
+
+static const L2Intc l2_intcs[] = {
+    { "disp-intr",      0x107c502000ULL, 97,  true },
+    { "cpu-l2-irq",     0x107d503000ULL, 238, true },
+    { "bsc-irq",        0x107d508380ULL, 242, false },
+    { "main-irq",       0x107d508400ULL, 244, false },
+    { "aon-intr",       0x107d510600ULL, 239, true },
+    { "l2-intc",        0x107d517000ULL, 247, false },
+    { "main-aon-irq",   0x107d517ac0ULL, 245, false },
+};
+
+#define L2_MAIN_IRQ     (&l2_intcs[3])
+#define L2_AON_INTR     (&l2_intcs[4])
+
+static uint32_t l2_readl(QTestState *qts, const L2Intc *l2, uint32_t reg)
+{
+    return qtest_readl(qts, l2->base + reg);
+}
+
+static void l2_writel(QTestState *qts, const L2Intc *l2, uint32_t reg,
+                      uint32_t val)
+{
+    qtest_writel(qts, l2->base + reg, val);
+}
+
+static void l2_set_input(QTestState *qts, const L2Intc *l2, int n, int level)
+{
+    g_autofree char *path = g_strdup_printf("/machine/soc/%s", l2->name);
+
+    qtest_set_irq_in(qts, path, NULL, n, level);
+}
+
+static uint32_t l2_mask_status(QTestState *qts, const L2Intc *l2)
+{
+    return l2_readl(qts, l2, l2->edge ? L2_EDGE_MASK_STATUS
+                                      : L2_LEVEL_MASK_STATUS);
+}
+
+/* Every input masked, nothing pending, output low */
+static void l2_check_reset(QTestState *qts)
+{
+    for (int i = 0; i < ARRAY_SIZE(l2_intcs); i++) {
+        const L2Intc *l2 = &l2_intcs[i];
+
+        g_assert_cmphex(l2_readl(qts, l2, 0), ==, 0);
+        g_assert_cmphex(l2_mask_status(qts, l2), ==, UINT32_MAX);
+        g_assert_false(gic_spi_pending(qts, l2->spi));
+    }
+}
+
+static void test_l2_intc_reset_values(void)
+{
+    QTestState *qts = qtest_init("-machine raspi5b");
+
+    l2_check_reset(qts);
+
+    qtest_quit(qts);
+}
+
+/* Each controller drives its own SPI */
+static void test_l2_intc_outputs(void)
+{
+    QTestState *qts = qtest_init("-machine raspi5b");
+
+    for (int i = 0; i < ARRAY_SIZE(l2_intcs); i++) {
+        const L2Intc *l2 = &l2_intcs[i];
+
+        l2_writel(qts, l2, l2->edge ? L2_EDGE_MASK_CLEAR
+                                    : L2_LEVEL_MASK_CLEAR, BIT(31));
+        l2_set_input(qts, l2, 31, 1);
+        for (int j = 0; j < ARRAY_SIZE(l2_intcs); j++) {
+            g_assert_cmpint(gic_spi_pending(qts, l2_intcs[j].spi), ==,
+                            j == i);
+        }
+        l2_set_input(qts, l2, 31, 0);
+        if (l2->edge) {
+            l2_writel(qts, l2, L2_EDGE_CLEAR, BIT(31));
+        }
+        g_assert_false(gic_spi_pending(qts, l2->spi));
+    }
+
+    qtest_quit(qts);
+}
+
+static void test_l2_intc_mask(void)
+{
+    QTestState *qts = qtest_init("-machine raspi5b");
+    const L2Intc *l2 = L2_MAIN_IRQ;
+
+    l2_writel(qts, l2, L2_LEVEL_MASK_CLEAR, BIT(0) | BIT(9));
+    g_assert_cmphex(l2_mask_status(qts, l2), ==,
+                    (uint32_t)~(BIT(0) | BIT(9)));
+    l2_writel(qts, l2, L2_LEVEL_MASK_SET, BIT(0));
+    g_assert_cmphex(l2_mask_status(qts, l2), ==, (uint32_t)~BIT(9));
+
+    /* A masked input shows in STATUS but does not raise the output */
+    l2_set_input(qts, l2, 0, 1);
+    g_assert_cmphex(l2_readl(qts, l2, L2_LEVEL_STATUS), ==, BIT(0));
+    g_assert_false(gic_spi_pending(qts, l2->spi));
+    l2_set_input(qts, l2, 9, 1);
+    g_assert_true(gic_spi_pending(qts, l2->spi));
+    l2_writel(qts, l2, L2_LEVEL_MASK_SET, BIT(9));
+    g_assert_false(gic_spi_pending(qts, l2->spi));
+    l2_writel(qts, l2, L2_LEVEL_MASK_CLEAR, BIT(0));
+    g_assert_true(gic_spi_pending(qts, l2->spi));
+
+    /* MASK_STATUS is read-only */
+    l2_writel(qts, l2, L2_LEVEL_MASK_STATUS, 0);
+    g_assert_cmphex(l2_mask_status(qts, l2), ==, (uint32_t)~BIT(0));
+
+    qtest_quit(qts);
+}
+
+/* Level layout: STATUS follows the inputs and cannot be written */
+static void test_l2_intc_level(void)
+{
+    QTestState *qts = qtest_init("-machine raspi5b");
+    const L2Intc *l2 = L2_MAIN_IRQ;
+
+    l2_writel(qts, l2, L2_LEVEL_MASK_CLEAR, BIT(5));
+    l2_set_input(qts, l2, 5, 1);
+    g_assert_cmphex(l2_readl(qts, l2, L2_LEVEL_STATUS), ==, BIT(5));
+    g_assert_true(gic_spi_pending(qts, l2->spi));
+
+    l2_writel(qts, l2, L2_LEVEL_STATUS, BIT(5));
+    g_assert_cmphex(l2_readl(qts, l2, L2_LEVEL_STATUS), ==, BIT(5));
+    g_assert_true(gic_spi_pending(qts, l2->spi));
+
+    l2_set_input(qts, l2, 5, 0);
+    g_assert_cmphex(l2_readl(qts, l2, L2_LEVEL_STATUS), ==, 0);
+    g_assert_false(gic_spi_pending(qts, l2->spi));
+
+    qtest_quit(qts);
+}
+
+/* Edge layout: STATUS latches rising inputs until cleared */
+static void test_l2_intc_edge(void)
+{
+    QTestState *qts = qtest_init("-machine raspi5b");
+    const L2Intc *l2 = L2_AON_INTR;
+
+    l2_writel(qts, l2, L2_EDGE_MASK_CLEAR, BIT(3));
+    l2_set_input(qts, l2, 3, 1);
+    l2_set_input(qts, l2, 3, 0);
+    g_assert_cmphex(l2_readl(qts, l2, L2_EDGE_STATUS), ==, BIT(3));
+    g_assert_true(gic_spi_pending(qts, l2->spi));
+
+    l2_writel(qts, l2, L2_EDGE_CLEAR, BIT(3));
+    g_assert_cmphex(l2_readl(qts, l2, L2_EDGE_STATUS), ==, 0);
+    g_assert_false(gic_spi_pending(qts, l2->spi));
+
+    /* A held input latches once: clearing it waits for the next edge */
+    l2_set_input(qts, l2, 3, 1);
+    l2_writel(qts, l2, L2_EDGE_CLEAR, BIT(3));
+    l2_set_input(qts, l2, 3, 1);
+    g_assert_cmphex(l2_readl(qts, l2, L2_EDGE_STATUS), ==, 0);
+    l2_set_input(qts, l2, 3, 0);
+    l2_set_input(qts, l2, 3, 1);
+    g_assert_cmphex(l2_readl(qts, l2, L2_EDGE_STATUS), ==, BIT(3));
+
+    /* STATUS itself is read-only; the write-only registers read as zero */
+    l2_writel(qts, l2, L2_EDGE_STATUS, 0);
+    g_assert_cmphex(l2_readl(qts, l2, L2_EDGE_STATUS), ==, BIT(3));
+    for (uint32_t reg = L2_EDGE_SET; reg <= L2_EDGE_MASK_CLEAR; reg += 4) {
+        if (reg != L2_EDGE_MASK_STATUS) {
+            g_assert_cmphex(l2_readl(qts, l2, reg), ==, 0);
+        }
+    }
+
+    qtest_quit(qts);
+}
+
+/* Edge layout: SET raises status bits from software */
+static void test_l2_intc_software_set(void)
+{
+    QTestState *qts = qtest_init("-machine raspi5b");
+    const L2Intc *l2 = L2_AON_INTR;
+
+    l2_writel(qts, l2, L2_EDGE_SET, BIT(7) | BIT(30));
+    g_assert_cmphex(l2_readl(qts, l2, L2_EDGE_STATUS), ==, BIT(7) | BIT(30));
+    g_assert_false(gic_spi_pending(qts, l2->spi));
+    l2_writel(qts, l2, L2_EDGE_MASK_CLEAR, BIT(30));
+    g_assert_true(gic_spi_pending(qts, l2->spi));
+    l2_writel(qts, l2, L2_EDGE_CLEAR, BIT(30));
+    g_assert_cmphex(l2_readl(qts, l2, L2_EDGE_STATUS), ==, BIT(7));
+    g_assert_false(gic_spi_pending(qts, l2->spi));
+
+    qtest_quit(qts);
+}
+
+/* Reset masks everything and drops latched status; levels stay visible */
+static void test_l2_intc_reset(void)
+{
+    QTestState *qts = qtest_init("-machine raspi5b");
+
+    for (int i = 0; i < ARRAY_SIZE(l2_intcs); i++) {
+        const L2Intc *l2 = &l2_intcs[i];
+
+        l2_writel(qts, l2, l2->edge ? L2_EDGE_MASK_CLEAR
+                                    : L2_LEVEL_MASK_CLEAR, UINT32_MAX);
+        if (l2->edge) {
+            l2_writel(qts, l2, L2_EDGE_SET, BIT(1));
+        }
+    }
+    l2_set_input(qts, L2_MAIN_IRQ, 2, 1);
+    qtest_system_reset(qts);
+
+    l2_set_input(qts, L2_MAIN_IRQ, 2, 0);
+    l2_check_reset(qts);
+    l2_set_input(qts, L2_MAIN_IRQ, 2, 1);
+    g_assert_cmphex(l2_readl(qts, L2_MAIN_IRQ, L2_LEVEL_STATUS), ==, BIT(2));
+
+    qtest_quit(qts);
+}
+
+/* Latched status and the mask survive migration */
+static void test_l2_intc_migrate(void)
+{
+    g_autofree char *file = g_strdup_printf("%s/raspi5b-l2-%d.mig",
+                                            g_get_tmp_dir(), getpid());
+    g_autofree char *out = g_strdup_printf("exec:cat > %s", file);
+    g_autofree char *in = g_strdup_printf("exec:cat %s", file);
+    const char *args = "-machine raspi5b -m 1G";
+    const L2Intc *l2 = L2_AON_INTR;
+    QTestState *src, *dst;
+
+    src = qtest_init(args);
+    l2_set_input(src, l2, 4, 1);
+    l2_writel(src, l2, L2_EDGE_MASK_CLEAR, BIT(4));
+    qtest_qmp_assert_success(src, "{ 'execute': 'migrate',"
+                             "  'arguments': { 'uri': %s } }", out);
+    wait_for_migration(src);
+    qtest_quit(src);
+
+    dst = qtest_initf("%s -incoming defer", args);
+    qtest_qmp_assert_success(dst, "{ 'execute': 'migrate-incoming',"
+                             "  'arguments': { 'uri': %s } }", in);
+    wait_for_migration(dst);
+
+    g_assert_cmphex(l2_readl(dst, l2, L2_EDGE_STATUS), ==, BIT(4));
+    g_assert_cmphex(l2_mask_status(dst, l2), ==, (uint32_t)~BIT(4));
+    g_assert_true(gic_spi_pending(dst, l2->spi));
+    /* The input is still high: no new edge until it falls */
+    l2_writel(dst, l2, L2_EDGE_CLEAR, BIT(4));
+    l2_set_input(dst, l2, 4, 1);
+    g_assert_cmphex(l2_readl(dst, l2, L2_EDGE_STATUS), ==, 0);
+
+    qtest_quit(dst);
+    unlink(file);
+}
+
 static void test_unimplemented_regions(void)
 {
     QTestState *qts = qtest_init("-machine raspi5b");
@@ -1222,6 +1494,16 @@ int main(int argc, char **argv)
     qtest_add_func("/raspi5b/rng/soft-reset", test_rng_soft_reset);
     qtest_add_func("/raspi5b/rng/reset", test_rng_reset);
     qtest_add_func("/raspi5b/rng/seed", test_rng_seed);
+    qtest_add_func("/raspi5b/l2-intc/reset-values",
+                   test_l2_intc_reset_values);
+    qtest_add_func("/raspi5b/l2-intc/outputs", test_l2_intc_outputs);
+    qtest_add_func("/raspi5b/l2-intc/mask", test_l2_intc_mask);
+    qtest_add_func("/raspi5b/l2-intc/level", test_l2_intc_level);
+    qtest_add_func("/raspi5b/l2-intc/edge", test_l2_intc_edge);
+    qtest_add_func("/raspi5b/l2-intc/software-set",
+                   test_l2_intc_software_set);
+    qtest_add_func("/raspi5b/l2-intc/reset", test_l2_intc_reset);
+    qtest_add_func("/raspi5b/l2-intc/migrate", test_l2_intc_migrate);
     qtest_add_func("/raspi5b/pm/registers", test_pm_registers);
     qtest_add_func("/raspi5b/pm/watchdog-countdown",
                    test_pm_watchdog_countdown);

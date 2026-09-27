@@ -13,6 +13,7 @@
 #include "hw/char/pl011.h"
 #include "hw/display/bcm2835_fb.h"
 #include "hw/intc/arm_gic.h"
+#include "hw/intc/brcmstb_l2_intc.h"
 #include "hw/misc/bcm2711_rng200.h"
 #include "hw/misc/bcm2835_mbox.h"
 #include "hw/misc/bcm2835_powermgt.h"
@@ -98,14 +99,17 @@ typedef enum BCM2712Device {
     BCM2712_UART10,
     BCM2712_PM,
     BCM2712_RNG,
+    BCM2712_CPU_L2_IRQ,
     BCM2712_PINCTRL,
     BCM2712_BSC,
+    BCM2712_BSC_IRQ,
     BCM2712_MAIN_IRQ,
     BCM2712_GIO,
     BCM2712_UARTA,
     BCM2712_AON_INTR,
     BCM2712_PINCTRL_AON,
     BCM2712_L2_INTC,
+    BCM2712_MAIN_AON_IRQ,
     BCM2712_GIO_AON,
     BCM2712_GIC,
 
@@ -134,9 +138,11 @@ enum {
     BCM2712_SPI_PCIE2_INTA      = 229,
     BCM2712_SPI_PCIE2           = 233,
     BCM2712_SPI_PCIE2_MSI       = 234,
+    BCM2712_SPI_CPU_L2_IRQ      = 238,
     BCM2712_SPI_AON_INTR        = 239,
     BCM2712_SPI_BSC             = 242,
     BCM2712_SPI_MAIN_IRQ        = 244,
+    BCM2712_SPI_MAIN_AON_IRQ    = 245,
     BCM2712_SPI_L2_INTC         = 247,
     BCM2712_SPI_V3D_HUB         = 249,
     BCM2712_SPI_V3D_CORE0       = 250,
@@ -145,6 +151,22 @@ enum {
     BCM2712_SPI_SDIO2           = 274,
     BCM2712_SPI_UARTA           = 276,
 };
+
+/*
+ * The brcmstb level 2 interrupt controllers, each in front of one SPI,
+ * named after their labels in the firmware's device tree; the comments
+ * give the nodes that use them there.
+ */
+typedef enum BCM2712L2Intc {
+    BCM2712_L2_DISP_INTR,       /* display: HVS, MOP, MOPLET */
+    BCM2712_L2_CPU_L2_IRQ,      /* the firmware's KMS doorbell */
+    BCM2712_L2_BSC_IRQ,         /* the HDMI DDC I2C controllers */
+    BCM2712_L2_MAIN_IRQ,        /* GIO, the main GPIO block */
+    BCM2712_L2_AON_INTR,        /* HDMI0 and HDMI1 */
+    BCM2712_L2_7D517000,        /* unlabelled, unused */
+    BCM2712_L2_MAIN_AON_IRQ,    /* unused */
+    BCM2712_NUM_L2_INTCS
+} BCM2712L2Intc;
 
 struct BCM2712State {
     /*< private >*/
@@ -157,6 +179,7 @@ struct BCM2712State {
 
     ARMCPU cpu[BCM2712_NUM_CPUS];
     GICState gic;
+    BrcmstbL2IntcState l2_intc[BCM2712_NUM_L2_INTCS];
     BCM2835SystemTimerState systimer;
     BCM2835PowerMgtState pm;
     BCM2711Rng200State rng;

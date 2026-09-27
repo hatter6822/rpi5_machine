@@ -57,14 +57,17 @@ const MemMapEntry bcm2712_memmap[BCM2712_NUM_DEVICES] = {
     [BCM2712_UART10]        = { 0x107d001000, 0x200 },
     [BCM2712_PM]            = { 0x107d200000, 0x604 },
     [BCM2712_RNG]           = { 0x107d208000, 0x28 },
+    [BCM2712_CPU_L2_IRQ]    = { 0x107d503000, 0x18 },
     [BCM2712_PINCTRL]       = { 0x107d504100, 0x30 },
-    [BCM2712_BSC]           = { 0x107d508200, 0x190 },
+    [BCM2712_BSC]           = { 0x107d508200, 0xd8 },
+    [BCM2712_BSC_IRQ]       = { 0x107d508380, 0x10 },
     [BCM2712_MAIN_IRQ]      = { 0x107d508400, 0x10 },
     [BCM2712_GIO]           = { 0x107d508500, 0x40 },
     [BCM2712_UARTA]         = { 0x107d50c000, 0x20 },
     [BCM2712_AON_INTR]      = { 0x107d510600, 0x30 },
     [BCM2712_PINCTRL_AON]   = { 0x107d510700, 0x20 },
     [BCM2712_L2_INTC]       = { 0x107d517000, 0x10 },
+    [BCM2712_MAIN_AON_IRQ]  = { 0x107d517ac0, 0x10 },
     [BCM2712_GIO_AON]       = { 0x107d517c00, 0x40 },
     [BCM2712_GIC]           = { 0x107fff8000, 0x8000 },
 };
@@ -95,16 +98,62 @@ static const char *const bcm2712_device_names[BCM2712_NUM_DEVICES] = {
     [BCM2712_UART10]        = "bcm2712.uart10",
     [BCM2712_PM]            = "bcm2712.pm",
     [BCM2712_RNG]           = "bcm2712.rng",
+    [BCM2712_CPU_L2_IRQ]    = "bcm2712.cpu-l2-irq",
     [BCM2712_PINCTRL]       = "bcm2712.pinctrl",
     [BCM2712_BSC]           = "bcm2712.bsc",
+    [BCM2712_BSC_IRQ]       = "bcm2712.bsc-irq",
     [BCM2712_MAIN_IRQ]      = "bcm2712.main-irq",
     [BCM2712_GIO]           = "bcm2712.gio",
     [BCM2712_UARTA]         = "bcm2712.uarta",
     [BCM2712_AON_INTR]      = "bcm2712.aon-intr",
     [BCM2712_PINCTRL_AON]   = "bcm2712.pinctrl-aon",
     [BCM2712_L2_INTC]       = "bcm2712.l2-intc",
+    [BCM2712_MAIN_AON_IRQ]  = "bcm2712.main-aon-irq",
     [BCM2712_GIO_AON]       = "bcm2712.gio-aon",
     [BCM2712_GIC]           = "bcm2712.gic",
+};
+
+#define L2_COMPAT(s)    .compat = s, .compat_len = sizeof(s)
+#define L2_EDGE_COMPAT  L2_COMPAT("brcm,bcm2711-l2-intc\0brcm,l2-intc")
+#define L2_LEVEL_COMPAT L2_COMPAT("brcm,bcm7271-l2-intc")
+
+/* The level 2 interrupt controllers, as in the firmware's device tree */
+static const struct {
+    const char *name;
+    BCM2712Device dev;
+    int spi;
+    bool edge;
+    const char *compat;
+    size_t compat_len;
+} bcm2712_l2_intcs[BCM2712_NUM_L2_INTCS] = {
+    [BCM2712_L2_DISP_INTR] = {
+        "disp-intr", BCM2712_DISP_INTR, BCM2712_SPI_DISP_INTR, true,
+        L2_EDGE_COMPAT,
+    },
+    [BCM2712_L2_CPU_L2_IRQ] = {
+        "cpu-l2-irq", BCM2712_CPU_L2_IRQ, BCM2712_SPI_CPU_L2_IRQ, true,
+        L2_COMPAT("brcm,l2-intc"),
+    },
+    [BCM2712_L2_BSC_IRQ] = {
+        "bsc-irq", BCM2712_BSC_IRQ, BCM2712_SPI_BSC, false,
+        L2_LEVEL_COMPAT,
+    },
+    [BCM2712_L2_MAIN_IRQ] = {
+        "main-irq", BCM2712_MAIN_IRQ, BCM2712_SPI_MAIN_IRQ, false,
+        L2_LEVEL_COMPAT,
+    },
+    [BCM2712_L2_AON_INTR] = {
+        "aon-intr", BCM2712_AON_INTR, BCM2712_SPI_AON_INTR, true,
+        L2_EDGE_COMPAT,
+    },
+    [BCM2712_L2_7D517000] = {
+        "l2-intc", BCM2712_L2_INTC, BCM2712_SPI_L2_INTC, false,
+        L2_LEVEL_COMPAT,
+    },
+    [BCM2712_L2_MAIN_AON_IRQ] = {
+        "main-aon-irq", BCM2712_MAIN_AON_IRQ, BCM2712_SPI_MAIN_AON_IRQ, false,
+        L2_LEVEL_COMPAT,
+    },
 };
 
 /* GIC-400 register frames, relative to bcm2712_memmap[BCM2712_GIC] */
@@ -250,6 +299,10 @@ static void bcm2712_init(Object *obj)
     BCM2712State *s = BCM2712(obj);
 
     object_initialize_child(obj, "gic", &s->gic, TYPE_ARM_GIC);
+    for (int i = 0; i < BCM2712_NUM_L2_INTCS; i++) {
+        object_initialize_child(obj, bcm2712_l2_intcs[i].name, &s->l2_intc[i],
+                                TYPE_BRCMSTB_L2_INTC);
+    }
     object_initialize_child(obj, "systimer", &s->systimer,
                             TYPE_BCM2835_SYSTIMER);
     object_initialize_child(obj, "pm", &s->pm, TYPE_BCM2835_POWERMGT);
@@ -280,6 +333,26 @@ static void bcm2712_init(Object *obj)
     object_property_add_const_link(OBJECT(&s->property), "dma-mr",
                                    OBJECT(&s->vc_bus));
     object_initialize_child(obj, "uart10", &s->uart10, TYPE_PL011);
+}
+
+/*
+ * The level 2 interrupt controllers. The display and always-on blocks
+ * have more registers after theirs, which stay with the placeholders
+ * mapped beneath.
+ */
+static bool bcm2712_realize_l2_intcs(BCM2712State *s, Error **errp)
+{
+    for (int i = 0; i < BCM2712_NUM_L2_INTCS; i++) {
+        SysBusDevice *sbd = SYS_BUS_DEVICE(&s->l2_intc[i]);
+
+        qdev_prop_set_bit(DEVICE(sbd), "edge", bcm2712_l2_intcs[i].edge);
+        if (!sysbus_realize(sbd, errp)) {
+            return false;
+        }
+        bcm2712_map(sbd, 0, bcm2712_l2_intcs[i].dev);
+        sysbus_connect_irq(sbd, 0, bcm2712_spi(s, bcm2712_l2_intcs[i].spi));
+    }
+    return true;
 }
 
 /*
@@ -423,6 +496,7 @@ static void bcm2712_realize(DeviceState *dev, Error **errp)
     }
 
     if (!bcm2712_realize_cpus(s, errp) || !bcm2712_realize_gic(s, errp) ||
+        !bcm2712_realize_l2_intcs(s, errp) ||
         !bcm2712_realize_systimer(s, errp) || !bcm2712_realize_pm(s, errp) ||
         !bcm2712_realize_rng(s, errp) || !bcm2712_realize_vc(s, errp)) {
         return;
@@ -609,6 +683,22 @@ static uint32_t bcm2712_fdt_gic(BCM2712State *s, void *fdt)
     return phandle;
 }
 
+/* In reverse, since libfdt adds each subnode first */
+static void bcm2712_fdt_l2_intcs(void *fdt)
+{
+    for (int i = BCM2712_NUM_L2_INTCS - 1; i >= 0; i--) {
+        g_autofree char *path = bcm2712_fdt_soc_node(fdt,
+            "interrupt-controller", bcm2712_l2_intcs[i].dev,
+            bcm2712_l2_intcs[i].compat, bcm2712_l2_intcs[i].compat_len);
+
+        qemu_fdt_setprop_cells(fdt, path, "interrupts", GIC_FDT_IRQ_TYPE_SPI,
+                               bcm2712_l2_intcs[i].spi,
+                               GIC_FDT_IRQ_FLAGS_LEVEL_HI);
+        qemu_fdt_setprop(fdt, path, "interrupt-controller", NULL, 0);
+        qemu_fdt_setprop_cell(fdt, path, "#interrupt-cells", 1);
+    }
+}
+
 void bcm2712_fdt_populate(BCM2712State *s, void *fdt)
 {
     static const char uart_compat[] = "arm,pl011\0arm,primecell";
@@ -644,6 +734,8 @@ void bcm2712_fdt_populate(BCM2712State *s, void *fdt)
     gic = bcm2712_fdt_gic(s, fdt);
     qemu_fdt_setprop_cell(fdt, "/", "interrupt-parent", gic);
     bcm2712_fdt_cpu_irqs(s, fdt, cpu_phandles);
+
+    bcm2712_fdt_l2_intcs(fdt);
 
     rng = bcm2712_fdt_soc_node(fdt, "rng", BCM2712_RNG,
                                "brcm,bcm2711-rng200",
