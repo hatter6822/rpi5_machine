@@ -22,6 +22,7 @@ import struct
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -185,7 +186,11 @@ def fat_files(spec, files, tmp):
         else:
             src = Path(tmp) / "file"
             src.write_bytes(data.encode() if isinstance(data, str) else data)
-        mtools("mcopy", "-i", spec, str(src), f"::/{name}")
+        # mcopy matches the target's directory as a pattern, and takes
+        # the new file's name as it is
+        folder = "".join(part.replace("[", "[[]") + "/" for part in parts)
+        leaf = name.split("/")[-1]
+        mtools("mcopy", "-i", spec, str(src), f"::/{folder}{leaf}")
 
 
 def format_fat(image, start, sectors, files, fat32=False):
@@ -354,6 +359,7 @@ BASE_DTS = """
         i2c0_baudrate = <&i2c0>, "clock-frequency:0";
         act_led_trigger = <&led_act>, "linux,default-trigger";
         krnbt = <&bt>, "status";
+        neg = <&uart0>, "clock-frequency:-4";
     };
 };
 """
@@ -476,10 +482,61 @@ class TreeTest(unittest.TestCase):
                 self.assertEqual(rb.Tree.parse(blob).blob(), blob)
 
     def test_bad_blob(self):
-        for blob in (b"", b"\xd0\x0d\xfe\xed" + bytes(36),
-                     dtc(BASE_DTS)[:200]):
-            with self.assertRaises(rb.DtError):
-                rb.Tree.parse(blob)
+        """A blob libfdt refuses is refused: cut short, its blocks past
+        its size, a property named beyond the strings block, and ones
+        Linux cannot read: nested too deep, or too large"""
+        good = dtc(BASE_DTS)
+        oversized = bytearray(good)
+        struct.pack_into(">I", oversized, 36, len(good))   # size_struct
+        unnamed = bytearray(good)
+        off_struct = struct.unpack_from(">I", good, 8)[0]
+        prop = good.index(struct.pack(">I", rb.FDT_PROP), off_struct)
+        struct.pack_into(">I", unnamed, prop + 8, 0xffff)  # the name
+        deep = "/dts-v1/;\n/ {" + " a {" * rb.FDT_MAX_DEPTH + \
+            " };" * rb.FDT_MAX_DEPTH + " };\n"
+        for name, blob in (("empty", b""),
+                           ("header", b"\xd0\x0d\xfe\xed" + bytes(36)),
+                           ("cut", good[:200]), ("oversized", oversized),
+                           ("unnamed", unnamed), ("deep", dtc(deep)),
+                           ("large", bytes(rb.FDT_MAX_SIZE + 1))):
+            with self.subTest(blob=name):
+                with self.assertRaises(rb.DtError):
+                    rb.Tree.parse(blob)
+        deep = "/dts-v1/;\n/ {" + " a {" * (rb.FDT_MAX_DEPTH - 1) + \
+            " };" * (rb.FDT_MAX_DEPTH - 1) + " };\n"
+        self.assertEqual(rb.Tree.parse(dtc(deep)).blob(), dtc(deep))
+
+    def test_lookups(self):
+        """Aliases lead to aliases, and a cycle of them to nothing; a
+        tree out of phandles cannot take a reference"""
+        tree = rb.Tree.parse(dtc(BASE_DTS))
+        aliases = tree.find("/aliases")
+        tree.setprop(aliases, "loop", b"loop\0")
+        tree.setprop(aliases, "ping", b"pong\0")
+        tree.setprop(aliases, "pong", b"ping/\0")
+        tree.setprop(aliases, "twice", b"console\0")
+        self.assertIsNone(tree.find("loop"))
+        self.assertIsNone(tree.find("ping"))
+        self.assertIs(tree.find("twice"), tree.find("console"))
+        tree.delprop(tree.find("serial10"), "phandle")
+        tree.max_phandle = 0xfffffffe
+        with self.assertRaisesRegex(rb.DtError, "no phandle left"):
+            rb.fixup_overlay(tree, rb.Tree.parse(dtc(OVERLAY_DTS)))
+
+    def test_numbers(self):
+        """C's number parsing on text a blob holds: ASCII digits only,
+        and a number longer than the type is over its range"""
+        self.assertEqual(rb.c_strtoul("9" * 5000), ((1 << 64) - 1, 5000))
+        self.assertEqual(rb.c_strtoul("0x" + "f" * 40), ((1 << 64) - 1, 42))
+        self.assertEqual(rb.c_strtoul("12\u0663"), (12, 2))
+        self.assertEqual(rb.c_atoi("\u0663\u0664"), 0)
+        self.assertEqual(rb.c_atoi(" -12x"), -12)
+        self.assertEqual(rb.c_atoi("9" * 30), (1 << 31) - 1)
+        tree = rb.Tree.parse(dtc(BASE_DTS))
+        for fixup in ("/chosen:bootargs:\u00b2".encode(),
+                      b"/chosen:bootargs:", b"/chosen:bootargs:" + b"1" * 11):
+            with self.assertRaisesRegex(rb.DtError, "bad fixup"):
+                rb.apply_fixup_list(tree, fixup + b"\0", 1, False)
 
     def test_edits(self):
         """New properties and nodes go first, as libfdt puts them"""
@@ -597,17 +654,29 @@ class OverlayTest(unittest.TestCase):
         tree, logs = compose("dtoverlay=nosuch\n"
                              "dtoverlay=test,speed=fast\n"
                              "dtparam=nosuch=1\n"
+                             "dtparam=neg=0x55\n"
                              "dtoverlay=broken\n",
                              files={"overlays/broken.dtbo": b"junk"})
-        self.assertEqual(logs[:2], [
+        self.assertEqual(logs[:3], [
             "failed to load overlay 'nosuch': no overlays/nosuch.dtbo",
             "failed to set speed=fast: invalid override value 'fast' - "
-            "ignored"])
-        self.assertEqual(len(logs), 3)
-        self.assertTrue(logs[2].startswith(
+            "ignored",
+            "failed to set neg=0x55: negative offset in "
+            "'clock-frequency:-4'"])
+        self.assertEqual(len(logs), 4)
+        self.assertTrue(logs[3].startswith(
             "failed to load overlay 'broken': overlays/broken.dtbo is not a "
-            "valid device tree blob"), logs[2])
+            "valid device tree blob"), logs[3])
         self.assertEqual(tree[self.UART10]["current-speed"], cells(115200))
+        # A byte that is not UTF-8 is written as it is, as dtmerge does
+        tree, logs = compose(b"dtoverlay=test,label=a\xffb\n"
+                             b"os_prefix=\xe9/\n",
+                             files={"\udce9/kernel_2712.img": b"",
+                                    "\udce9/bcm2712-rpi-5-b.dtb":
+                                    dtc(BASE_DTS)})
+        self.assertEqual(logs, [])
+        self.assertEqual(tree["/rtc@68"]["label"], b"a\xffb\0")
+        self.assertEqual(tree["/chosen"]["os_prefix"], b"\xe9/\0")
         # An unknown parameter is only reported when asked
         _, logs = compose("dtparam=nosuch=1\n", verbose=True)
         self.assertIn("unknown parameter 'nosuch'", logs)
@@ -886,6 +955,26 @@ class BootFilesTest(unittest.TestCase):
                          ("kernel_2712.img", ""))
         self.assertEqual(logs, ["os_prefix half/ ignored: no kernel and "
                                 "device tree there"])
+        # A name starting with "/" is the boot partition's file, whatever
+        # the prefix, and keeps the prefix viable for the rest
+        files["next/overlays/README"] = b""
+        files.update({"a.cpio": b"", "next/b.cpio": b""})
+        boot, _ = boot_files("os_prefix=next/\nkernel=/kernel8.img\n"
+                             "initramfs /a.cpio,b.cpio\n", files)
+        self.assertEqual((boot.kernel, boot.dtb, boot.os_prefix,
+                          boot.overlay_dir, boot.initramfs),
+                         ("/kernel8.img", "next/bcm2712-rpi-5-b.dtb",
+                          "next/", "next/overlays/",
+                          ["/a.cpio", "next/b.cpio"]))
+        boot, _ = boot_files("os_prefix=next/\ndevice_tree=/own.dtb\n",
+                             dict(files, **{"own.dtb": b""}))
+        self.assertEqual((boot.kernel, boot.dtb),
+                         ("next/kernel_2712.img", "/own.dtb"))
+        with self.assertRaises(rb.BootError) as caught:
+            boot_files("os_prefix=next/\nkernel=/none.img\nos_prefix=\n",
+                       files)
+        self.assertEqual(str(caught.exception),
+                         "no kernel: the boot partition has none of /none.img")
 
     def test_initramfs(self):
         """initramfs names files to load one after the other, under
@@ -1149,6 +1238,18 @@ class CardTest(unittest.TestCase):
                                     "boot from"):
             self.boot_partition()
 
+    def test_pattern_names(self):
+        """A file whose name mcopy would read as a pattern is read as the
+        file it is"""
+        make_card(self.image, dict(BOOT_FILES, **{
+            "a[b].txt": "BRACKET", "ab.txt": "PLAIN", "dir[1]/f.txt": "IN"}))
+        _, fs, _, _ = self.boot_partition()
+        self.assertEqual(fs.read("a[b].txt"), b"BRACKET")
+        self.assertEqual(fs.read("ab.txt"), b"PLAIN")
+        self.assertEqual(fs.read("dir[1]/f.txt"), b"IN")
+        fs.copy("A[B].TXT", self.tmp / "out")
+        self.assertEqual((self.tmp / "out").read_bytes(), b"BRACKET")
+
     def test_image_checks(self):
         """Images QEMU's SD card cannot take are turned away, with what to
         do about them"""
@@ -1163,7 +1264,7 @@ class CardTest(unittest.TestCase):
             blank_image(self.image, size)
             rb.check_image(str(self.image))
         for magic, what in ((b"\xfd7zXZ\0", "xz"), (b"\x1f\x8b", "gzip"),
-                            (b"QFI\xfb", "qcow2")):
+                            (b"PK\x03\x04", "zip"), (b"QFI\xfb", "qcow2")):
             with self.subTest(what=what):
                 self.image.write_bytes(magic + bytes(1024 - len(magic)))
                 with self.assertRaisesRegex(rb.BootError,
@@ -1173,6 +1274,9 @@ class CardTest(unittest.TestCase):
         self.image.write_bytes(b"")
         with self.assertRaisesRegex(rb.BootError, "is empty"):
             rb.check_image(str(self.image))
+        # mtools reads what follows "@@" in a name as an offset
+        with self.assertRaisesRegex(rb.BootError, "cannot contain @@"):
+            rb.check_image(str(self.tmp / "card@@1.img"))
 
 
 @unittest.skipUnless(HAVE_MTOOLS and HAVE_DTC, "needs mtools and dtc")
@@ -1385,10 +1489,18 @@ class RunTest(unittest.TestCase):
         self.addCleanup(proc.stderr.close)
         self.addCleanup(proc.wait)
         self.addCleanup(proc.kill)
-        # -v logs QEMU's command before running it
-        for line in proc.stderr:
-            if b"-action reboot=shutdown" in line:
-                break
+        # -v logs QEMU's command before running it; a boot that never
+        # gets there is killed rather than waited for
+        timer = threading.Timer(RUN_TIMEOUT, proc.kill)
+        timer.start()
+        try:
+            for line in proc.stderr:
+                if b"-action reboot=shutdown" in line:
+                    break
+            else:
+                self.fail("rpi5-boot ended before running QEMU")
+        finally:
+            timer.cancel()
         time.sleep(2)
         return proc
 
@@ -1404,11 +1516,11 @@ class RunTest(unittest.TestCase):
     def test_stop(self):
         """SIGTERM stops QEMU, and then rpi5-boot; so does a Ctrl-C, the
         SIGINT the whole process group gets, which rpi5-boot leaves to
-        QEMU"""
+        QEMU and reports as the interrupted command's status 130"""
         status = self.stop(lambda proc: proc.terminate())
         self.assertIn(status, (0, 128 + signal.SIGTERM))
         status = self.stop(lambda proc: os.killpg(proc.pid, signal.SIGINT))
-        self.assertIn(status, (0, 128 + signal.SIGINT))
+        self.assertEqual(status, 128 + signal.SIGINT)
 
     @unittest.skipUnless(Path("/proc/self/stat").exists(), "needs /proc")
     def test_killed(self):
@@ -1658,13 +1770,10 @@ class DtmergeTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.tmp = Path(tempfile.mkdtemp())
+        cls.addClassCleanup(shutil.rmtree, cls.tmp)
         cls.base = FIRMWARE_DTB.read_bytes()
         cls.map = rb.Tree.parse((OVERLAYS / "overlay_map.dtb").read_bytes())
         cls.names = sorted(p.stem for p in OVERLAYS.glob("*.dtbo"))
-
-    @classmethod
-    def tearDownClass(cls):
-        shutil.rmtree(cls.tmp)
 
     def theirs(self, overlay, params):
         out = self.tmp / "out.dtb"

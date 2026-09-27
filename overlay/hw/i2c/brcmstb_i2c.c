@@ -29,13 +29,15 @@
  * Setting ENABLE runs a transfer: a start condition and the address,
  * unless NOSTART is set; the bytes, in the direction DTF gives; and a
  * stop condition, unless NOSTOP is set. A start while an earlier transfer
- * holds the bus is a repeated start, whether or not RESTART is set. The
- * direction comes from DTF; bit 0 of CHIP_ADDRESS, which Linux sets to
- * match, is ignored. When no target acknowledges the address or a byte
- * written, NOACK is set and, unless IGNORE_ACK is set, the transfer stops
- * there with a stop condition. A read first clears DATA_OUT. The model
- * moves the bytes at once and sets INTRP; the interrupt output is
- * INTRP && INT_EN. Clearing ENABLE clears INTRP and NOACK.
+ * holds the bus is a repeated start, whether or not RESTART is set, and
+ * reaches the target the first start addressed: QEMU's I2C core looks no
+ * address up while a transfer holds the bus. The direction comes from
+ * DTF; bit 0 of CHIP_ADDRESS, which Linux sets to match, is ignored. When
+ * no target acknowledges the address or a byte written, NOACK is set and,
+ * unless IGNORE_ACK is set, the transfer stops there with a stop
+ * condition. A read first clears DATA_OUT. The model moves the bytes at
+ * once and sets INTRP; the interrupt output is INTRP && INT_EN. Clearing
+ * ENABLE clears INTRP and NOACK.
  *
  * Not modelled: the combined formats (DTF 2 and 3, a write and a read
  * joined by a repeated start), which Linux does not use and which end at

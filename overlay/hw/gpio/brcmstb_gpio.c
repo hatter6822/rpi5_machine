@@ -23,10 +23,12 @@
  * that level; any other line is at the level driven into it from outside
  * (the GPIO input of the same number). Detection watches the level of the
  * line whatever its direction, so an output interrupts on its own edges.
- * An edge sets its STAT bit until the bit is cleared; a level-sensitive
- * line sets its STAT bit for as long as it is at its active level, so
- * clearing the bit then has no effect. The one interrupt output is the OR
- * over the banks of STAT & MASK. Reset makes every line an input, with
+ * An edge sets its STAT bit; a level-sensitive line sets its STAT bit
+ * again, at any write to its bank or change of one of its lines, for as
+ * long as it is at its active level, so clearing the bit then has no
+ * effect. A STAT bit set stays set until the guest clears it, whatever
+ * the line does. The one interrupt output is the OR over the banks of
+ * STAT & MASK. Reset makes every line an input, with
  * every interrupt disabled and falling-edge detection; STAT is cleared.
  * Bits beyond a bank's width read as zero and ignore writes.
  * TODO(WS0.4): check the reset values and the level of DATA for an

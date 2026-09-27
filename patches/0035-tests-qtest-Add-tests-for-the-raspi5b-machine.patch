@@ -8,19 +8,21 @@ RAM sizes, the placeholders of unmodelled blocks, the UART10 IDs, the
 GIC's geometry, priority bits and Security Extensions, the system
 timer's counter, comparators, reset and migration, the watchdog and
 reset status, the mailbox through both VideoCore aliases (including a
-buffer outside them), the firmware identity tags, the RNG200, the level
-2 interrupt controllers, the GPIO blocks and their pin controllers, the
-DDC I2C controllers with the EDID on HDMI0's bus, UARTA, the SD hosts
-with the card's detection, PIO, SDMA and ADMA2 transfers, reset and
-migration, the power button and the activity LED. Also test how -bios
-hands firmware the kernel and the device tree.
+buffer outside them), the firmware's identity, clock, power, temperature,
+reboot, real-time clock and framebuffer tags, the RNG200, the AVS
+monitor, the level 2 interrupt controllers, the GPIO blocks and their
+pin controllers, the DDC I2C controllers with the EDID on HDMI0's bus,
+UARTA, the SD hosts with the card's detection, PIO, SDMA and ADMA2
+transfers, reset and migration, the power button, the activity LED and
+the machine's reset state. Also test how -bios hands firmware the kernel
+and the device tree.
 ---
  MAINTAINERS             | 1 +
  tests/qtest/meson.build | 1 +
  2 files changed, 2 insertions(+)
 
 diff --git a/MAINTAINERS b/MAINTAINERS
-index cfbbbdb5..2bb2f5f6 100644
+index cfbbbdb..2bb2f5f 100644
 --- a/MAINTAINERS
 +++ b/MAINTAINERS
 @@ -1028,6 +1028,7 @@ F: include/hw/*/brcmstb*
@@ -32,7 +34,7 @@ index cfbbbdb5..2bb2f5f6 100644
  Real View
  M: Peter Maydell <peter.maydell@linaro.org>
 diff --git a/tests/qtest/meson.build b/tests/qtest/meson.build
-index 56ff860e..624541ea 100644
+index 56ff860..624541e 100644
 --- a/tests/qtest/meson.build
 +++ b/tests/qtest/meson.build
 @@ -267,6 +267,7 @@ qtests_aarch64 = \

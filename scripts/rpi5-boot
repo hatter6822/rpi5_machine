@@ -24,11 +24,16 @@ watchdog's reset status (Linux passes reboot N's partition to PSCI's
 SYSTEM_RESET2, which QEMU lacks). It stops when the guest powers off or
 QEMU ends otherwise.
 
-Reading the image needs mtools. The image is the card, which the guest
-writes to: a raw image, decompressed (xz -d), whose size QEMU's SD card
-limits to a power of two up to 2 GiB and to a multiple of 512 KiB above
-(truncate -s 8G IMAGE grows one). Anything after "--" goes to QEMU,
-after rpi5-boot's own options (-m 8G, -smp 2, -s ...).
+Reading the image needs mtools, and running it a QEMU with the raspi5b
+machine, that is one built from this tree (QEMU 11.1 or later). The
+image is the card, which the guest writes to: a raw image, decompressed
+(xz -d), whose size QEMU's SD card limits to a power of two up to 2 GiB
+and to a multiple of 512 KiB above (truncate -s 8G IMAGE grows one).
+Anything after "--" goes to QEMU after rpi5-boot's own options (-m 8G,
+-smp 2, -s ...), and a repeated option's later value wins, so "-- -M
+raspi5b,serial=0x1234" changes the serial and "-- -action
+reboot=reset" has QEMU reboot on its own, without rpi5-boot reading the
+card again.
 """
 
 import argparse
@@ -80,10 +85,16 @@ def log(message):
 # parent's other subnodes, a property name the strings block lacks is
 # appended to it. A value or name that is resized keeps what libfdt
 # leaves in the padding after it: the bytes the splice moved or left
-# behind. The blob this writes is the one dtmerge writes.
+# behind. The blob this writes is the one dtmerge writes from a blob dtc
+# wrote: the odd blob with NOP tokens, bytes after its end or another
+# version is read, and written without them.
 
 FDT_MAGIC = 0xd00dfeed
 FDT_BEGIN_NODE, FDT_END_NODE, FDT_PROP, FDT_NOP, FDT_END = 1, 2, 3, 4, 9
+# Linux reads a tree nested at most this deep (drivers/of/fdt.c)
+FDT_MAX_DEPTH = 64
+# Linux on arm64 takes a device tree blob of at most 2 MiB (MAX_FDT_SIZE)
+FDT_MAX_SIZE = 2 << 20
 
 
 class DtError(BootError):
@@ -175,6 +186,9 @@ class Tree:
 
     @classmethod
     def parse(cls, blob, what="device tree"):
+        if len(blob) > FDT_MAX_SIZE:
+            raise DtError(f"{what} is {len(blob)} bytes, more than the "
+                          f"{FDT_MAX_SIZE >> 20} MiB a device tree can be")
         try:
             return cls._parse(bytes(blob))
         except (struct.error, IndexError, UnicodeDecodeError,
@@ -186,7 +200,9 @@ class Tree:
     def _parse(cls, blob):
         (magic, total, off_struct, off_strings, off_rsv, version, _, cpuid,
          size_strings, size_struct) = struct.unpack_from(">10I", blob)
-        if magic != FDT_MAGIC or total > len(blob) or version < 16:
+        if magic != FDT_MAGIC or total > len(blob) or version < 16 or \
+           off_struct + size_struct > total or \
+           off_strings + size_strings > total or off_rsv > total:
             raise ValueError("bad header")
         rsvmap, pos = [], off_rsv
         while True:
@@ -196,7 +212,7 @@ class Tree:
                 break
             rsvmap.append((addr, size))
         strings = blob[off_strings:off_strings + size_strings]
-        root, node, pos = None, None, off_struct
+        root, node, pos, depth = None, None, off_struct, 0
         end = off_struct + size_struct
         while pos < end:
             token = be32(blob, pos)
@@ -205,6 +221,10 @@ class Tree:
                 name = cstr(blob, pos)
                 if pos + len(name) >= end:
                     raise ValueError("unterminated node name")
+                depth += 1
+                if depth > FDT_MAX_DEPTH:
+                    raise ValueError(f"nodes nested more than "
+                                     f"{FDT_MAX_DEPTH} deep")
                 child = Node(name.decode(), node)
                 child.pad = blob[pos + len(name) + 1:
                                  pos + tagalign(len(name) + 1)]
@@ -220,12 +240,16 @@ class Tree:
                 if node is None:
                     raise ValueError("unbalanced nodes")
                 node = node.parent
+                depth -= 1
             elif token == FDT_PROP:
                 size, name_off = struct.unpack_from(">II", blob, pos)
                 pos += 8
                 if node is None or pos + size > end:
                     raise ValueError("stray property")
-                name = cstr(strings, name_off).decode()
+                name_end = strings.find(b"\0", name_off)
+                if name_off >= len(strings) or name_end < 0:
+                    raise ValueError("property name beyond the strings")
+                name = strings[name_off:name_end].decode()
                 node.props.append([name, blob[pos:pos + size],
                                    blob[pos + size:pos + tagalign(size)]])
                 pos += tagalign(size)
@@ -365,9 +389,10 @@ class Tree:
         node.name = name
         node.pad = region[len(raw) + 1:]
 
-    def find(self, path):
-        """libfdt's fdt_path_offset(), aliases included"""
-        if not path:
+    def find(self, path, hops=0):
+        """libfdt's fdt_path_offset(), aliases included; an alias naming
+        an alias is followed, a few times, so that a cycle of them ends"""
+        if not path or hops > 8:
             return None
         node, rest = self.root, path
         if not path.startswith("/"):
@@ -376,7 +401,7 @@ class Tree:
             target = aliases.get(alias) if aliases else None
             if target is None:
                 return None
-            node = self.find(cstr(target).decode(errors="replace"))
+            node = self.find(cstr(target).decode(errors="replace"), hops + 1)
             if node is None:
                 return None
         for part in rest.split("/"):
@@ -460,15 +485,22 @@ def c_strtoul(text, pos=0):
         i += 1
     if i == start:
         return 0, pos
-    value = int(text[start:i], base)
+    # More digits than 2**64 has are over the range, whatever they are
+    value = int(text[start:i], base) if i - start <= 32 else 1 << 64
     if value >= 1 << 64:
         return (1 << 64) - 1, i                         # ERANGE
     return (-value if neg else value) % (1 << 64), i
 
 
 def c_atoi(text):
-    m = re.match(r"\s*([+-]?\d+)", text)
-    return int(m.group(1)) if m else 0
+    """C's atoi(): the decimal number @text starts with, kept within an
+    int, and 0 when there is none"""
+    m = re.match(r"\s*([+-]?)([0-9]+)", text)
+    if not m:
+        return 0
+    value = int(m.group(2)) if len(m.group(2)) <= 10 else 1 << 31
+    value = min(value, (1 << 31) - 1)
+    return -value if m.group(1) == "-" else value
 
 
 def strcspn(data, pos, chars):
@@ -482,7 +514,7 @@ def strcspn(data, pos, chars):
 def unescape(text):
     """dtoverlay's escapes in a string parameter's value"""
     out, i = bytearray(), 0
-    raw = text.encode()
+    raw = text.encode(errors="surrogateescape")
     while i < len(raw):
         c = raw[i]
         i += 1
@@ -611,6 +643,9 @@ def override_targets(name, data, value):
             else:
                 kind = OV_INTEGER
                 off = c_atoi(spec[name_len + 1:].decode(errors="replace"))
+                if off < 0:
+                    raise DtError(f"negative offset in "
+                                  f"'{spec.decode(errors='replace')}'")
                 size = 1 << OFFSET_SEPS.index(sep)
         else:
             kind = OV_STRING
@@ -777,7 +812,7 @@ def apply_fixup_list(tree, fixups, value, relative):
             break
         path, _, rest = fixup.decode(errors="replace").partition(":")
         prop, _, offset = rest.partition(":")
-        if not prop or not offset.isdigit():
+        if not prop or not re.fullmatch(r"[0-9]{1,10}", offset):
             raise DtError(f"bad fixup '{fixup.decode(errors='replace')}'")
         node = tree.find(path)
         data = node.get(prop) if node is not None else None
@@ -834,6 +869,8 @@ def fixup_overlay(base, overlay):
                 raise DtError(f"{what} '{symbol}' is invalid")
             phandle = phandle_of(target)
             if not phandle:
+                if base.max_phandle >= 0xfffffffe:
+                    raise DtError(f"no phandle left for {what} '{symbol}'")
                 base.max_phandle += 1
                 phandle = base.max_phandle
                 base.setprop(target, "phandle", struct.pack(">I", phandle))
@@ -1100,6 +1137,11 @@ def read_at(image, offset, size):
     return image.read(size)
 
 
+def image_size(image):
+    """The size of the open @image, a file or a block device"""
+    return image.seek(0, os.SEEK_END)
+
+
 def is_fat(sector):
     """Whether @sector is a FAT file system's boot sector"""
     if len(sector) < SECTOR or sector[510:512] != b"\x55\xaa" or \
@@ -1169,7 +1211,7 @@ def partitions(path):
     with open(path, "rb") as image:
         sector = read_at(image, 0, SECTOR)
         if is_fat(sector):
-            return [Partition(0, 0, os.fstat(image.fileno()).st_size)]
+            return [Partition(0, 0, image_size(image))]
         if len(sector) < SECTOR or sector[510:512] != b"\x55\xaa":
             return []
         entries = [mbr_entry(sector, i) for i in range(4)]
@@ -1189,14 +1231,18 @@ def partitions(path):
 
 def check_image(path):
     """Refuse what QEMU's SD card cannot take, saying what to do"""
+    if "@@" in path:
+        # mtools reads the offset after "@@" in the name it is given
+        raise BootError(f"{path}: an image's path cannot contain @@")
     try:
         with open(path, "rb") as image:
             magic = image.read(6)
-            size = os.fstat(image.fileno()).st_size
+            size = image_size(image)
     except OSError as err:
         raise BootError(f"cannot read {path}: {err.strerror}") from None
     for signature, what, fix in ((b"\xfd7zXZ\0", "xz", "xz -dk"),
                                  (b"\x1f\x8b", "gzip", "gunzip -k"),
+                                 (b"PK\x03\x04", "zip", "unzip"),
                                  (b"QFI\xfb", "qcow2", "qemu-img convert "
                                   "-O raw")):
         if magic.startswith(signature):
@@ -1259,6 +1305,13 @@ class BootFs:
         return "/".join(part for part in name.split("/")
                         if part and part != ".")
 
+    @staticmethod
+    def pattern(path):
+        """@path as the name mcopy takes, which it matches as a pattern:
+        "[" starts a character class there, and is the one character a
+        FAT name can hold that does"""
+        return "::/" + path.replace("[", "[[]")
+
     def exists(self, name):
         return self.normalize(name).lower() in self.files
 
@@ -1266,14 +1319,14 @@ class BootFs:
         path = self.files.get(self.normalize(name).lower())
         if path is None:
             raise BootError(f"{name} is not in the boot partition")
-        return self._mtools("mcopy", "-n", f"::/{path}", "-")
+        return self._mtools("mcopy", "-n", self.pattern(path), "-")
 
     def copy(self, name, dest):
         path = self.files.get(self.normalize(name).lower())
         if path is None:
             raise BootError(f"{name} is not in the boot partition")
         with open(dest, "wb") as out:
-            self._mtools("mcopy", "-n", f"::/{path}", "-", stdout=out)
+            self._mtools("mcopy", "-n", self.pattern(path), "-", stdout=out)
 
 
 # ---------------------------------------------------------------------------
@@ -1557,6 +1610,12 @@ def boot_partition(image, requested, reset, verbose, explicit=False):
                     "a Pi 5 needs to boot from it")
 
 
+def os_file(prefix, name):
+    """The OS file @name under os_prefix @prefix, unless @name starts
+    with "/": that names a file of the boot partition outright"""
+    return name if name.startswith("/") else prefix + name
+
+
 def choose_files(boot, verbose):
     """The kernel, device tree, initramfs and command line file config.txt
     names, with os_prefix where it is viable"""
@@ -1567,12 +1626,12 @@ def choose_files(boot, verbose):
     def kernel_at(prefix):
         names = (kernel,) if kernel else DEFAULT_KERNELS
         for name in names:
-            if fs.exists(prefix + name):
-                return prefix + name
+            if fs.exists(os_file(prefix, name)):
+                return os_file(prefix, name)
         return None
 
     def dtb_at(prefix):
-        name = prefix + (dtb or DEFAULT_DTB)
+        name = os_file(prefix, dtb or DEFAULT_DTB)
         return name if fs.exists(name) else None
 
     prefix = config.get("os_prefix", "")
@@ -1585,14 +1644,14 @@ def choose_files(boot, verbose):
     boot.kernel = kernel_at(prefix)
     if boot.kernel is None:
         raise BootError("no kernel: the boot partition has none of " +
-                        ", ".join(prefix + name for name in
+                        ", ".join(os_file(prefix, name) for name in
                                   ((kernel,) if kernel else DEFAULT_KERNELS)))
     if dtb != "":
         boot.dtb = dtb_at(prefix)
         if boot.dtb is None and config.number("os_check", 1):
             raise BootError(f"no device tree: the boot partition has no "
-                            f"{prefix}{dtb or DEFAULT_DTB} (os_check=0 "
-                            "boots without one)")
+                            f"{os_file(prefix, dtb or DEFAULT_DTB)} "
+                            "(os_check=0 boots without one)")
 
     overlay_prefix = config.get("overlay_prefix", "overlays/")
     if prefix and fs.exists(prefix + overlay_prefix + "README"):
@@ -1604,10 +1663,10 @@ def choose_files(boot, verbose):
     if ramfs is not None:
         names = ramfs.split()[0].split(",") if ramfs.split() else []
         for name in filter(None, names):
-            if fs.exists(prefix + name):
-                boot.initramfs.append(prefix + name)
+            if fs.exists(os_file(prefix, name)):
+                boot.initramfs.append(os_file(prefix, name))
             else:
-                log(f"initramfs {prefix}{name} not found")
+                log(f"initramfs {os_file(prefix, name)} not found")
     elif config.number("auto_initramfs", 0):
         folder, _, name = boot.kernel.rpartition("/")
         if name.startswith("kernel"):
@@ -1714,10 +1773,11 @@ def compose_tree(boot, verbose):
     close()
 
     chosen = base.find("/chosen") or base.add_subnode(base.root, "chosen")
-    base.setprop(chosen, "os_prefix", boot.os_prefix.encode() + b"\0")
+    base.setprop(chosen, "os_prefix",
+                 boot.os_prefix.encode(errors="surrogateescape") + b"\0")
     base.setprop(chosen, "overlay_prefix",
-                 boot.config.get("overlay_prefix", "overlays/").encode() +
-                 b"\0")
+                 boot.config.get("overlay_prefix", "overlays/")
+                 .encode(errors="surrogateescape") + b"\0")
     boot.tree = base
 
 
@@ -1755,7 +1815,7 @@ def kernel_cmdline(boot, root, append):
     """cmdline.txt's first line, with serial0 and serial1 turned into the
     UARTs they are (console=serial0 dropped when enable_uart=0), root=
     replaced by @root if given, and @append added"""
-    name = boot.os_prefix + boot.config.get("cmdline", "cmdline.txt")
+    name = os_file(boot.os_prefix, boot.config.get("cmdline", "cmdline.txt"))
     if boot.fs.exists(name):
         text = boot.fs.read(name).decode(errors="replace")
         text = text.split("\n")[0].strip()
@@ -1920,9 +1980,11 @@ def run_qemu(cmd, verbose):
     if QEMU did not say). QMP on a socket pair reports the event; the
     guest starts once it is listened for, and QEMU waits with the guest
     stopped after the event, for the machine to be read, until told to
-    quit. A SIGTERM or SIGHUP stops QEMU, and then rpi5-boot; and QEMU
-    ends with rpi5-boot however that ends, so that a SIGKILL leaves no
-    QEMU writing to the card."""
+    quit. A SIGTERM or SIGHUP stops QEMU, and then rpi5-boot; a Ctrl-C
+    reaches QEMU, which ends as if powered off, and rpi5-boot ends with
+    the status 130 of a command the interrupt ended; and QEMU ends with
+    rpi5-boot however that ends, so that a SIGKILL leaves no QEMU
+    writing to the card."""
     ours, theirs = socket.socketpair()
     fd = theirs.fileno()
     if verbose:
@@ -1966,6 +2028,8 @@ def run_qemu(cmd, verbose):
                 message = json.loads(line)
             except ValueError:
                 continue
+            if not isinstance(message, dict):
+                continue
             ident = message.get("id")
             if "QMP" in message:
                 execute("qmp_capabilities", "capabilities")
@@ -1993,6 +2057,10 @@ def run_qemu(cmd, verbose):
         ours.close()
     if stopped:
         raise SystemExit(128 + stopped[0])
+    if reason == "host-signal":
+        # QEMU powers the guest off on a Ctrl-C and exits 0; rpi5-boot
+        # ends as the interrupted command it is
+        status = 128 + signal.SIGINT
     reset = None
     if len(state) == len(RESET_PROPERTIES) and \
        all(isinstance(value, int) for value in state.values()):

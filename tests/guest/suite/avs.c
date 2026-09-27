@@ -6,8 +6,8 @@
  * SPDX-License-Identifier: GPL-2.0-or-later
  *
  * The SoC's temperature, read as Linux's bcm2711_thermal driver reads it,
- * converted with its thermal zone's coefficients, and as the firmware
- * reports it to vcgencmd measure_temp.
+ * converted with its thermal zone's coefficients, and as the firmware's
+ * GET_TEMPERATURE tag answers it.
  */
 
 #include <bm/fdt.h>

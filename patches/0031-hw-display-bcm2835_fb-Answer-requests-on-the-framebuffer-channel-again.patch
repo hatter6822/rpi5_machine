@@ -9,10 +9,10 @@ interrupt line from bcm2835_fb's write handler, and bcm2835_mbox reads
 the response from bcm2835_fb's registers there and then. Since the
 memory API blocks re-entrant I/O, that read fails: the mailbox takes a
 0 for the response, and as bcm2835_fb, never read, keeps its line up and
-the channel busy, it takes one more 0 whenever it updates, until its
-queue to the ARM is full. The guest reads a 0 where it expects the
-channel number, the channel takes no further request, and the responses
-of every other channel queue up behind the zeros.
+the channel busy, it takes another and another until its queue to the
+ARM is full. The guest reads a 0 where it expects the channel number,
+the channel takes no further request, and the responses of every other
+channel queue up behind the zeros.
 
 Mark the registers as re-entrancy safe, as bcm2835_property's were when
 the guard came in.

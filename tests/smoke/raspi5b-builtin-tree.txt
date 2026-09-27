@@ -187,6 +187,8 @@
     #size-cells = <0x1>
     #address-cells = <0x1>
     compatible = "raspberrypi,bcm2835-firmware", "simple-mfd"
+/soc@107c000000/firmware/vcio
+    compatible = "raspberrypi,vcio"
 /soc@107c000000/firmware/clocks
     #clock-cells = <0x1>
     compatible = "raspberrypi,firmware-clocks"
@@ -260,7 +262,7 @@
     #reset-cells = <0x1>
     #power-domain-cells = <0x1>
     reg-names = "pm"
-    reg = <0x7d200000 0x604>
+    reg = <0x7d200000 0x308>
     compatible = "brcm,bcm2712-pm"
 /soc@107c000000/rng@7d208000
     reg = <0x7d208000 0x28>
@@ -304,17 +306,19 @@
     pins = "aon_gpio5"
     function = "sd_card_g"
 /soc@107c000000/gpio@7d508500
+    gpio-line-names = "-", "2712_BOOT_CS_N", "2712_BOOT_MISO", "2712_BOOT_MOSI", "2712_BOOT_SCLK", "-", "-", "-", "-", "-", "-", "-", "-", "-", "PCIE_SDA", "PCIE_SCL", "-", "-", "-", "-", "PWR_GPIO", "2712_G21_FS", "-", "-", "BT_RTS", "BT_CTS", "BT_TXD", "BT_RXD", "WL_ON", "BT_ON", "WIFI_SDIO_CLK", "WIFI_SDIO_CMD", "WIFI_SDIO_D0", "WIFI_SDIO_D1", "WIFI_SDIO_D2", "WIFI_SDIO_D3"
     #interrupt-cells = <0x2>
     interrupt-controller
     interrupts = <0x0>
     interrupt-parent = <0x800e>
     phandle = <0x8013>
-    brcm,gpio-bank-widths = <0x20 0x16>
+    brcm,gpio-bank-widths = <0x20 0x4>
     #gpio-cells = <0x2>
     gpio-controller
     reg = <0x7d508500 0x40>
     compatible = "brcm,bcm7445-gpio", "brcm,brcmstb-gpio"
 /soc@107c000000/gpio@7d517c00
+    gpio-line-names = <0x5250315f 0x53444100 0x5250315f 0x53434c00 0x5250315f 0x52554e00 0x53445f49 0x4f564444 0x5f53454c 0x53445f 0x5057525f 0x4f4e0053 0x445f4344 0x45545f4e 0x53445f 0x464c475f 0x4e002d00 0x32373132 0x5f57414b 0x45003237 0x31325f53 0x5441545f 0x4c454400 0x2d002d00 0x504d4943 0x5f494e54 0x554152 0x545f5458 0x5f465300 0x55415254 0x5f52585f 0x4653002d 0x2d0000 0x0 0x0 0x0 0x4844 0x4d49305f 0x53434c00 0x48444d49 0x305f5344 0x41004844 0x4d49315f 0x53434c00 0x48444d49 0x315f5344 0x4100504d 0x49435f53 0x434c0050 0x4d49435f 0x53444100>
     phandle = <0x8012>
     brcm,gpio-bank-widths = <0x11 0x6>
     #gpio-cells = <0x2>
@@ -323,6 +327,7 @@
     compatible = "brcm,bcm7445-gpio", "brcm,brcmstb-gpio"
 /soc@107c000000/interrupt-controller@7c502000
     phandle = <0x8011>
+    status = "disabled"
     #interrupt-cells = <0x1>
     interrupt-controller
     interrupts = <0x0 0x61 0x4>
@@ -351,6 +356,7 @@
     compatible = "brcm,bcm7271-l2-intc"
 /soc@107c000000/interrupt-controller@7d510600
     phandle = <0x800d>
+    status = "disabled"
     #interrupt-cells = <0x1>
     interrupt-controller
     interrupts = <0x0 0xef 0x4>
@@ -358,6 +364,7 @@
     compatible = "brcm,bcm2711-l2-intc", "brcm,l2-intc"
 /soc@107c000000/interrupt-controller@7d517000
     phandle = <0x800c>
+    status = "disabled"
     #interrupt-cells = <0x1>
     interrupt-controller
     interrupts = <0x0 0xf7 0x4>
@@ -365,6 +372,7 @@
     compatible = "brcm,bcm7271-l2-intc"
 /soc@107c000000/interrupt-controller@7d517ac0
     phandle = <0x800b>
+    status = "disabled"
     #interrupt-cells = <0x1>
     interrupt-controller
     interrupts = <0x0 0xf5 0x4>

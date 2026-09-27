@@ -6,26 +6,27 @@ Subject: [PATCH] hw/sd/sdcard: Erase a range in one request
 sd_erase() erases 512 bytes at a time, each block a synchronous write
 issued from the command handler with the BQL held, so the guest waits
 until the whole range is done. Linux's fstrim turns a file system's
-free space into erases of up to gigabytes: on the first boot of a
+free space into erases, gigabytes of them on the first boot of a
 Raspberry Pi OS image, which grows its root file system and then trims
-it, the guest's user space came up in 12 minutes instead of 4, with
+it: the guest's user space came up in 12 minutes instead of 4, with
 D-Bus activations timing out on the way.
 
 Erase with blk_pwrite_zeroes(), allowing the range to be unmapped: in
 one request on cards without write protect groups, and in one for each
 group's part of the range on SDSC cards, which skip the groups that are
-protected as before.
+protected as before. A range that ends before it starts is the invalid
+selection the card reports with ERASE_PARAM, and erases nothing.
 
 The erased blocks now read as zeroes rather than 0xff, which is what
 the card tells the host they read as: DATA_STAT_AFTER_ERASE in the SCR
 and ERASED_MEM_CONT in an eMMC's EXT_CSD are 0.
 ---
- hw/sd/sd.c         | 32 +++++++++++++++++++++++++++-----
+ hw/sd/sd.c         | 40 +++++++++++++++++++++++++++++++++++-----
  hw/sd/trace-events |  1 +
- 2 files changed, 28 insertions(+), 5 deletions(-)
+ 2 files changed, 36 insertions(+), 5 deletions(-)
 
 diff --git a/hw/sd/sd.c b/hw/sd/sd.c
-index 780e9f6..530f3b5 100644
+index 780e9f6..7fc067b 100644
 --- a/hw/sd/sd.c
 +++ b/hw/sd/sd.c
 @@ -1131,6 +1131,20 @@ static void sd_blk_write(SDState *sd, uint64_t addr, uint32_t len)
@@ -58,7 +59,19 @@ index 780e9f6..530f3b5 100644
      int erase_len = 1 << HWBLOCK_SHIFT;
  
      trace_sdcard_erase(sd->erase_start, sd->erase_end);
-@@ -1352,19 +1366,27 @@ static void sd_erase(SDState *sd)
+@@ -1348,23 +1362,39 @@ static void sd_erase(SDState *sd)
+         return;
+     }
+ 
++    /* "An invalid selection of write-blocks for erase occurred" */
++    if (erase_start > erase_end) {
++        sd->card_status |= ERASE_PARAM;
++        sd->erase_start = INVALID_ADDRESS;
++        sd->erase_end = INVALID_ADDRESS;
++        return;
++    }
++
+     sd->erase_start = INVALID_ADDRESS;
      sd->erase_end = INVALID_ADDRESS;
      sd->csd[14] |= 0x40;
  

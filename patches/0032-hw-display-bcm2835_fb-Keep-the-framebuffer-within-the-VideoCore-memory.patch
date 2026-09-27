@@ -20,16 +20,28 @@ request so it must be checked"). Validate the configuration the board
 sets too, and require the VideoCore memory to reach past the
 framebuffer's offset.
 
-No functional change for the existing boards at the depths the hardware
-has: their 64 MiB holds the largest framebuffer at 32 bits per pixel.
+How many lines fit depends on the width and the depth, and a driver
+sets the size and the depth in one request and reads the pitch and the
+allocation after them (U-Boot, Linux's bcm2708_fb), while each tag was
+answered from the fields set so far: with the depth still to come, a
+request for 1920x1080 pixels at 32 bits per pixel was told it had 1080
+lines while its allocation held 409, and a smaller framebuffer asked for
+afterwards kept the clip of the larger one's pitch. Take a request's
+framebuffer settings in before answering its tags, so that every answer
+describes the framebuffer the request leaves.
+
+The existing boards' 64 MiB hold the largest framebuffer at 32 bits per
+pixel: for them this changes only a size out of range given with
+-global, clipped from the start now rather than at the guest's first
+request.
 ---
- hw/display/bcm2835_fb.c         | 26 ++++++++++++++++++++++++--
- hw/misc/bcm2835_property.c      | 12 ++++++------
- include/hw/display/bcm2835_fb.h |  4 +++-
- 3 files changed, 33 insertions(+), 9 deletions(-)
+ hw/display/bcm2835_fb.c         | 26 +++++++++++-
+ hw/misc/bcm2835_property.c      | 74 +++++++++++++++++++++++++++++----
+ include/hw/display/bcm2835_fb.h |  4 +-
+ 3 files changed, 94 insertions(+), 10 deletions(-)
 
 diff --git a/hw/display/bcm2835_fb.c b/hw/display/bcm2835_fb.c
-index 7e88f942..3e133461 100644
+index 7e88f94..3e13346 100644
 --- a/hw/display/bcm2835_fb.c
 +++ b/hw/display/bcm2835_fb.c
 @@ -214,8 +214,10 @@ static bool fb_update_display(void *opaque)
@@ -95,7 +107,7 @@ index 7e88f942..3e133461 100644
      s->dma_mr = MEMORY_REGION(obj);
      address_space_init(&s->dma_as, s->dma_mr, TYPE_BCM2835_FB "-memory");
 diff --git a/hw/misc/bcm2835_property.c b/hw/misc/bcm2835_property.c
-index 70f2ff3e..0983d10b 100644
+index 70f2ff3..a1bbb18 100644
 --- a/hw/misc/bcm2835_property.c
 +++ b/hw/misc/bcm2835_property.c
 @@ -235,7 +235,7 @@ static size_t bcm2835_property_answer_tag(BCM2835PropertyState *s,
@@ -152,8 +164,91 @@ index 70f2ff3e..0983d10b 100644
          *fbconfig_updated = true;
          /* fall through */
      case RPI_FWREQ_FRAMEBUFFER_GET_VIRTUAL_OFFSET:
+@@ -486,6 +486,64 @@ static size_t bcm2835_property_answer_tag(BCM2835PropertyState *s,
+     return resplen;
+ }
+ 
++/*
++ * Put the framebuffer configuration the tags from @pos to @end set into
++ * @fbconfig, validated together. A driver sets the size and the depth in
++ * one request and reads the pitch and the allocation after them, and how
++ * many lines are kept depends on all three: each tag is answered from
++ * the configuration the whole request makes, not from the fields set so
++ * far. The tags are walked as bcm2835_property_mbox_push() walks them,
++ * and no further.
++ */
++static void bcm2835_property_take_fb_config(BCM2835PropertyState *s,
++                                            hwaddr pos, hwaddr end,
++                                            BCM2835FBConfig *fbconfig)
++{
++    bool set = false;
++
++    while (pos + 12 <= end) {
++        hwaddr value = pos;
++        uint32_t tag = ldl_le_phys(&s->dma_as, value);
++        uint32_t bufsize = ldl_le_phys(&s->dma_as, value + 4);
++
++        if (tag == RPI_FWREQ_PROPERTY_END || value + 12 + bufsize > end) {
++            break;
++        }
++        pos = value + 12 + bufsize;
++        switch (tag) {
++        case RPI_FWREQ_FRAMEBUFFER_SET_PHYSICAL_WIDTH_HEIGHT:
++            fbconfig->xres = bcm2835_property_get32(s, value, bufsize, 0);
++            fbconfig->yres = bcm2835_property_get32(s, value, bufsize, 4);
++            break;
++        case RPI_FWREQ_FRAMEBUFFER_SET_VIRTUAL_WIDTH_HEIGHT:
++            fbconfig->xres_virtual = bcm2835_property_get32(s, value,
++                                                            bufsize, 0);
++            fbconfig->yres_virtual = bcm2835_property_get32(s, value,
++                                                            bufsize, 4);
++            break;
++        case RPI_FWREQ_FRAMEBUFFER_SET_DEPTH:
++            fbconfig->bpp = bcm2835_property_get32(s, value, bufsize, 0);
++            break;
++        case RPI_FWREQ_FRAMEBUFFER_SET_PIXEL_ORDER:
++            fbconfig->pixo = bcm2835_property_get32(s, value, bufsize, 0);
++            break;
++        case RPI_FWREQ_FRAMEBUFFER_SET_ALPHA_MODE:
++            fbconfig->alpha = bcm2835_property_get32(s, value, bufsize, 0);
++            break;
++        case RPI_FWREQ_FRAMEBUFFER_SET_VIRTUAL_OFFSET:
++            fbconfig->xoffset = bcm2835_property_get32(s, value, bufsize, 0);
++            fbconfig->yoffset = bcm2835_property_get32(s, value, bufsize, 4);
++            break;
++        default:
++            continue;
++        }
++        set = true;
++    }
++    if (set) {
++        bcm2835_fb_validate_config(s->fbdev, fbconfig);
++    }
++}
++
+ static void bcm2835_property_mbox_push(BCM2835PropertyState *s, uint32_t value)
+ {
+     BCM2835PropertyClass *bpc = BCM2835_PROPERTY_GET_CLASS(s);
+@@ -497,7 +555,8 @@ static void bcm2835_property_mbox_push(BCM2835PropertyState *s, uint32_t value)
+     /*
+      * Copy the current state of the framebuffer config; we will update
+      * this copy as we process tags and then ask the framebuffer to use
+-     * it at the end.
++     * it at the end. The request's own changes go in first, so that
++     * every tag answers with the framebuffer it leaves.
+      */
+     BCM2835FBConfig fbconfig = s->fbdev->config;
+     bool fbconfig_updated = false;
+@@ -508,6 +567,7 @@ static void bcm2835_property_mbox_push(BCM2835PropertyState *s, uint32_t value)
+ 
+     tot_len = ldl_le_phys(&s->dma_as, value);
+     end = (hwaddr)s->addr + tot_len;
++    bcm2835_property_take_fb_config(s, (hwaddr)s->addr + 8, end, &fbconfig);
+ 
+     /* @(addr + 4) : Buffer response code */
+     for (pos = (hwaddr)s->addr + 8; ; pos += 12 + bufsize) {
 diff --git a/include/hw/display/bcm2835_fb.h b/include/hw/display/bcm2835_fb.h
-index f7ef076f..a44549f9 100644
+index f7ef076..a44549f 100644
 --- a/include/hw/display/bcm2835_fb.h
 +++ b/include/hw/display/bcm2835_fb.h
 @@ -81,10 +81,12 @@ static inline uint32_t bcm2835_fb_get_size(BCM2835FBConfig *config)

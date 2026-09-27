@@ -114,6 +114,9 @@ def run_cmd(cmd, answer):
         status = proc.wait()
     finally:
         timer.cancel()
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait()
         proc.stdin.close()
         proc.stdout.close()
     out = "".join(lines).replace("\r\n", "\n")
@@ -162,13 +165,10 @@ class SuiteTest(SuiteChecks, unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.tmp = Path(tempfile.mkdtemp())
+        cls.addClassCleanup(shutil.rmtree, cls.tmp)
         cls.dtb = cls.tmp / "bcm2712-min.dtb"
         subprocess.run(["dtc", "-q", "-I", "dts", "-O", "dtb",
                         "-o", cls.dtb, DTS], check=True)
-
-    @classmethod
-    def tearDownClass(cls):
-        shutil.rmtree(cls.tmp)
 
     def suite_dtb(self, mode):
         return {"builtin": None, "file": self.dtb, "none": "none"}[mode]

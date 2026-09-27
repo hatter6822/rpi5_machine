@@ -192,6 +192,7 @@ int bm_main(void)
         watchdog_reset(target);
     }
     if (equals(step, "halt")) {
+        mbox_tag(FW_TAG_NOTIFY_REBOOT, NULL, 0);
         watchdog_reset(63);
     }
     if (step.len && !equals(step, "off")) {

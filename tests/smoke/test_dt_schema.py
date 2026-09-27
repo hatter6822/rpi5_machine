@@ -51,8 +51,10 @@ KNOWN = (
     # without an address
     re.compile(r"soc@107c000000 \(simple-bus\): (firmware|power|rpi_rtc): "
                r"'ranges' is a required property"),
+    # and the firmware's vcio node, for which it has no binding either
     re.compile(r"firmware \(raspberrypi,bcm2835-firmware\): "
-               r"'#address-cells', '#size-cells', 'dma-ranges' do not match"),
+               r"'#address-cells', '#size-cells', 'dma-ranges'(, 'vcio')? "
+               r"do not match"),
 )
 
 

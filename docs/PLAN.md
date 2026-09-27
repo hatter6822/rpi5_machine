@@ -68,7 +68,7 @@ Delivered so far: M1 (WS0.1–WS0.3, WS0.5, WS0.6, WS2.1, WS2.2, WS2.3a, WS2.4, 
 | SoC (`bcm2712`) | 1–4 Cortex-A76 (`MPIDR.Aff1` = core with `MPIDR.MT` set (WS1.2), CNTFRQ 54 MHz, optional EL3, the IMPDEF registers firmware writes (WS1.5), warm reset through `RMR_EL3` (WS3.3)), GIC-400 with 288 SPIs, 5 priority bits and all timer/maintenance PPIs, UART10 (PL011), UARTA (a 16550 with 32-byte FIFOs, WS4.5), system timer (WS2.1), watchdog and reset status (WS2.4), RNG200 (WS2.5), the AVS monitor's temperature sensor (WS2.6), the seven brcmstb level 2 interrupt controllers (WS4.1), the two brcmstb GPIO blocks (WS4.2) and their pin controllers (WS4.3), the HDMI ports' two DDC I²C controllers (WS4.4), the two SD hosts with SDMA and ADMA2 (WS5.1), VideoCore mailbox with the BCM283x property and framebuffer channels (WS2.2), every identity tag answered (WS2.3a) and the Pi 5 firmware's own answers: its clocks, power domains and devices, temperature limit and reboot flags (WS2.3b), its framebuffer, kept within the VideoCore's 4 MiB (WS2.3c), its real-time clock (WS2.3d) and the temperature the AVS monitor reads (WS2.6), complete memory map with T0 placeholders and two catch-all windows |
 | Board (`raspi5b`) | 1/2/4/8/16 GiB RAM, board revision code, serial number (`serial=`), PSCI over SMC with EL2 entry (default) or guest-owned EL3 (`secure=on`), firmware such as TF-A's BL31 loaded with `-bios` and handed the kernel, initrd and device tree as the Pi's firmware does (WS3.3), system reset and power-off through PSCI, the watchdog and the monitor (WS3.6), with what a reset leaves for the next boot read, and set for the first, through `reset-status`, `reboot-flags` and `boot-count`, and the partition the files come from given by `boot-partition` (WS3.5), a built-in device tree when no `-dtb` is given (WS3.2; `builtin-dtb=off` passes none), the power button on GIO 20, which `system_powerdown` presses, and the ACT LED on GIO AON 9 (WS4.6), a monitor's EDID on HDMI0's DDC bus (WS4.4), the SD card slot on SDIO1, filled by `-drive if=sd` and changed at run time, with its card-detect switch on GIO AON 5 (WS5.1), and in whichever tree the guest gets the firmware's changes, made anew for each boot (WS3.1): model, serial number, the command line it builds, `/chosen` with the boot's reset status, partition, count and tryboot, a 5 A supply and seeds, the CMA size, the bootloader configuration, the Ethernet address, unmodelled devices disabled |
 | Boot helper (WS3.5) | `scripts/rpi5-boot` boots an SD card image as a Pi 5's firmware boots it: the boot partition (MBR, GPT, `autoboot.txt`), `config.txt` with its filters and includes, the kernel, device tree, initramfs and command line it names, its overlays and parameters applied as the firmware applies them (the blob is `dtmerge`'s, byte for byte), `serial0` turned into `ttyAMA10`, and the card read again at each reboot |
-| Tests | qtest (UART IDs, GIC geometry, priority bits and security, RAM, placeholders, system timer, watchdog, mailbox, identity tags, the firmware's clocks, power states, reboot flags, framebuffer (with the display, by `screendump`) and real-time clock, RNG, the AVS monitor's temperature, L2 interrupt controllers, GPIO, pin control, the DDC I²C controllers and the EDID, UARTA, the power button and ACT LED, the reset state, the SD hosts with card detect, PIO, SDMA and ADMA2), the built-in tree validated against the Linux v6.18 bindings (`make check-dt`), the device-tree fix-ups (each one, the built-in tree against a checked-in dump, the values of each boot across resets and migration, and as a reset left them for the first boot), bare-metal smoke guest (EL, MPIDR, CNTFRQ, PSCI CPU_ON on all cores, SYSTEM_OFF, EL3 mode), and the bare-metal suite (WS9.2, 36 tests: GIC and the Secure/Non-secure group split, each core's MPIDR, every timer on every core, SGIs between all core pairs, SPI routing, PSCI, the system timer, the mailbox and identity tags, the firmware's clocks as `vcgencmd` reports them, a tryboot, the real-time clock and a framebuffer, the RNG, the temperature as Linux and the firmware read it, a software-raised interrupt through each edge-layout L2 controller, a GPIO output's own edge through GIO's, UART receive and loopback, the SD card's master boot record through PIO, a watchdog reset and four system resets checked against the boot state, an ID-register dump, the A76's IMPDEF registers; 1–4 cores, with the built-in tree, a `-dtb` one and none, EL2 and EL3), the `-bios` handoff (qtest), and real firmware (`make check-firmware`, all pinned: the smoke guest and the suite on TF-A's `rpi5` BL31, Linux on TF-A and through U-Boot, the EDK2 port to its shell, the same from an SD card (Linux's root file system, U-Boot by its `extlinux.conf`, EDK2's map of the card), and the changes to the firmware's tree against a checked-in list), and `scripts/rpi5-boot` (its device-tree, overlay and `config.txt` code, partition tables, `--print`, QEMU's runs and the reboot loop, with what each reboot leaves; with the firmware, every overlay and parameter of the release against `dtmerge`, and a Raspberry Pi OS-style first boot) |
+| Tests | qtest (UART IDs, GIC geometry, priority bits and security, RAM, placeholders, system timer, watchdog, mailbox, identity tags, the firmware's clocks, power states, reboot flags, framebuffer (with the display, by `screendump`) and real-time clock, RNG, the AVS monitor's temperature, L2 interrupt controllers, GPIO, pin control, the DDC I²C controllers and the EDID, UARTA, the power button and ACT LED, the reset state, the SD hosts with card detect, PIO, SDMA and ADMA2), the built-in tree validated against the Linux v6.18 bindings (`make check-dt`), the device-tree fix-ups (each one, the built-in tree against a checked-in dump, the values of each boot across resets and migration, and as a reset left them for the first boot), bare-metal smoke guest (EL, MPIDR, CNTFRQ, PSCI CPU_ON on all cores, SYSTEM_OFF, EL3 mode), and the bare-metal suite (WS9.2, 36 tests: GIC and the Secure/Non-secure group split, each core's MPIDR, every timer on every core, SGIs between all core pairs, SPI routing, PSCI, the system timer, the mailbox and identity tags, the firmware's clocks through its tags, a tryboot, the real-time clock and a framebuffer, the RNG, the temperature as Linux and the firmware read it, a software-raised interrupt through each edge-layout L2 controller, a GPIO output's own edge through GIO's, UART receive and loopback, the SD card's master boot record through PIO, a watchdog reset and four system resets checked against the boot state, an ID-register dump, the A76's IMPDEF registers; 1–4 cores, with the built-in tree, a `-dtb` one and none, EL2 and EL3), the `-bios` handoff (qtest), and real firmware (`make check-firmware`, all pinned: the smoke guest and the suite on TF-A's `rpi5` BL31, Linux on TF-A and through U-Boot, the EDK2 port to its shell, the same from an SD card (Linux's root file system, U-Boot by its `extlinux.conf`, EDK2's map of the card), and the changes to the firmware's tree against a checked-in list), and `scripts/rpi5-boot` (its device-tree, overlay and `config.txt` code, partition tables, `--print`, QEMU's runs and the reboot loop, with what each reboot leaves; with the firmware, every overlay and parameter of the release against `dtmerge`, and a Raspberry Pi OS-style first boot) |
 | Linux and firmware | the stock Raspberry Pi OS kernel (6.18) boots on 4 CPUs to the root-fs mount, without warnings ("firmware out-of-date" included), with KASLR, scaling the CPUs' clock through the firmware (cpufreq), switching power domains through it and reading and setting its real-time clock (`hwclock`), reading the SoC's temperature in `thermal_zone0` and shutting down at its critical trip, registering every L2 interrupt controller its tree enables, listing both GPIO blocks with their banks and applying pin states through both pin controllers, reading the EDID through the DDC I²C controller, with `ttyS0` on UARTA looping bytes back and exchanging them with the host, with `gpio-keys` reporting `system_powerdown` as `KEY_POWER` (and on the built-in tree the ACT LED following sysfs), mounting its ext4 root from an SD card and noticing cards inserted and removed at run time, with the firmware's `bcm2712-rpi-5-b.dtb` and on the built-in tree (1, 2 and 8 GiB), directly, on TF-A's BL31 or through U-Boot on it (WS3.4); the EDK2 port draws its boot menu on the firmware's framebuffer and reaches the UEFI shell, whose `date` and `time` read and set the firmware's clock; `scripts/rpi5-boot` boots the kernel from a card laid out as Raspberry Pi OS's, with the OS's `config.txt`, overlays and `cmdline.txt`, through a first boot that rewrites the card and reboots (WS3.5); Raspberry Pi OS Lite boots from its card with `scripts/rpi5-boot` to its login prompt, and `reboot` and `poweroff` work (M3's exit test, by hand) |
 
 Known provisional values, each marked in the code: 288 SPIs
@@ -531,7 +531,8 @@ interface (1–23, only ARM's on at boot) and the devices of the older one
 (0–8) are storage bits, the temperature limit is 85 °C (`temp_limit`),
 and the reboot flags last until the next reset, whose bootloader takes
 them: bit 0 becomes `/chosen/bootloader/tryboot` in that boot's tree.
-The SoC, board, qtest and documentation patches move up to 0029–0032.
+The SoC, board, qtest and documentation patches moved up (they are
+0033–0036 now).
 The firmware's tree keeps its `power` node enabled now, and the built-in
 tree gains the firmware's `clocks` and `reset` nodes and the `power`
 node, as mainline's `bcm2712-rpi-5-b-ovl-rp1.dts` has them;
@@ -544,7 +545,7 @@ through the older interface and EDK2 reads the clock rates. qtests cover
 every new tag: the list, rates, ranges and clamping, clocks off and
 unknown, domains, devices, the temperature limit, reboot flags taken at
 the reset with a tree and without, reset and migration. The bare-metal
-suite reads every clock as `vcgencmd` reports it and checks it against
+suite reads every clock through the firmware's tags and checks it against
 the seeded table (`mbox/clocks`), and boots into a tryboot and out of it
 (`mbox/tryboot`). Deviations: no table of tag handlers, the design point
 below: a subclass keeps the Pi 5's answers apart from the older boards',
@@ -569,7 +570,7 @@ its buffer ran into its own RAM above 1 GiB. Validation now keeps no
 more lines than fit, 409 of those 1080, which the guest reads back, and
 covers the board's initial size too; the older boards' 64 MiB hold the
 largest framebuffer, so they see no change. The SoC, board, qtest and
-documentation patches move up to 0031–0034. The EDK2 port draws its
+documentation patches moved up (0033–0036 now). The EDK2 port draws its
 boot menu on the framebuffer at 640x480 (checked by `screendump`).
 Linux's downstream `bcm2708_fb` finds the display but takes a channel of
 the DMA controller for its copies, and without one fails to probe
@@ -589,7 +590,7 @@ tries first by passing its address to `FRAMEBUFFER_ALLOCATE`
 (undocumented), is answered with the model's own, to which Linux falls
 back.
 
-*WS2.3d delivered:* `bcm2712-property` (patch 0028, which now also names
+*WS2.3d delivered:* `bcm2712-property` (patch 0030, which now also names
 the two tags in `raspberrypi-fw-defs.h`) answers `GET_RTC_REG` and
 `SET_RTC_REG` for the eight registers of the downstream `rtc-rpi`
 driver. The time, in seconds from 1970 modulo 2^32, starts as QEMU's
@@ -683,7 +684,7 @@ Linux only drives V3D's (a reset bit in `PM_GRAFX_2712`, never polled) and V3D
 is not modelled. On Pi 5, Linux reboots and powers off through PSCI
 (its handler outranks `bcm2835_wdt`'s), so `reboot`/`poweroff` are WS3.6.
 
-`brcm,bcm2712-pm` at `0x10_7d20_0000`, `0x604` bytes, driven by Linux's
+`brcm,bcm2712-pm` at `0x10_7d20_0000`, `0x308` bytes, driven by Linux's
 `bcm2835_wdt.c` (watchdog and reboot) and `bcm2835-pm.c` (power domains,
 `is_2712` path).
 
@@ -756,10 +757,10 @@ bare-metal suite draws 1 KiB.
 #### WS2.6 AVS monitor / thermal (done)
 *Delivered:* a new model, `bcm2711-avs-monitor`
 (`hw/misc/bcm2711_avs_monitor.c`), with its Kconfig symbol, meson line
-and trace events as upstream-first patch 0025, ahead of the property
-interface's patches, which move up to 0026–0029, with the framebuffer
-fixes at 0030–0031 and the SoC, board, qtest and documentation patches
-at 0032–0035. With no datasheet, it models the one register Linux's
+and trace events as upstream-first patch 0026, ahead of the property
+interface's patches, 0027–0030, with the framebuffer fixes at 0031–0032
+and the SoC, board, qtest and documentation patches at 0033–0036. With
+no datasheet, it models the one register Linux's
 `bcm2711_thermal` reads, `AVS_RO_TEMP_STATUS`: both valid bits (16 and
 10) and the code for the temperature that a `temperature` property sets,
 in millidegrees Celsius, 25 °C by default, at startup with
@@ -770,9 +771,9 @@ hold, to the nearest step; a temperature beyond the 10-bit code's range
 is refused. The other registers read 0 and ignore writes, logged as
 unimplemented (`TODO(WS0.4)`: what they and the register's other bits
 read). The SoC maps it at `0x10_7d54_2000` with the BCM2712's
-coefficients, and `bcm2712-property` answers `GET_TEMPERATURE`, which
-`vcgencmd measure_temp` reports, with its reading, where the older
-boards' model answers a fixed 25 °C. The firmware's tree keeps its
+coefficients, and `bcm2712-property` answers `GET_TEMPERATURE` with its
+reading, where the older boards' model answers a fixed 25 °C; `vcgencmd`
+asks with `GET_GENCMD_RESULT`, not answered. The firmware's tree keeps its
 `avs-monitor` node enabled now, and the built-in tree gains it with its
 `thermal` child and a `thermal-zones` node with the firmware tree's
 coefficients, polling and 110 °C critical trip, but not the trips of the
@@ -1278,8 +1279,9 @@ find GIO 20 high by then, so WS4.6 comes first.
 **Depends:** WS4.1.
 `brcm,brcmstb-gpio` from Linux `gpio-brcmstb.c`: per bank of 32 lines,
 eight 32-bit registers at a `0x20` stride: `ODEN` (open drain), `DATA`,
-`IODIR` (1 = input), `EC` (edge/level select), `EI` (edge-insensitive,
-i.e. both edges), `MASK` (interrupt enable), `LEVEL` (polarity), `STAT`
+`IODIR` (1 = input), `EC` (polarity: 1 = rising edge or high level),
+`EI` (edge-insensitive, i.e. both edges), `MASK` (interrupt enable),
+`LEVEL` (1 = level-sensitive), `STAT`
 (pending, write-1-to-clear). Bank widths from `brcm,gpio-bank-widths`
 (GIO: 32 + 22; GIO AON: 17 + 6); the interrupt output is the OR over
 banks of `STAT & MASK`, into the main L2 controller (GIO) or unused
@@ -1492,10 +1494,11 @@ its backport.
 QEMU also ignored the address write that resumes an SDMA transfer
 stopped at a buffer boundary, which timed U-Boot out on any read across
 512 KiB: upstream fixed it in 725a8f10 (September 2026, after v11.1.1),
-and patch 0022 backports it with its authorship and a cherry-pick line,
+and patch 0023 backports it with its authorship and a cherry-pick line,
 to leave the series on the rebase onto `master`. The built-in tree gains
-`/clocks/clk-emmc2` (200 MHz), both hosts as `bcm2712.dtsi` has them
-(SDIO2 disabled, with its capability mask), the card slot on SDIO1 as
+`/clocks/clk-emmc2` (200 MHz), both hosts as `bcm2712.dtsi` (SDIO1) and
+`bcm2712-ds.dtsi` (SDIO2, disabled, with its capability mask) have them,
+the card slot on SDIO1 as
 `bcm2712-rpi-5-b.dts` has it (4-bit bus, UHS modes, `cd-gpios` on GIO
 AON 5 active low, the `vmmc` and `vqmmc` regulators switched by GIO AON
 4 and 3, pin states on both pin controllers) and the `mmc0` alias, but

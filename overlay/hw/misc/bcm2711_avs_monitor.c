@@ -12,7 +12,8 @@
  * 5's device trees have. It holds a 10-bit code, which the tree's thermal
  * zone converts to millidegrees Celsius with its coefficients, as
  * slope * code + offset: -487 and 410040 on the BCM2711, -550 and 450000
- * on the BCM2712. The "slope" and "offset" properties take them.
+ * on the BCM2712. The "slope" and "offset" properties take them; an SoC
+ * that sets them, as the BCM2712 does, wins over -global.
  *
  * The chip is at the temperature the "temperature" property gives, in
  * millidegrees Celsius, 25 degrees C unless set, which qom-set changes at

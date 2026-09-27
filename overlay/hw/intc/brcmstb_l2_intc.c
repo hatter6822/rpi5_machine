@@ -6,15 +6,21 @@
  * SPDX-License-Identifier: GPL-2.0-or-later
  *
  * No public datasheet: registers and semantics as used by Linux
- * drivers/irqchip/irq-brcmstb-l2.c, which knows two layouts:
+ * drivers/irqchip/irq-brcmstb-l2.c, which knows three variants:
  *
- * - edge ("brcm,l2-intc", "brcm,bcm2711-l2-intc"): STATUS latches a rising
- *   input and holds it until written to CLEAR; SET raises status bits from
- *   software. The driver acks through CLEAR.
- * - level ("brcm,bcm7271-l2-intc"): STATUS follows the inputs, and there
- *   is nothing to ack.
+ * - "brcm,l2-intc" (the "edge" property): STATUS latches a rising input
+ *   and holds it until written to CLEAR, which the driver's edge handler
+ *   acks through. SET raises status bits from software: the driver's
+ *   first versions named it (CPU_SET) and the current one leaves it out.
+ * - "brcm,bcm7271-l2-intc" (neither property): STATUS follows the inputs,
+ *   there is nothing to ack, and the layout has no SET or CLEAR.
+ * - "brcm,bcm2711-l2-intc" (the "bcm2711" property): the registers of the
+ *   first, driven like the second: the driver's level handler acks
+ *   through CLEAR and expects an input still high to show in STATUS
+ *   again. STATUS follows the inputs, and holds what SET raised until
+ *   CLEAR.
  *
- * Both have a mask with write-one-to-set and write-one-to-clear views,
+ * All have a mask with write-one-to-set and write-one-to-clear views,
  * and one output: the OR of STATUS & ~MASK. Reset masks every input.
  * The write-only registers (SET, CLEAR, MASK_SET, MASK_CLEAR) read as
  * zero; Linux never reads them. TODO(WS0.4): check on hardware.
@@ -30,7 +36,7 @@
 #include "migration/vmstate.h"
 #include "trace.h"
 
-/* Edge layout (brcmstb_l2_edge_intc_of_init) */
+/* The layout with SET and CLEAR (l2_edge_intc_init, l2_2711_lvl_intc_init) */
 REG32(EDGE_STATUS,          0x00)
 REG32(EDGE_SET,             0x04)
 REG32(EDGE_CLEAR,           0x08)
@@ -38,7 +44,7 @@ REG32(EDGE_MASK_STATUS,     0x0c)
 REG32(EDGE_MASK_SET,        0x10)
 REG32(EDGE_MASK_CLEAR,      0x14)
 
-/* Level layout (brcmstb_l2_lvl_intc_of_init) */
+/* The level layout (l2_lvl_intc_init) */
 REG32(LEVEL_STATUS,         0x00)
 REG32(LEVEL_MASK_STATUS,    0x04)
 REG32(LEVEL_MASK_SET,       0x08)
@@ -55,9 +61,15 @@ typedef enum {
     L2_INVALID,
 } BrcmstbL2Reg;
 
+/* Whether the registers are those with SET and CLEAR */
+static bool brcmstb_l2_has_clear(BrcmstbL2IntcState *s)
+{
+    return s->edge || s->bcm2711;
+}
+
 static BrcmstbL2Reg brcmstb_l2_decode(BrcmstbL2IntcState *s, hwaddr offset)
 {
-    if (s->edge) {
+    if (brcmstb_l2_has_clear(s)) {
         switch (offset) {
         case A_EDGE_STATUS:         return L2_STATUS;
         case A_EDGE_SET:            return L2_SET;
@@ -79,7 +91,8 @@ static BrcmstbL2Reg brcmstb_l2_decode(BrcmstbL2IntcState *s, hwaddr offset)
 
 static uint32_t brcmstb_l2_status(BrcmstbL2IntcState *s)
 {
-    return s->edge ? s->status : s->input;
+    /* Only SET raises status bits in the variants that show the inputs */
+    return s->edge ? s->status : s->input | s->status;
 }
 
 static void brcmstb_l2_update(BrcmstbL2IntcState *s)
@@ -208,10 +221,15 @@ static void brcmstb_l2_realize(DeviceState *dev, Error **errp)
 {
     BrcmstbL2IntcState *s = BRCMSTB_L2_INTC(dev);
 
+    if (s->edge && s->bcm2711) {
+        error_setg(errp, "%s: a controller is edge or bcm2711, not both",
+                   TYPE_BRCMSTB_L2_INTC);
+        return;
+    }
     memory_region_init_io(&s->iomem, OBJECT(s), &brcmstb_l2_ops, s,
                           TYPE_BRCMSTB_L2_INTC,
-                          s->edge ? BRCMSTB_L2_INTC_EDGE_SIZE
-                                  : BRCMSTB_L2_INTC_LEVEL_SIZE);
+                          brcmstb_l2_has_clear(s) ? BRCMSTB_L2_INTC_EDGE_SIZE
+                                                  : BRCMSTB_L2_INTC_LEVEL_SIZE);
     sysbus_init_mmio(SYS_BUS_DEVICE(s), &s->iomem);
 }
 
@@ -229,6 +247,7 @@ static const VMStateDescription vmstate_brcmstb_l2 = {
 
 static const Property brcmstb_l2_properties[] = {
     DEFINE_PROP_BOOL("edge", BrcmstbL2IntcState, edge, false),
+    DEFINE_PROP_BOOL("bcm2711", BrcmstbL2IntcState, bcm2711, false),
 };
 
 static void brcmstb_l2_class_init(ObjectClass *klass, const void *data)

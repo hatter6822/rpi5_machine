@@ -152,9 +152,10 @@ enum {
     BCM2712_SPI_MAIN_IRQ        = 244,
     BCM2712_SPI_MAIN_AON_IRQ    = 245,
     BCM2712_SPI_L2_INTC         = 247,
-    BCM2712_SPI_V3D_HUB         = 249,
-    BCM2712_SPI_V3D_CORE0       = 250,
-    BCM2712_SPI_MIP1_BASE       = 255,  /* 255..262: MSIs from PCIe1 */
+    BCM2712_SPI_V3D_CORE0       = 249,
+    BCM2712_SPI_V3D_HUB         = 250,
+    /* 247..254: MSIs from PCIe1, on the SPI of the L2 controller too */
+    BCM2712_SPI_MIP1_BASE       = 247,
     BCM2712_SPI_SDIO1           = 273,
     BCM2712_SPI_SDIO2           = 274,
     BCM2712_SPI_UARTA           = 276,

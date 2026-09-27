@@ -174,9 +174,9 @@ static bool clock_query(uint32_t tag, uint32_t id, uint32_t *answer)
 }
 
 /*
- * What vcgencmd's measure_clock and get_config report, for every clock
- * the firmware lists: each runs, at its most, and its range and the
- * temperature limit are the Raspberry Pi 5's defaults
+ * The firmware's clock tags, for every clock it lists: each runs, at its
+ * most, and its range and the temperature limit are the Raspberry Pi 5's
+ * defaults
  */
 TEST(mbox_clocks, "mbox/clocks")
 {
@@ -418,6 +418,8 @@ TEST(mbox_tryboot, "mbox/tryboot")
     if (fw >= 0) {
         ASSERT(fdt_prop_u32(fw, "tryboot", &tryboot));
         ASSERT_EQ(tryboot, is_tryboot);
+    } else {
+        bm_test_note("no /chosen/bootloader: tryboot not checked");
     }
     if (resets == 2) {
         return;

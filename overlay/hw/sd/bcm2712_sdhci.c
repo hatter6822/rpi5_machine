@@ -42,8 +42,8 @@
  * 1.8 V, and the UHS-I modes SDR50 (with tuning), SDR104 and DDR50; a
  * 200 MHz base clock, clk_emmc2 in bcm2712.dtsi; a 50 MHz timeout clock
  * and 512-byte blocks. No re-tuning mode, which would need a re-tuning
- * timer the model does not have: bcm2712.dtsi masks the silicon's out
- * of SDIO2's capabilities.
+ * timer the model does not have: bcm2712-ds.dtsi masks the silicon's
+ * out of SDIO2's capabilities.
  * TODO(WS0.4): read the capabilities on hardware.
  */
 #define BCM2712_SDHCI_CAPAREG   0x00002007156cc8b2ULL

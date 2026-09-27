@@ -9,14 +9,18 @@ controllers, each with one output to the GIC. Linux drives them with
 irq-brcmstb-l2.c. On BCM2712 they sit in front of the GPIO blocks, the
 I2C controllers, the display and the firmware's doorbells.
 
-There are two register layouts, selected by the "edge" property:
+The driver knows three variants, which two properties select:
 
-- edge ("brcm,l2-intc", "brcm,bcm2711-l2-intc"): STATUS latches a
-  rising input until the guest writes it to CLEAR, and SET raises
-  status bits from software;
-- level ("brcm,bcm7271-l2-intc"): STATUS follows the inputs.
+- "brcm,l2-intc" (edge): STATUS latches a rising input until the guest
+  writes it to CLEAR, and SET raises status bits from software;
+- "brcm,bcm7271-l2-intc" (neither): STATUS follows the inputs, and
+  there is no SET or CLEAR;
+- "brcm,bcm2711-l2-intc" (bcm2711): the registers of the first, driven
+  by the driver like the second, with a level handler that acks
+  through CLEAR and expects an input still high to show again: STATUS
+  follows the inputs, and holds what SET raised until CLEAR.
 
-Both have a mask with set and clear views, and one output: the OR of
+All have a mask with set and clear views, and one output: the OR of
 STATUS & ~MASK. Reset masks every input.
 ---
  MAINTAINERS          | 2 ++

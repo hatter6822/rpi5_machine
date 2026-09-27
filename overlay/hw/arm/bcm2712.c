@@ -57,7 +57,7 @@ const MemMapEntry bcm2712_memmap[BCM2712_NUM_DEVICES] = {
     [BCM2712_HVS]           = { 0x107c580000, 0x1a000 },
     [BCM2712_HDMI]          = { 0x107c700000, 0x20100 },
     [BCM2712_UART10]        = { 0x107d001000, 0x200 },
-    [BCM2712_PM]            = { 0x107d200000, 0x604 },
+    [BCM2712_PM]            = { 0x107d200000, 0x308 },
     [BCM2712_RNG]           = { 0x107d208000, 0x28 },
     [BCM2712_CPU_L2_IRQ]    = { 0x107d503000, 0x18 },
     [BCM2712_PINCTRL]       = { 0x107d504100, 0x30 },
@@ -120,52 +120,61 @@ static const char *const bcm2712_device_names[BCM2712_NUM_DEVICES] = {
 };
 
 #define L2_COMPAT(s)    .compat = s, .compat_len = sizeof(s)
-#define L2_EDGE_COMPAT  L2_COMPAT("brcm,bcm2711-l2-intc\0brcm,l2-intc")
+#define L2_EDGE_COMPAT  L2_COMPAT("brcm,l2-intc")
+#define L2_2711_COMPAT  L2_COMPAT("brcm,bcm2711-l2-intc\0brcm,l2-intc")
 #define L2_LEVEL_COMPAT L2_COMPAT("brcm,bcm7271-l2-intc")
+typedef enum { L2_LEVEL, L2_EDGE, L2_2711 } BCM2712L2Variant;
 
-/* The level 2 interrupt controllers, as in the firmware's device tree */
+/*
+ * The level 2 interrupt controllers, as in the firmware's device tree,
+ * which leaves four of them disabled, as the Pi 5's sources do: the
+ * display's, the always-on block's two (the main one "will clash with the
+ * firmware monitoring the PMIC interrupt via the VPU") and the one at
+ * 0x7d517000, whose SPI PCIe1's MSIs use.
+ */
 static const struct {
     const char *name;
     BCM2712Device dev;
     int spi;
-    bool edge;
+    BCM2712L2Variant variant;
+    bool disabled;
     const char *compat;
     size_t compat_len;
 } bcm2712_l2_intcs[BCM2712_NUM_L2_INTCS] = {
     [BCM2712_L2_DISP_INTR] = {
-        "disp-intr", BCM2712_DISP_INTR, BCM2712_SPI_DISP_INTR, true,
-        L2_EDGE_COMPAT,
+        "disp-intr", BCM2712_DISP_INTR, BCM2712_SPI_DISP_INTR, L2_2711, true,
+        L2_2711_COMPAT,
     },
     [BCM2712_L2_CPU_L2_IRQ] = {
-        "cpu-l2-irq", BCM2712_CPU_L2_IRQ, BCM2712_SPI_CPU_L2_IRQ, true,
-        L2_COMPAT("brcm,l2-intc"),
+        "cpu-l2-irq", BCM2712_CPU_L2_IRQ, BCM2712_SPI_CPU_L2_IRQ, L2_EDGE,
+        false, L2_EDGE_COMPAT,
     },
     [BCM2712_L2_BSC_IRQ] = {
-        "bsc-irq", BCM2712_BSC_IRQ, BCM2712_SPI_BSC, false,
+        "bsc-irq", BCM2712_BSC_IRQ, BCM2712_SPI_BSC, L2_LEVEL, false,
         L2_LEVEL_COMPAT,
     },
     [BCM2712_L2_MAIN_IRQ] = {
-        "main-irq", BCM2712_MAIN_IRQ, BCM2712_SPI_MAIN_IRQ, false,
+        "main-irq", BCM2712_MAIN_IRQ, BCM2712_SPI_MAIN_IRQ, L2_LEVEL, false,
         L2_LEVEL_COMPAT,
     },
     [BCM2712_L2_AON_INTR] = {
-        "aon-intr", BCM2712_AON_INTR, BCM2712_SPI_AON_INTR, true,
-        L2_EDGE_COMPAT,
+        "aon-intr", BCM2712_AON_INTR, BCM2712_SPI_AON_INTR, L2_2711, true,
+        L2_2711_COMPAT,
     },
     [BCM2712_L2_7D517000] = {
-        "l2-intc", BCM2712_L2_INTC, BCM2712_SPI_L2_INTC, false,
+        "l2-intc", BCM2712_L2_INTC, BCM2712_SPI_L2_INTC, L2_LEVEL, true,
         L2_LEVEL_COMPAT,
     },
     [BCM2712_L2_MAIN_AON_IRQ] = {
-        "main-aon-irq", BCM2712_MAIN_AON_IRQ, BCM2712_SPI_MAIN_AON_IRQ, false,
-        L2_LEVEL_COMPAT,
+        "main-aon-irq", BCM2712_MAIN_AON_IRQ, BCM2712_SPI_MAIN_AON_IRQ,
+        L2_LEVEL, true, L2_LEVEL_COMPAT,
     },
 };
 
 /*
  * The lines in each bank of the two GPIO blocks, as bcm2712.dtsi has
  * them. The Pi 5's own tree trims GIO's second bank to the 4 lines the
- * board uses.
+ * board uses, which raspi5b.c does to its node of the tree.
  */
 static const uint32_t bcm2712_gio_widths[] = { 32, 22 };
 static const uint32_t bcm2712_gio_aon_widths[] = { 17, 6 };
@@ -296,8 +305,13 @@ static bool bcm2712_realize_gic(BCM2712State *s, Error **errp)
     sysbus_mmio_map(gicsbd, 1, base + GIC400_CPU_OFS);
     sysbus_mmio_map(gicsbd, 2, base + GIC400_VIFACE_THIS_OFS);
     sysbus_mmio_map(gicsbd, 3, base + GIC400_VCPU_OFS);
+    /*
+     * The GIC has a region for each CPU's own CPU interface (4 .. 4 + n
+     * - 1), which the GIC-400 lacks, and then one for each CPU's virtual
+     * interface control block (4 + n ..), which it aliases at 0x5000.
+     */
     for (unsigned i = 0; i < n; i++) {
-        sysbus_mmio_map(gicsbd, 4 + i, base + GIC400_VIFACE_CPU_OFS(i));
+        sysbus_mmio_map(gicsbd, 4 + n + i, base + GIC400_VIFACE_CPU_OFS(i));
     }
 
     for (unsigned i = 0; i < n; i++) {
@@ -398,7 +412,10 @@ static bool bcm2712_realize_l2_intcs(BCM2712State *s, Error **errp)
     for (int i = 0; i < BCM2712_NUM_L2_INTCS; i++) {
         SysBusDevice *sbd = SYS_BUS_DEVICE(&s->l2_intc[i]);
 
-        qdev_prop_set_bit(DEVICE(sbd), "edge", bcm2712_l2_intcs[i].edge);
+        qdev_prop_set_bit(DEVICE(sbd), "edge",
+                          bcm2712_l2_intcs[i].variant == L2_EDGE);
+        qdev_prop_set_bit(DEVICE(sbd), "bcm2711",
+                          bcm2712_l2_intcs[i].variant == L2_2711);
         if (!sysbus_realize(sbd, errp)) {
             return false;
         }
@@ -585,7 +602,9 @@ static bool bcm2712_realize_mbox_client(BCM2712State *s, SysBusDevice *sbd,
  * read through the VideoCore's view of memory: the first GiB of RAM at
  * bus address 0x0, where Linux addresses it (the firmware's device tree
  * gives the "soc" node no dma-ranges), and at 0xc000_0000, the alias
- * code written for older Pis uses. Anything else goes unanswered.
+ * code written for older Pis uses. A property request whose buffer lies
+ * anywhere else is not answered; the framebuffer channel, which does not
+ * check, reads zeros there.
  */
 static bool bcm2712_realize_vc(BCM2712State *s, Error **errp)
 {
@@ -894,6 +913,9 @@ static void bcm2712_fdt_l2_intcs(void *fdt, uint32_t *phandles)
                                GIC_FDT_IRQ_FLAGS_LEVEL_HI);
         qemu_fdt_setprop(fdt, path, "interrupt-controller", NULL, 0);
         qemu_fdt_setprop_cell(fdt, path, "#interrupt-cells", 1);
+        if (bcm2712_l2_intcs[i].disabled) {
+            qemu_fdt_setprop_string(fdt, path, "status", "disabled");
+        }
         qemu_fdt_setprop_cell(fdt, path, "phandle", phandles[i]);
     }
 }
@@ -982,9 +1004,9 @@ static void bcm2712_fdt_ddcs(void *fdt, const uint32_t *l2_phandles)
 }
 
 /*
- * The SD/eMMC host controllers, as bcm2712.dtsi has them, in reverse since
- * libfdt adds each subnode first. SDIO2 serves the board's Wi-Fi radio,
- * so it is the board's to enable.
+ * The SD/eMMC host controllers, SDIO1 as bcm2712.dtsi has it and SDIO2 as
+ * bcm2712-ds.dtsi has it, in reverse since libfdt adds each subnode first.
+ * SDIO2 serves the board's Wi-Fi radio, so it is the board's to enable.
  */
 static void bcm2712_fdt_sdios(void *fdt, uint32_t clk_emmc2)
 {
@@ -1087,6 +1109,7 @@ void bcm2712_fdt_populate(BCM2712State *s, void *fdt)
     const char *firmware = BCM2712_FDT_SOC_PATH "/firmware";
     const char *fw_clocks = BCM2712_FDT_SOC_PATH "/firmware/clocks";
     const char *fw_reset = BCM2712_FDT_SOC_PATH "/firmware/reset";
+    const char *fw_vcio = BCM2712_FDT_SOC_PATH "/firmware/vcio";
     const char *power = BCM2712_FDT_SOC_PATH "/power";
     const char *rtc = BCM2712_FDT_SOC_PATH "/rpi_rtc";
     uint32_t spi, fw;
@@ -1193,8 +1216,9 @@ void bcm2712_fdt_populate(BCM2712State *s, void *fdt)
      * The firmware interface, behind the mailbox, as in the firmware's
      * tree: Linux passes it buffers by their "soc" bus address. Its clocks
      * and reset controller, and beside it the power domains it switches,
-     * as mainline's tree has them; then its real-time clock, which only
-     * the firmware's tree has, with the battery's charger off.
+     * as mainline's tree has them; then its real-time clock and the vcio
+     * device through which user space reaches the interface, which only
+     * the firmware's tree has, the clock with the battery's charger off.
      */
     fw = qemu_fdt_alloc_phandle(fdt);
     qemu_fdt_add_subnode(fdt, rtc);
@@ -1224,6 +1248,8 @@ void bcm2712_fdt_populate(BCM2712State *s, void *fdt)
     qemu_fdt_setprop_string(fdt, fw_clocks, "compatible",
                             "raspberrypi,firmware-clocks");
     qemu_fdt_setprop_cell(fdt, fw_clocks, "#clock-cells", 1);
+    qemu_fdt_add_subnode(fdt, fw_vcio);
+    qemu_fdt_setprop_string(fdt, fw_vcio, "compatible", "raspberrypi,vcio");
 
     /*
      * Keep the default CMA pool, where Linux allocates the buffers it

@@ -28,7 +28,7 @@ registers read as 0 and ignore writes.
  3 files changed, 8 insertions(+)
 
 diff --git a/hw/misc/Kconfig b/hw/misc/Kconfig
-index 9b2f207b..dcb97722 100644
+index 9b2f207..dcb9772 100644
 --- a/hw/misc/Kconfig
 +++ b/hw/misc/Kconfig
 @@ -259,6 +259,9 @@ config XLNX_ZYNQ_DDRC
@@ -42,7 +42,7 @@ index 9b2f207b..dcb97722 100644
      bool
  
 diff --git a/hw/misc/meson.build b/hw/misc/meson.build
-index f4f8cf7c..13e0748f 100644
+index f4f8cf7..13e0748 100644
 --- a/hw/misc/meson.build
 +++ b/hw/misc/meson.build
 @@ -86,6 +86,7 @@ system_ss.add(when: 'CONFIG_NPCM7XX', if_true: files(
@@ -54,7 +54,7 @@ index f4f8cf7c..13e0748f 100644
  system_ss.add(when: 'CONFIG_BCM2835_CPRMAN', if_true: files('bcm2835_cprman.c'))
  system_ss.add(when: 'CONFIG_BCM2835_MBOX', if_true: files('bcm2835_mbox.c'))
 diff --git a/hw/misc/trace-events b/hw/misc/trace-events
-index b29b0ede..c28b9fb8 100644
+index b29b0ed..c28b9fb 100644
 --- a/hw/misc/trace-events
 +++ b/hw/misc/trace-events
 @@ -339,6 +339,10 @@ aspeed_hace_hash_addr(const char *s, uint64_t addr) "%s: 0x%" PRIx64

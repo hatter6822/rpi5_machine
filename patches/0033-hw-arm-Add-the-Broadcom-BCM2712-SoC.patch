@@ -13,10 +13,11 @@ boot: the cores (MPIDR.Aff1 is the core number, CNTFRQ is 54 MHz,
 optional EL3), the GIC-400 with 288 SPIs and the timer and maintenance
 PPIs, UART10 (a PL011) and UARTA (a 16550 with its registers 4 bytes
 apart), the system timer, the watchdog and reset status block, the
-RNG200, the seven level 2 interrupt controllers, the two GPIO blocks and
-their pin controllers, the HDMI ports' two DDC I2C controllers, the two
-SD/eMMC host controllers, and the VideoCore mailbox with the firmware
-property and framebuffer channels. UART10 is the first serial port and
+RNG200, the AVS monitor's temperature register, the seven level 2
+interrupt controllers, the two GPIO blocks and their pin controllers,
+the HDMI ports' two DDC I2C controllers, the two SD/eMMC host
+controllers, and the VideoCore mailbox with the firmware property and
+framebuffer channels. UART10 is the first serial port and
 UARTA the second. The first SD host's bus is the SoC's sd-bus, for the
 board's card slot. The firmware reaches buffers through a VideoCore bus
 view that holds the first GiB of RAM at 0x0 and at 0xc000_0000. Every
@@ -37,7 +38,7 @@ values not documented publicly are marked for checking on hardware.
  2 files changed, 22 insertions(+)
 
 diff --git a/hw/arm/Kconfig b/hw/arm/Kconfig
-index 16f83f09..868fe17b 100644
+index 16f83f0..868fe17 100644
 --- a/hw/arm/Kconfig
 +++ b/hw/arm/Kconfig
 @@ -384,6 +384,27 @@ config RASPI
@@ -69,7 +70,7 @@ index 16f83f09..868fe17b 100644
      bool
      select ARM_V7M
 diff --git a/hw/arm/meson.build b/hw/arm/meson.build
-index 4233a800..00b030ab 100644
+index 4233a80..00b030a 100644
 --- a/hw/arm/meson.build
 +++ b/hw/arm/meson.build
 @@ -32,6 +32,7 @@ arm_common_ss.add(when: 'CONFIG_RASPI', if_true: files(

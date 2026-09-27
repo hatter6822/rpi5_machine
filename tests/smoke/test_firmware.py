@@ -160,13 +160,10 @@ class TfaTest(SuiteChecks, unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.tmp = Path(tempfile.mkdtemp())
+        cls.addClassCleanup(shutil.rmtree, cls.tmp)
         cls.dtb = cls.tmp / "bcm2712-min.dtb"
         subprocess.run(["dtc", "-q", "-I", "dts", "-O", "dtb",
                         "-o", cls.dtb, DTS], check=True)
-
-    @classmethod
-    def tearDownClass(cls):
-        shutil.rmtree(cls.tmp)
 
     def test_hello(self):
         status, out = boot("-M", "raspi5b,secure=on", "-bios", str(BL31))
@@ -309,12 +306,9 @@ class SdBootTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.tmp = Path(tempfile.mkdtemp())
+        cls.addClassCleanup(shutil.rmtree, cls.tmp)
         cls.card = cls.tmp / "sd.img"
         make_sd_card(cls.card)
-
-    @classmethod
-    def tearDownClass(cls):
-        shutil.rmtree(cls.tmp)
 
     def sd_args(self):
         # snapshot=on: no boot changes the card for the next

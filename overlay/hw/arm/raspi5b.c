@@ -342,7 +342,26 @@ static void raspi5b_fdt_memory(void *fdt, uint64_t ram_size)
     }
 }
 
+/* The GPIO lines' names on the board, as the firmware's tree has them */
+static const char raspi5b_gio_line_names[] =
+    "-\0" "2712_BOOT_CS_N\0" "2712_BOOT_MISO\0" "2712_BOOT_MOSI\0"
+    "2712_BOOT_SCLK\0" "-\0" "-\0" "-\0" "-\0" "-\0" "-\0" "-\0" "-\0" "-\0"
+    "PCIE_SDA\0" "PCIE_SCL\0" "-\0" "-\0" "-\0" "-\0" "PWR_GPIO\0"
+    "2712_G21_FS\0" "-\0" "-\0" "BT_RTS\0" "BT_CTS\0" "BT_TXD\0" "BT_RXD\0"
+    "WL_ON\0" "BT_ON\0" "WIFI_SDIO_CLK\0" "WIFI_SDIO_CMD\0" "WIFI_SDIO_D0\0"
+    "WIFI_SDIO_D1\0" "WIFI_SDIO_D2\0" "WIFI_SDIO_D3";
+
+static const char raspi5b_gio_aon_line_names[] =
+    "RP1_SDA\0" "RP1_SCL\0" "RP1_RUN\0" "SD_IOVDD_SEL\0" "SD_PWR_ON\0"
+    "SD_CDET_N\0" "SD_FLG_N\0" "-\0" "2712_WAKE\0" "2712_STAT_LED\0" "-\0"
+    "-\0" "PMIC_INT\0" "UART_TX_FS\0" "UART_RX_FS\0" "-\0" "-\0" "\0" "\0"
+    "\0" "\0" "\0" "\0" "\0" "\0" "\0" "\0" "\0" "\0" "\0" "\0" "\0"
+    "HDMI0_SCL\0" "HDMI0_SDA\0" "HDMI1_SCL\0" "HDMI1_SDA\0" "PMIC_SCL\0"
+    "PMIC_SDA";
+
 /*
+ * The board's GPIO lines: the second bank of GIO has only the 4 lines the
+ * board uses, and the lines have the names the firmware's tree gives them.
  * The power button, with the state of its pin, and the activity LED, as
  * the firmware's tree has them but under node names their bindings
  * accept. The power LED hangs off RP1, which is not modelled.
@@ -357,8 +376,17 @@ static void raspi5b_fdt_gpio_users(void *fdt)
     g_autofree char *button_gpio = g_strdup_printf(
         "gpio%d", RASPI5B_GIO_PWR_BUTTON);
     uint32_t button_pin_phandle = qemu_fdt_alloc_phandle(fdt);
+    uint32_t gio_widths[] = { cpu_to_be32(32), cpu_to_be32(4) };
     const char *button = "/gpio-keys/power-button";
     const char *led = "/leds/led-act";
+
+    qemu_fdt_setprop(fdt, gio, "brcm,gpio-bank-widths", gio_widths,
+                     sizeof(gio_widths));
+    qemu_fdt_setprop(fdt, gio, "gpio-line-names", raspi5b_gio_line_names,
+                     sizeof(raspi5b_gio_line_names));
+    qemu_fdt_setprop(fdt, gio_aon, "gpio-line-names",
+                     raspi5b_gio_aon_line_names,
+                     sizeof(raspi5b_gio_aon_line_names));
 
     qemu_fdt_add_subnode(fdt, button_pin);
     qemu_fdt_setprop_string(fdt, button_pin, "function", "gpio");
@@ -599,11 +627,14 @@ static void raspi5b_fdt_identity(const Raspi5bMachineState *s, void *fdt)
  */
 static char *raspi5b_dtb_bootargs(const char *filename)
 {
+    g_autofree char *path = NULL;
     g_autofree void *fdt = NULL;
     const char *args;
     int size, len;
 
-    fdt = filename ? load_device_tree(filename, &size) : NULL;
+    /* The file as arm_load_dtb() found it, in the data directories too */
+    path = filename ? qemu_find_file(QEMU_FILE_TYPE_BIOS, filename) : NULL;
+    fdt = path ? load_device_tree(path, &size) : NULL;
     if (!fdt) {
         return NULL;
     }
@@ -744,10 +775,15 @@ static void raspi5b_fdt_blconfig(void *fdt)
     for (char **path = paths; *path; path++) {
         int parent = fdt_parent_offset(fdt, fdt_path_offset(fdt, *path));
 
-        qemu_fdt_setprop_sized_cells(fdt, *path, "reg",
-                                     fdt_address_cells(fdt, parent),
-                                     RASPI5B_BLCONFIG_ADDR,
-                                     fdt_size_cells(fdt, parent), size);
+        if (qemu_fdt_setprop_sized_cells(fdt, *path, "reg",
+                                         fdt_address_cells(fdt, parent),
+                                         RASPI5B_BLCONFIG_ADDR,
+                                         fdt_size_cells(fdt, parent),
+                                         size) < 0) {
+            /* A parent with cells of another size: the node stays as it is */
+            warn_report("raspi5b: cannot set %s's reg", *path);
+            continue;
+        }
         qemu_fdt_setprop_string(fdt, *path, "status", "okay");
     }
 }

@@ -49,11 +49,13 @@ Implemented devices
   the critical trip in both device trees, Linux powers the machine off.
   The monitor's other registers read as zero and ignore writes
 * The seven Broadcom level 2 interrupt controllers of the firmware's
-  device tree, each in front of one SPI: the edge-latching layout
-  (``brcm,l2-intc``) for the display, the always-on block and the
-  firmware's doorbells, and the level layout (``brcm,bcm7271-l2-intc``)
-  for the other four, among them those of the GPIO block and the HDMI
-  I2C controllers
+  device tree, each in front of one SPI: the edge-latching
+  ``brcm,l2-intc`` for the firmware's doorbells, ``brcm,bcm2711-l2-intc``
+  (the same registers, a status that follows the inputs) for the display
+  and the always-on block, and the level layout
+  (``brcm,bcm7271-l2-intc``) for the other four, among them those of the
+  GPIO block and the HDMI I2C controllers. The tree leaves four of them
+  disabled, as the Raspberry Pi 5's does
 * The two Broadcom GPIO blocks: GIO at ``0x10_7d50_8500``, 32 + 22 lines,
   interrupting through the main level 2 controller, and GIO AON at
   ``0x10_7d51_7c00``, 17 + 6 lines, whose interrupt is not connected, as
@@ -219,9 +221,8 @@ the older Pis' firmware does not, the channel answers as the Pi 5's:
   off at boot. Linux's ``raspberrypi-power`` switches them; no modelled
   device depends on their states. A domain that does not exist stays off,
   and a device that does not exist says so;
-* temperatures: the SoC's, which ``vcgencmd measure_temp`` reports, as
-  the AVS monitor's sensor reads it, and the limit, 85 degrees C,
-  ``config.txt``'s ``temp_limit``;
+* temperatures: the SoC's, as the AVS monitor's sensor reads it, and the
+  limit, 85 degrees C, ``config.txt``'s ``temp_limit``;
 * reboot flags: a guest sets them before a reset, as Linux does for
   ``reboot "0 tryboot"``, and the next boot takes them: its device tree
   reports the tryboot, as described below. The reboot notification that
@@ -242,7 +243,10 @@ much the whole answer needs (the command line is the exception, copied
 only when it fits, as the firmware does). A request that is cut short
 inside a tag, or whose tag runs past the request's own length, is answered
 with the interface's error code, ``0x80000001``; a request the VideoCore
-cannot reach is not answered at all.
+cannot reach is not answered at all. A tag the model lacks is answered
+with no value and logged as unimplemented: ``GET_GENCMD_RESULT``, through
+which ``vcgencmd`` sends its commands as text, is one, so ``vcgencmd``
+gets no answers.
 
 Reset and power-off
 -------------------
