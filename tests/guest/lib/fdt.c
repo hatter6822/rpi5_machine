@@ -496,8 +496,7 @@ bool fdt_reg(int node, unsigned index, uint64_t *addr, uint64_t *size)
     return true;
 }
 
-/* The node's interrupt parent: "interrupt-parent" here or on an ancestor */
-static int interrupt_parent(int node)
+int fdt_interrupt_parent(int node)
 {
     int path[FDT_MAX_DEPTH];
     int depth = node_path(node, path);
@@ -517,7 +516,7 @@ static int interrupt_parent(int node)
 
 bool fdt_gic_intid(int node, unsigned index, unsigned *intid)
 {
-    int gic = interrupt_parent(node);
+    int gic = fdt_interrupt_parent(node);
     uint32_t len;
     const void *irqs = fdt_getprop(node, "interrupts", &len);
 

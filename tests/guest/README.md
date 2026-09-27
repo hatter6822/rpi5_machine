@@ -2,13 +2,17 @@
 
 Freestanding AArch64 programs that run on `raspi5b` and, unchanged, on a
 real Raspberry Pi 5. They are built with clang and lld (`make guest` from
-the repository root) and booted by the smoke tests in `tests/smoke/`.
+the repository root) and booted by the smoke tests in `tests/smoke/`. The
+runtime below is the bare-metal guests'; `linux/` holds a program for
+Linux.
 
 | Directory | Contents |
 | --- | --- |
 | `lib/` | the runtime every guest links: entry, exception vectors, console, device-tree walker, GIC-400 driver, PSCI, watchdog and reset status (PM), firmware mailbox, RNG200, generic timer helpers, a switch to Non-secure EL2 for a guest that owns EL3, test runner |
 | `hello/` | the original smoke guest: boot EL, MPIDR, CNTFRQ, PSCI `CPU_ON` of every core, `SYSTEM_OFF` |
 | `suite/` | the bare-metal test suite (WS9.2), one file per area |
+| `reboot/` | the guest of the `rpi5-boot` reboot tests: it reports the boot `/chosen/bootloader` describes and ends it as its command line's `bootN=` word says (a reboot, a tryboot, a reboot to a partition or a halt through the watchdog, or a power-off) |
+| `linux/` | `firstboot`, a Linux program without a C library: the `/init` with which the `rpi5-boot` tests boot Raspberry Pi OS's kernel, which plays the OS's first boot (it rewrites the card's disk identifier and `cmdline.txt`, and reboots) |
 
 ## Runtime
 
@@ -142,7 +146,9 @@ none (`builtin-dtb=off`), and at EL3, and requires every test to pass or
 to be skipped for a stated reason. `uart/echo` prints
 `# uart/echo: send a line` and waits half a second for the peer to answer
 with one; the smoke test answers in one run and lets it skip in the
-others.
+others. Every run has a 1 MiB card in the SD card slot
+(`-drive if=sd`), with a master boot record for `sd/mbr` to read, but
+one, which checks that `sd/mbr` skips without a card.
 
 ## The suite
 
@@ -153,8 +159,12 @@ others.
 | Generic timers | frequency; the EL1, EL2 and Secure physical timers; the EL1 physical and virtual timers on every core, with a virtual offset above the count |
 | SMP | each core's `MPIDR_EL1`, PSCI `CPU_ON` of every core, SGIs between every pair of cores and to all others, an SPI routed to each core in turn; `CPU_ON`/`CPU_OFF`/`AFFINITY_INFO` statuses |
 | System timer | rate against the generic counter, every comparator's interrupt |
-| Firmware | the mailbox's board revision, the identity tags |
+| Firmware | the mailbox's board revision, the identity tags, the clocks and the temperature limit as vcgencmd reports them, a tryboot's reboot flag, the real-time clock's count, time, alarm and charger range, a framebuffer allocated in the VideoCore's memory |
 | PM, reset | watchdog countdown and reset, three PSCI `SYSTEM_RESET`s and a watchdog reset that must restore the boot state |
 | RNG | a 1 KiB draw, Linux's recovery sequence |
+| Temperature | the AVS monitor's sensor read as Linux's thermal driver reads it, converted with its thermal zone's coefficients and below the critical trip, and the firmware's temperature within 2 degrees of it |
+| L2 interrupt controllers | on each enabled `brcm,l2-intc`, a masked software-raised bit, then taken through the SPI and acked as Linux does |
+| GPIO | an output's own rising edge on GIO 12, latched while disabled, then taken through `main_irq` and its SPI and acked as Linux does; a falling edge ignored, the next rising one taken |
 | UART | a line from the peer, internal loopback polled and by interrupt |
+| SD | the card in SDIO1's slot brought up at 400 kHz and 3.3 V, its interrupts polled; its first block read at 25 MHz a word at a time through the buffer, and the partitions of its master boot record listed (`# sd/mbr: partition ...`); skipped without a card |
 | Platform | device-tree discovery, PSCI version, an identification-register dump (`# probe: name=value`, sorted) |

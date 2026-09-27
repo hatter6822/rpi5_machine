@@ -16,6 +16,7 @@
 
     aliases {
         serial10 = "/soc@107c000000/serial@7d001000";
+        mmc0 = "/soc@107c000000/mmc@fff000";
     };
 
     chosen {
@@ -46,6 +47,13 @@
         #address-cells = <1>;
         #size-cells = <1>;
         ranges = <0x00000000  0x10 0x00000000  0x80000000>;
+
+        mmc@fff000 {
+            compatible = "brcm,bcm2712-sdhci", "brcm,sdhci-brcmstb";
+            reg = <0xfff000 0x260>, <0xfff400 0x200>;
+            reg-names = "host", "cfg";
+            interrupts = <0 273 4>;
+        };
 
         timer@7c003000 {
             compatible = "brcm,bcm2835-system-timer";
@@ -79,6 +87,44 @@
             reg = <0x7d208000 0x28>;
         };
 
+        intc@7d503000 {
+            compatible = "brcm,l2-intc";
+            reg = <0x7d503000 0x18>;
+            interrupts = <0 238 4>;
+            interrupt-controller;
+            #interrupt-cells = <1>;
+        };
+
+        main_irq: interrupt-controller@7d508400 {
+            compatible = "brcm,bcm7271-l2-intc";
+            reg = <0x7d508400 0x10>;
+            interrupts = <0 244 4>;
+            interrupt-controller;
+            #interrupt-cells = <1>;
+        };
+
+        gpio@7d508500 {
+            compatible = "brcm,brcmstb-gpio";
+            reg = <0x7d508500 0x40>;
+            interrupt-parent = <&main_irq>;
+            interrupts = <0>;
+            gpio-controller;
+            #gpio-cells = <2>;
+            interrupt-controller;
+            #interrupt-cells = <2>;
+            brcm,gpio-bank-widths = <32 4>;
+        };
+
+        avs-monitor@7d542000 {
+            compatible = "brcm,bcm2711-avs-monitor", "syscon", "simple-mfd";
+            reg = <0x7d542000 0xf00>;
+
+            thermal: thermal {
+                compatible = "brcm,bcm2711-thermal";
+                #thermal-sensor-cells = <0>;
+            };
+        };
+
         gicv2: interrupt-controller@7fff9000 {
             compatible = "arm,gic-400";
             reg = <0x7fff9000 0x1000>,
@@ -88,6 +134,15 @@
             interrupt-controller;
             #interrupt-cells = <3>;
             #address-cells = <0>;
+        };
+    };
+
+    thermal-zones {
+        cpu-thermal {
+            polling-delay-passive = <1000>;
+            polling-delay = <1000>;
+            coefficients = <(-550) 450000>;
+            thermal-sensors = <&thermal>;
         };
     };
 };

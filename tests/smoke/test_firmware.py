@@ -3,13 +3,14 @@
 # Boot real firmware with -bios, as the Raspberry Pi firmware would: TF-A's
 # rpi5 BL31 starting the bare-metal guests at EL2 and serving their PSCI
 # calls, then Linux, U-Boot and Linux through it, and the EDK2 port to its
-# UEFI shell. Runs from 'make check-firmware', which builds and fetches
-# the firmware at pinned versions (scripts/firmware) and points FIRMWARE
-# at it; skipped otherwise.
+# UEFI shell, without storage and from an SD card. Runs from 'make
+# check-firmware', which builds and fetches the firmware at pinned
+# versions (scripts/firmware) and points FIRMWARE at it; skipped otherwise.
 
 import os
 import select
 import shutil
+import struct
 import subprocess
 import tempfile
 import time
@@ -50,6 +51,17 @@ BOOT_TIMEOUT = 180
 # F1 on a VT100 terminal, which EDK2 reads as its shell's hotkey
 F1 = "\x1bOP"
 
+# A card to boot from: 4 GiB, an SDHC card (sparse; QEMU's cards are a
+# power of 2 in size), with one ext4 partition from 1 MiB, the root file
+# system, whose /boot holds the kernel and the extlinux.conf U-Boot follows
+SD_SIZE = 4 << 30
+SD_ROOT_START = 2048                    # in 512-byte sectors
+SD_ROOT_SIZE = 48 << 20
+SD_CMDLINE = "console=ttyAMA10,115200 root=/dev/mmcblk0p1 rootwait"
+SD_FOUND = "mmc0: new high speed SDHC card at address"
+# Where these boots end: the root has no init to run
+ROOT_MOUNTED = "VFS: Mounted root (ext4 filesystem) readonly on device 179:1."
+
 # What the machine changes in the firmware's tree, checked in
 FIXUPS = Path(__file__).with_name("raspi5b-firmware-fixups.txt")
 
@@ -63,6 +75,33 @@ def command_line(dtb):
         bootargs = fdt.load(dtb)["/chosen"]["bootargs"]
         parts.insert(0, bootargs.rstrip(b"\0").decode())
     return "  ".join(parts)
+
+
+def make_sd_card(path):
+    """Write the card to boot from at @path."""
+    root = path.parent / "root"
+    (root / "boot/extlinux").mkdir(parents=True)
+    shutil.copy(KERNEL, root / "boot")
+    (root / "boot/extlinux/extlinux.conf").write_text(
+        "default linux\n"
+        "label linux\n"
+        f"    kernel /boot/{KERNEL.name}\n"
+        f"    append {SD_CMDLINE}\n")
+    fs = path.parent / "root.img"
+    with open(fs, "wb") as f:
+        f.truncate(SD_ROOT_SIZE)
+    subprocess.run(["mkfs.ext4", "-q", "-F", "-d", str(root), str(fs)],
+                   check=True)
+    mbr = bytearray(512)
+    mbr[446 + 4] = 0x83                                 # Linux
+    mbr[446 + 8:446 + 16] = struct.pack("<II", SD_ROOT_START,
+                                        SD_ROOT_SIZE // 512)
+    mbr[510:512] = b"\x55\xaa"
+    with open(path, "wb") as card, open(fs, "rb") as src:
+        card.truncate(SD_SIZE)
+        card.write(mbr)
+        card.seek(SD_ROOT_START * 512)
+        shutil.copyfileobj(src, card)
 
 
 def converse(args, script, timeout=BOOT_TIMEOUT):
@@ -121,13 +160,10 @@ class TfaTest(SuiteChecks, unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.tmp = Path(tempfile.mkdtemp())
+        cls.addClassCleanup(shutil.rmtree, cls.tmp)
         cls.dtb = cls.tmp / "bcm2712-min.dtb"
         subprocess.run(["dtc", "-q", "-I", "dts", "-O", "dtb",
                         "-o", cls.dtb, DTS], check=True)
-
-    @classmethod
-    def tearDownClass(cls):
-        shutil.rmtree(cls.tmp)
 
     def test_hello(self):
         status, out = boot("-M", "raspi5b,secure=on", "-bios", str(BL31))
@@ -161,11 +197,13 @@ class TfaTest(SuiteChecks, unittest.TestCase):
         out = run.out
         self.assertIn("# pm 0x107d200000 (dt), boot 1, reset status 0x1000",
                       out)
-        self.assertIn("# boot 2: pm/watchdog-reset reset", out)
-        for boot_nr in range(3, 7):
+        for boot_nr in (2, 3):
+            self.assertIn(f"# boot {boot_nr}: mbox/tryboot reset", out)
+        self.assertIn("# boot 4: pm/watchdog-reset reset", out)
+        for boot_nr in range(5, 9):
             self.assertIn(f"# boot {boot_nr}: reset/system-reset reset", out)
-        self.assertNotIn("boot 7", out)
-        self.assertEqual(out.count(TFA_BANNER), 6, out)
+        self.assertNotIn("boot 9", out)
+        self.assertEqual(out.count(TFA_BANNER), 8, out)
 
 
 @unittest.skipUnless(os.environ.get("FIRMWARE"),
@@ -254,6 +292,81 @@ class BootTest(unittest.TestCase):
         self.assertTrue(reached, out)
         self.assertIn("UEFI firmware (version v0.3", out)
         self.assertIn("UEFI Interactive Shell", out)
+
+
+@unittest.skipUnless(os.environ.get("FIRMWARE"),
+                     "run through 'make check-firmware'")
+@unittest.skipUnless(QEMU.exists(), "build QEMU first (make build)")
+@unittest.skipUnless(shutil.which("mkfs.ext4"), "needs mkfs.ext4 (e2fsprogs)")
+class SdBootTest(unittest.TestCase):
+    """The boot chains with a card in the SD card slot: Linux mounts its
+    root file system from it, U-Boot loads Linux from it as its
+    extlinux.conf says, and EDK2 finds its partition"""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = Path(tempfile.mkdtemp())
+        cls.addClassCleanup(shutil.rmtree, cls.tmp)
+        cls.card = cls.tmp / "sd.img"
+        make_sd_card(cls.card)
+
+    def sd_args(self):
+        # snapshot=on: no boot changes the card for the next
+        return ["-drive", f"if=sd,file={self.card},format=raw,snapshot=on"]
+
+    def assertRootMounted(self, reached, out):
+        """Linux found the card and mounted the root file system from
+        it, with no warning on the way there"""
+        self.assertTrue(reached, out)
+        out = out[:out.index(ROOT_MOUNTED)]
+        self.assertIn("mmc0: SDHCI controller on 1000fff000.mmc", out)
+        self.assertIn(SD_FOUND, out)
+        self.assertIn(" mmcblk0: p1\n", out.replace("\r\n", "\n"))
+        for line in out.splitlines():
+            self.assertNotRegex(line, r"WARNING|Oops|BUG:|Call trace")
+
+    def test_linux(self):
+        """TF-A enters the kernel, which mounts its root from the card"""
+        for dtb in (None, FIRMWARE_DTB):
+            with self.subTest(dtb=dtb and dtb.name):
+                args = ["-M", "raspi5b,secure=on", "-bios", str(BL31),
+                        "-kernel", str(KERNEL), "-append", SD_CMDLINE,
+                        *self.sd_args()]
+                if dtb:
+                    args += ["-dtb", str(dtb)]
+                self.assertRootMounted(*converse(args,
+                                                 [(ROOT_MOUNTED, None, None)]))
+
+    def test_u_boot(self):
+        """U-Boot boots by itself from the card: its extlinux.conf, the
+        kernel it names, and the root file system beside them"""
+        for dtb in (None, FIRMWARE_DTB):
+            with self.subTest(dtb=dtb and dtb.name):
+                args = ["-M", "raspi5b,secure=on", "-bios", str(BL31),
+                        "-kernel", str(UBOOT), *self.sd_args()]
+                if dtb:
+                    args += ["-dtb", str(dtb)]
+                reached, out = converse(args, [(ROOT_MOUNTED, None, None)])
+                self.assertIn("MMC:   mmc@fff000: 0", out)
+                self.assertIn("with extlinux", out)
+                self.assertIn(f"Retrieving file: /boot/{KERNEL.name}", out)
+                self.assertIn(f"Kernel command line: {SD_CMDLINE}", out)
+                self.assertRootMounted(reached, out)
+
+    def test_edk2(self):
+        """The EDK2 release maps the card and its partition"""
+        args = ["-M", "raspi5b,secure=on,dtb-address=0x1f0000",
+                "-bios", str(EDK2), "-dtb", str(EDK2_DTB), *self.sd_args()]
+        reached, out = converse(args, [
+            ("F1 (shell)", F1, 0.5),
+            ("Shell>", "map -r\r", None),
+            ("Shell>", None, None),
+        ])
+        self.assertTrue(reached, out)
+        mapped = out[out.rindex("map -r"):]
+        self.assertIn("/SD(0x0)", mapped)
+        self.assertIn(f"/HD(1,MBR,0x00000000,{SD_ROOT_START:#x},"
+                      f"{SD_ROOT_SIZE // 512:#x})", mapped)
 
 
 if __name__ == "__main__":

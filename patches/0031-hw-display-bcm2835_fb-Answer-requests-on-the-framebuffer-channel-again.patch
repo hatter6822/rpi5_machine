@@ -1,0 +1,43 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: A7om <hatter6822@gmail.com>
+Date: Sat, 26 Sep 2026 00:00:00 +0000
+Subject: [PATCH] hw/display/bcm2835_fb: Answer requests on the framebuffer
+ channel again
+
+A request on the mailbox's framebuffer channel raises the mailbox's
+interrupt line from bcm2835_fb's write handler, and bcm2835_mbox reads
+the response from bcm2835_fb's registers there and then. Since the
+memory API blocks re-entrant I/O, that read fails: the mailbox takes a
+0 for the response, and as bcm2835_fb, never read, keeps its line up and
+the channel busy, it takes another and another until its queue to the
+ARM is full. The guest reads a 0 where it expects the channel number,
+the channel takes no further request, and the responses of every other
+channel queue up behind the zeros.
+
+Mark the registers as re-entrancy safe, as bcm2835_property's were when
+the guard came in.
+
+Fixes: a2e1753b8054 ("memory: prevent dma-reentracy issues")
+---
+ hw/display/bcm2835_fb.c | 8 ++++++++
+ 1 file changed, 8 insertions(+)
+
+diff --git a/hw/display/bcm2835_fb.c b/hw/display/bcm2835_fb.c
+index bd58f625..7e88f942 100644
+--- a/hw/display/bcm2835_fb.c
++++ b/hw/display/bcm2835_fb.c
+@@ -386,6 +386,14 @@ static void bcm2835_fb_init(Object *obj)
+ 
+     memory_region_init_io(&s->iomem, obj, &bcm2835_fb_ops, s, TYPE_BCM2835_FB,
+                           0x10);
++
++    /*
++     * Like bcm2835_property's, a request raises the mailbox's interrupt
++     * line, on which bcm2835_mbox reads the response from iomem while the
++     * write is still in progress: mark iomem as re-entrancy safe.
++     */
++    s->iomem.disable_reentrancy_guard = true;
++
+     sysbus_init_mmio(SYS_BUS_DEVICE(s), &s->iomem);
+     sysbus_init_irq(SYS_BUS_DEVICE(s), &s->mbox_irq);
+ }

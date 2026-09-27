@@ -1,0 +1,117 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: A7om <hatter6822@gmail.com>
+Date: Sat, 26 Sep 2026 00:00:00 +0000
+Subject: [PATCH] hw/sd/sdcard: Erase a range in one request
+
+sd_erase() erases 512 bytes at a time, each block a synchronous write
+issued from the command handler with the BQL held, so the guest waits
+until the whole range is done. Linux's fstrim turns a file system's
+free space into erases, gigabytes of them on the first boot of a
+Raspberry Pi OS image, which grows its root file system and then trims
+it: the guest's user space came up in 12 minutes instead of 4, with
+D-Bus activations timing out on the way.
+
+Erase with blk_pwrite_zeroes(), allowing the range to be unmapped: in
+one request on cards without write protect groups, and in one for each
+group's part of the range on SDSC cards, which skip the groups that are
+protected as before. A range that ends before it starts is the invalid
+selection the card reports with ERASE_PARAM, and erases nothing.
+
+The erased blocks now read as zeroes rather than 0xff, which is what
+the card tells the host they read as: DATA_STAT_AFTER_ERASE in the SCR
+and ERASED_MEM_CONT in an eMMC's EXT_CSD are 0.
+---
+ hw/sd/sd.c         | 40 +++++++++++++++++++++++++++++++++++-----
+ hw/sd/trace-events |  1 +
+ 2 files changed, 36 insertions(+), 5 deletions(-)
+
+diff --git a/hw/sd/sd.c b/hw/sd/sd.c
+index 780e9f6..7fc067b 100644
+--- a/hw/sd/sd.c
++++ b/hw/sd/sd.c
+@@ -1131,6 +1131,20 @@ static void sd_blk_write(SDState *sd, uint64_t addr, uint32_t len)
+     }
+ }
+ 
++/*
++ * Erased blocks read as zeroes, as the card tells the host: in the SCR's
++ * DATA_STAT_AFTER_ERASE, and in an eMMC's EXT_CSD ERASED_MEM_CONT.
++ */
++static void sd_blk_erase(SDState *sd, uint64_t addr, uint64_t len)
++{
++    trace_sdcard_erase_blocks(addr, len);
++    addr += sd_part_offset(sd);
++    if (!sd->blk ||
++        blk_pwrite_zeroes(sd->blk, addr, len, BDRV_REQ_MAY_UNMAP) < 0) {
++        error_report("sd_blk_erase: erase error on host side");
++    }
++}
++
+ static bool rpmb_calc_hmac(SDState *sd, const RPMBDataFrame *frame,
+                            unsigned int num_blocks, uint8_t *mac)
+ {
+@@ -1322,7 +1336,7 @@ static void sd_erase(SDState *sd)
+     uint64_t erase_end = sd->erase_end;
+     bool sdsc = true;
+     uint64_t wpnum;
+-    uint64_t erase_addr;
++    uint64_t erase_addr, next_addr;
+     int erase_len = 1 << HWBLOCK_SHIFT;
+ 
+     trace_sdcard_erase(sd->erase_start, sd->erase_end);
+@@ -1348,23 +1362,39 @@ static void sd_erase(SDState *sd)
+         return;
+     }
+ 
++    /* "An invalid selection of write-blocks for erase occurred" */
++    if (erase_start > erase_end) {
++        sd->card_status |= ERASE_PARAM;
++        sd->erase_start = INVALID_ADDRESS;
++        sd->erase_end = INVALID_ADDRESS;
++        return;
++    }
++
+     sd->erase_start = INVALID_ADDRESS;
+     sd->erase_end = INVALID_ADDRESS;
+     sd->csd[14] |= 0x40;
+ 
+-    memset(sd->data, 0xff, erase_len);
+-    for (erase_addr = erase_start; erase_addr <= erase_end;
+-         erase_addr += erase_len) {
++    /*
++     * The range ends with the block at erase_end. The guest waits while
++     * the card erases it, so erase with one request for each write
++     * protect group of an SDSC card, and with one for the whole range on
++     * other cards, which have no write protect groups.
++     */
++    erase_end = MIN(erase_end + erase_len, sd->size);
++    for (erase_addr = erase_start; erase_addr < erase_end;
++         erase_addr = next_addr) {
++        next_addr = erase_end;
+         if (sdsc) {
+             /* Only SDSC cards support write protect groups */
+             wpnum = sd_addr_to_wpnum(erase_addr);
+             assert(wpnum < sd->wp_group_bits);
++            next_addr = MIN((wpnum + 1) * WPGROUP_SIZE, erase_end);
+             if (test_bit(wpnum, sd->wp_group_bmap)) {
+                 sd->card_status |= WP_ERASE_SKIP;
+                 continue;
+             }
+         }
+-        sd_blk_write(sd, erase_addr, erase_len);
++        sd_blk_erase(sd, erase_addr, next_addr - erase_addr);
+     }
+ }
+ 
+diff --git a/hw/sd/trace-events b/hw/sd/trace-events
+index c6811f3..14d4d0e 100644
+--- a/hw/sd/trace-events
++++ b/hw/sd/trace-events
+@@ -54,6 +54,7 @@ sdcard_unlock(void) ""
+ sdcard_req_addr(uint32_t req_arg, uint64_t addr) "req 0x%" PRIx32 " addr 0x%" PRIx64
+ sdcard_read_block(uint64_t addr, uint32_t len) "addr 0x%" PRIx64 " size 0x%x"
+ sdcard_write_block(uint64_t addr, uint32_t len) "addr 0x%" PRIx64 " size 0x%x"
++sdcard_erase_blocks(uint64_t addr, uint64_t len) "addr 0x%" PRIx64 " size 0x%" PRIx64
+ sdcard_write_data(const char *proto, const char *cmd_desc, uint8_t cmd, uint32_t offset, const char *hexdump) "%s %20s/ CMD%02d ofs %"PRIu32" data %s"
+ sdcard_read_data(const char *proto, const char *cmd_desc, uint8_t cmd, uint32_t offset, uint64_t size, uint32_t blklen) "%s %20s/ CMD%02d ofs %"PRIu32" size %"PRIu64" blklen %" PRIu32
+ sdcard_set_voltage(uint16_t millivolts) "%u mV"

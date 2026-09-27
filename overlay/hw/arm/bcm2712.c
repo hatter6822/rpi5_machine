@@ -24,9 +24,11 @@
 #include "hw/core/sysbus.h"
 #include "hw/misc/bcm2835_mbox_defs.h"
 #include "hw/misc/unimp.h"
+#include "qobject/qlist.h"
 #include "system/address-spaces.h"
 #include "system/device_tree.h"
 #include "system/system.h"
+#include <libfdt.h>
 
 /* Sizes follow the device tree "reg" properties (spanning multi-reg nodes) */
 const MemMapEntry bcm2712_memmap[BCM2712_NUM_DEVICES] = {
@@ -55,17 +57,22 @@ const MemMapEntry bcm2712_memmap[BCM2712_NUM_DEVICES] = {
     [BCM2712_HVS]           = { 0x107c580000, 0x1a000 },
     [BCM2712_HDMI]          = { 0x107c700000, 0x20100 },
     [BCM2712_UART10]        = { 0x107d001000, 0x200 },
-    [BCM2712_PM]            = { 0x107d200000, 0x604 },
+    [BCM2712_PM]            = { 0x107d200000, 0x308 },
     [BCM2712_RNG]           = { 0x107d208000, 0x28 },
+    [BCM2712_CPU_L2_IRQ]    = { 0x107d503000, 0x18 },
     [BCM2712_PINCTRL]       = { 0x107d504100, 0x30 },
-    [BCM2712_BSC]           = { 0x107d508200, 0x190 },
+    [BCM2712_DDC0]          = { 0x107d508200, 0x58 },
+    [BCM2712_DDC1]          = { 0x107d508280, 0x58 },
+    [BCM2712_BSC_IRQ]       = { 0x107d508380, 0x10 },
     [BCM2712_MAIN_IRQ]      = { 0x107d508400, 0x10 },
     [BCM2712_GIO]           = { 0x107d508500, 0x40 },
     [BCM2712_UARTA]         = { 0x107d50c000, 0x20 },
     [BCM2712_AON_INTR]      = { 0x107d510600, 0x30 },
     [BCM2712_PINCTRL_AON]   = { 0x107d510700, 0x20 },
     [BCM2712_L2_INTC]       = { 0x107d517000, 0x10 },
+    [BCM2712_MAIN_AON_IRQ]  = { 0x107d517ac0, 0x10 },
     [BCM2712_GIO_AON]       = { 0x107d517c00, 0x40 },
+    [BCM2712_AVS]           = { 0x107d542000, 0xf00 },
     [BCM2712_GIC]           = { 0x107fff8000, 0x8000 },
 };
 
@@ -95,16 +102,100 @@ static const char *const bcm2712_device_names[BCM2712_NUM_DEVICES] = {
     [BCM2712_UART10]        = "bcm2712.uart10",
     [BCM2712_PM]            = "bcm2712.pm",
     [BCM2712_RNG]           = "bcm2712.rng",
+    [BCM2712_CPU_L2_IRQ]    = "bcm2712.cpu-l2-irq",
     [BCM2712_PINCTRL]       = "bcm2712.pinctrl",
-    [BCM2712_BSC]           = "bcm2712.bsc",
+    [BCM2712_DDC0]          = "bcm2712.ddc0",
+    [BCM2712_DDC1]          = "bcm2712.ddc1",
+    [BCM2712_BSC_IRQ]       = "bcm2712.bsc-irq",
     [BCM2712_MAIN_IRQ]      = "bcm2712.main-irq",
     [BCM2712_GIO]           = "bcm2712.gio",
     [BCM2712_UARTA]         = "bcm2712.uarta",
     [BCM2712_AON_INTR]      = "bcm2712.aon-intr",
     [BCM2712_PINCTRL_AON]   = "bcm2712.pinctrl-aon",
     [BCM2712_L2_INTC]       = "bcm2712.l2-intc",
+    [BCM2712_MAIN_AON_IRQ]  = "bcm2712.main-aon-irq",
     [BCM2712_GIO_AON]       = "bcm2712.gio-aon",
+    [BCM2712_AVS]           = "bcm2712.avs-monitor",
     [BCM2712_GIC]           = "bcm2712.gic",
+};
+
+#define L2_COMPAT(s)    .compat = s, .compat_len = sizeof(s)
+#define L2_EDGE_COMPAT  L2_COMPAT("brcm,l2-intc")
+#define L2_2711_COMPAT  L2_COMPAT("brcm,bcm2711-l2-intc\0brcm,l2-intc")
+#define L2_LEVEL_COMPAT L2_COMPAT("brcm,bcm7271-l2-intc")
+typedef enum { L2_LEVEL, L2_EDGE, L2_2711 } BCM2712L2Variant;
+
+/*
+ * The level 2 interrupt controllers, as in the firmware's device tree,
+ * which leaves four of them disabled, as the Pi 5's sources do: the
+ * display's, the always-on block's two (the main one "will clash with the
+ * firmware monitoring the PMIC interrupt via the VPU") and the one at
+ * 0x7d517000, whose SPI PCIe1's MSIs use.
+ */
+static const struct {
+    const char *name;
+    BCM2712Device dev;
+    int spi;
+    BCM2712L2Variant variant;
+    bool disabled;
+    const char *compat;
+    size_t compat_len;
+} bcm2712_l2_intcs[BCM2712_NUM_L2_INTCS] = {
+    [BCM2712_L2_DISP_INTR] = {
+        "disp-intr", BCM2712_DISP_INTR, BCM2712_SPI_DISP_INTR, L2_2711, true,
+        L2_2711_COMPAT,
+    },
+    [BCM2712_L2_CPU_L2_IRQ] = {
+        "cpu-l2-irq", BCM2712_CPU_L2_IRQ, BCM2712_SPI_CPU_L2_IRQ, L2_EDGE,
+        false, L2_EDGE_COMPAT,
+    },
+    [BCM2712_L2_BSC_IRQ] = {
+        "bsc-irq", BCM2712_BSC_IRQ, BCM2712_SPI_BSC, L2_LEVEL, false,
+        L2_LEVEL_COMPAT,
+    },
+    [BCM2712_L2_MAIN_IRQ] = {
+        "main-irq", BCM2712_MAIN_IRQ, BCM2712_SPI_MAIN_IRQ, L2_LEVEL, false,
+        L2_LEVEL_COMPAT,
+    },
+    [BCM2712_L2_AON_INTR] = {
+        "aon-intr", BCM2712_AON_INTR, BCM2712_SPI_AON_INTR, L2_2711, true,
+        L2_2711_COMPAT,
+    },
+    [BCM2712_L2_7D517000] = {
+        "l2-intc", BCM2712_L2_INTC, BCM2712_SPI_L2_INTC, L2_LEVEL, true,
+        L2_LEVEL_COMPAT,
+    },
+    [BCM2712_L2_MAIN_AON_IRQ] = {
+        "main-aon-irq", BCM2712_MAIN_AON_IRQ, BCM2712_SPI_MAIN_AON_IRQ,
+        L2_LEVEL, true, L2_LEVEL_COMPAT,
+    },
+};
+
+/*
+ * The lines in each bank of the two GPIO blocks, as bcm2712.dtsi has
+ * them. The Pi 5's own tree trims GIO's second bank to the 4 lines the
+ * board uses, which raspi5b.c does to its node of the tree.
+ */
+static const uint32_t bcm2712_gio_widths[] = { 32, 22 };
+static const uint32_t bcm2712_gio_aon_widths[] = { 17, 6 };
+
+/* The DDC I2C controllers, by HDMI port, and their bsc_irq inputs */
+static const struct {
+    BCM2712Device dev;
+    int irq;
+} bcm2712_ddcs[BCM2712_NUM_HDMI] = {
+    { BCM2712_DDC0, BCM2712_BSC_IRQ_DDC0 },
+    { BCM2712_DDC1, BCM2712_BSC_IRQ_DDC1 },
+};
+
+/* The SD/eMMC host controllers and their interrupts */
+static const struct {
+    const char *name;
+    BCM2712Device dev;
+    int spi;
+} bcm2712_sdios[BCM2712_NUM_SDIO] = {
+    { "sdio1", BCM2712_SDIO1, BCM2712_SPI_SDIO1 },
+    { "sdio2", BCM2712_SDIO2, BCM2712_SPI_SDIO2 },
 };
 
 /* GIC-400 register frames, relative to bcm2712_memmap[BCM2712_GIC] */
@@ -214,8 +305,13 @@ static bool bcm2712_realize_gic(BCM2712State *s, Error **errp)
     sysbus_mmio_map(gicsbd, 1, base + GIC400_CPU_OFS);
     sysbus_mmio_map(gicsbd, 2, base + GIC400_VIFACE_THIS_OFS);
     sysbus_mmio_map(gicsbd, 3, base + GIC400_VCPU_OFS);
+    /*
+     * The GIC has a region for each CPU's own CPU interface (4 .. 4 + n
+     * - 1), which the GIC-400 lacks, and then one for each CPU's virtual
+     * interface control block (4 + n ..), which it aliases at 0x5000.
+     */
     for (unsigned i = 0; i < n; i++) {
-        sysbus_mmio_map(gicsbd, 4 + i, base + GIC400_VIFACE_CPU_OFS(i));
+        sysbus_mmio_map(gicsbd, 4 + n + i, base + GIC400_VIFACE_CPU_OFS(i));
     }
 
     for (unsigned i = 0; i < n; i++) {
@@ -250,10 +346,33 @@ static void bcm2712_init(Object *obj)
     BCM2712State *s = BCM2712(obj);
 
     object_initialize_child(obj, "gic", &s->gic, TYPE_ARM_GIC);
+    for (int i = 0; i < BCM2712_NUM_L2_INTCS; i++) {
+        object_initialize_child(obj, bcm2712_l2_intcs[i].name, &s->l2_intc[i],
+                                TYPE_BRCMSTB_L2_INTC);
+    }
+    object_initialize_child(obj, "gio", &s->gio, TYPE_BRCMSTB_GPIO);
+    object_initialize_child(obj, "gio-aon", &s->gio_aon, TYPE_BRCMSTB_GPIO);
+    object_initialize_child(obj, "pinctrl", &s->pinctrl, TYPE_BRCMSTB_PINCTRL);
+    object_initialize_child(obj, "pinctrl-aon", &s->pinctrl_aon,
+                            TYPE_BRCMSTB_PINCTRL);
+    for (int i = 0; i < BCM2712_NUM_HDMI; i++) {
+        g_autofree char *name = g_strdup_printf("ddc%d", i);
+
+        object_initialize_child(obj, name, &s->ddc[i], TYPE_BRCMSTB_I2C);
+    }
+    for (int i = 0; i < BCM2712_NUM_SDIO; i++) {
+        object_initialize_child(obj, bcm2712_sdios[i].name, &s->sdio[i],
+                                TYPE_BCM2712_SDHCI);
+    }
+    /* The SD card slot */
+    object_property_add_alias(obj, "sd-bus", OBJECT(&s->sdio[0].sdhci),
+                              "sd-bus");
     object_initialize_child(obj, "systimer", &s->systimer,
                             TYPE_BCM2835_SYSTIMER);
     object_initialize_child(obj, "pm", &s->pm, TYPE_BCM2835_POWERMGT);
     object_initialize_child(obj, "rng", &s->rng, TYPE_BCM2711_RNG200);
+    object_initialize_child(obj, "avs-monitor", &s->avs,
+                            TYPE_BCM2711_AVS_MONITOR);
 
     memory_region_init(&s->mbox_chans, obj, "bcm2712.mbox-channels",
                        MBOX_CHAN_COUNT << MBOX_AS_CHAN_SHIFT);
@@ -266,7 +385,7 @@ static void bcm2712_init(Object *obj)
                                    OBJECT(&s->vc_bus));
     object_initialize_child(obj, "otp", &s->otp, TYPE_BCM2835_OTP);
     object_initialize_child(obj, "property", &s->property,
-                            TYPE_BCM2835_PROPERTY);
+                            TYPE_BCM2712_PROPERTY);
     object_property_add_alias(obj, "board-rev", OBJECT(&s->property),
                               "board-rev");
     object_property_add_alias(obj, "command-line", OBJECT(&s->property),
@@ -280,6 +399,119 @@ static void bcm2712_init(Object *obj)
     object_property_add_const_link(OBJECT(&s->property), "dma-mr",
                                    OBJECT(&s->vc_bus));
     object_initialize_child(obj, "uart10", &s->uart10, TYPE_PL011);
+    object_initialize_child(obj, "uarta", &s->uarta, TYPE_SERIAL_MM);
+}
+
+/*
+ * The level 2 interrupt controllers. The display and always-on blocks
+ * have more registers after theirs, which stay with the placeholders
+ * mapped beneath.
+ */
+static bool bcm2712_realize_l2_intcs(BCM2712State *s, Error **errp)
+{
+    for (int i = 0; i < BCM2712_NUM_L2_INTCS; i++) {
+        SysBusDevice *sbd = SYS_BUS_DEVICE(&s->l2_intc[i]);
+
+        qdev_prop_set_bit(DEVICE(sbd), "edge",
+                          bcm2712_l2_intcs[i].variant == L2_EDGE);
+        qdev_prop_set_bit(DEVICE(sbd), "bcm2711",
+                          bcm2712_l2_intcs[i].variant == L2_2711);
+        if (!sysbus_realize(sbd, errp)) {
+            return false;
+        }
+        bcm2712_map(sbd, 0, bcm2712_l2_intcs[i].dev);
+        sysbus_connect_irq(sbd, 0, bcm2712_spi(s, bcm2712_l2_intcs[i].spi));
+    }
+    return true;
+}
+
+static bool bcm2712_realize_gpio(BrcmstbGpioState *gpio, BCM2712Device dev,
+                                 const uint32_t *widths, size_t banks,
+                                 Error **errp)
+{
+    QList *list = qlist_new();
+
+    for (size_t i = 0; i < banks; i++) {
+        qlist_append_int(list, widths[i]);
+    }
+    qdev_prop_set_array(DEVICE(gpio), "bank-widths", list);
+    if (!sysbus_realize(SYS_BUS_DEVICE(gpio), errp)) {
+        return false;
+    }
+    bcm2712_map(SYS_BUS_DEVICE(gpio), 0, dev);
+    return true;
+}
+
+/*
+ * The two GPIO blocks. GIO interrupts through the main level 2
+ * controller. GIO AON's interrupt output stays unconnected: no tree says
+ * where it goes, and bcm2712.dtsi deliberately leaves the block without
+ * interrupt-controller, as the firmware watches the PMIC's interrupt
+ * line through it.
+ */
+static bool bcm2712_realize_gpios(BCM2712State *s, Error **errp)
+{
+    DeviceState *main_irq = DEVICE(&s->l2_intc[BCM2712_L2_MAIN_IRQ]);
+
+    if (!bcm2712_realize_gpio(&s->gio, BCM2712_GIO, bcm2712_gio_widths,
+                              ARRAY_SIZE(bcm2712_gio_widths), errp) ||
+        !bcm2712_realize_gpio(&s->gio_aon, BCM2712_GIO_AON,
+                              bcm2712_gio_aon_widths,
+                              ARRAY_SIZE(bcm2712_gio_aon_widths), errp)) {
+        return false;
+    }
+    sysbus_connect_irq(SYS_BUS_DEVICE(&s->gio), 0,
+                       qdev_get_gpio_in(main_irq, BCM2712_MAIN_IRQ_GIO));
+    return true;
+}
+
+/* A pin controller, with as many registers as its device tree node spans */
+static bool bcm2712_realize_pinctrl(BrcmstbPinctrlState *pinctrl,
+                                    BCM2712Device dev, Error **errp)
+{
+    qdev_prop_set_uint32(DEVICE(pinctrl), "num-regs",
+                         bcm2712_memmap[dev].size / 4);
+    if (!sysbus_realize(SYS_BUS_DEVICE(pinctrl), errp)) {
+        return false;
+    }
+    bcm2712_map(SYS_BUS_DEVICE(pinctrl), 0, dev);
+    return true;
+}
+
+/* The DDC I2C controllers, which interrupt through bsc_irq */
+static bool bcm2712_realize_ddcs(BCM2712State *s, Error **errp)
+{
+    DeviceState *bsc_irq = DEVICE(&s->l2_intc[BCM2712_L2_BSC_IRQ]);
+
+    for (int i = 0; i < BCM2712_NUM_HDMI; i++) {
+        SysBusDevice *sbd = SYS_BUS_DEVICE(&s->ddc[i]);
+
+        if (!sysbus_realize(sbd, errp)) {
+            return false;
+        }
+        bcm2712_map(sbd, 0, bcm2712_ddcs[i].dev);
+        sysbus_connect_irq(sbd, 0,
+                           qdev_get_gpio_in(bsc_irq, bcm2712_ddcs[i].irq));
+    }
+    return true;
+}
+
+/*
+ * The SD/eMMC host controllers. Their MMIO regions leave gaps, the
+ * command queueing engines among them, to the placeholders beneath.
+ */
+static bool bcm2712_realize_sdios(BCM2712State *s, Error **errp)
+{
+    for (int i = 0; i < BCM2712_NUM_SDIO; i++) {
+        SysBusDevice *sbd = SYS_BUS_DEVICE(&s->sdio[i]);
+
+        if (!sysbus_realize(sbd, errp)) {
+            return false;
+        }
+        bcm2712_map(sbd, 0, bcm2712_sdios[i].dev);
+        sysbus_connect_irq(sbd, 0, bcm2712_spi(s, bcm2712_sdios[i].spi));
+    }
+    return true;
 }
 
 /*
@@ -334,6 +566,20 @@ static bool bcm2712_realize_rng(BCM2712State *s, Error **errp)
     return true;
 }
 
+/* The AVS monitor, whose temperature code converts as the Pi 5's trees say */
+static bool bcm2712_realize_avs(BCM2712State *s, Error **errp)
+{
+    SysBusDevice *sbd = SYS_BUS_DEVICE(&s->avs);
+
+    qdev_prop_set_int32(DEVICE(sbd), "slope", BCM2712_AVS_TEMP_SLOPE);
+    qdev_prop_set_int32(DEVICE(sbd), "offset", BCM2712_AVS_TEMP_OFFSET);
+    if (!sysbus_realize(sbd, errp)) {
+        return false;
+    }
+    bcm2712_map(sbd, 0, BCM2712_AVS);
+    return true;
+}
+
 /* Offset of MAIL0_READ in the bcm2835-mbox MMIO region */
 #define BCM2712_MBOX_REGS_OFFSET    0x80
 
@@ -356,7 +602,9 @@ static bool bcm2712_realize_mbox_client(BCM2712State *s, SysBusDevice *sbd,
  * read through the VideoCore's view of memory: the first GiB of RAM at
  * bus address 0x0, where Linux addresses it (the firmware's device tree
  * gives the "soc" node no dma-ranges), and at 0xc000_0000, the alias
- * code written for older Pis uses. Anything else goes unanswered.
+ * code written for older Pis uses. A property request whose buffer lies
+ * anywhere else is not answered; the framebuffer channel, which does not
+ * check, reads zeros there.
  */
 static bool bcm2712_realize_vc(BCM2712State *s, Error **errp)
 {
@@ -405,11 +653,49 @@ static bool bcm2712_realize_vc(BCM2712State *s, Error **errp)
                                      errp) ||
         !sysbus_realize(SYS_BUS_DEVICE(&s->otp), errp) ||
         !object_property_set_uint(OBJECT(&s->property), "dma-channel-mask",
-                                  BCM2712_DMA_CHANNEL_MASK, errp)) {
+                                  BCM2712_DMA_CHANNEL_MASK, errp) ||
+        !object_property_set_link(OBJECT(&s->property), "avs-monitor",
+                                  OBJECT(&s->avs), errp)) {
         return false;
     }
     return bcm2712_realize_mbox_client(s, SYS_BUS_DEVICE(&s->property),
                                        MBOX_CHAN_PROPERTY, errp);
+}
+
+/* UARTA's FIFOs, as Linux's 8250 driver has them for a BCM7271 UART */
+#define BCM2712_UARTA_FIFO_SIZE     32
+
+/*
+ * The serial ports, in an order that stays as more are modelled: UART10,
+ * the PL011 debug UART on the 3-pin JST header, is serial_hd(0). UARTA, a
+ * 16550 with 32-bit registers wired to the Bluetooth radio on the Pi 5,
+ * is serial_hd(1); its baud rate divides the 96 MHz sw_baud clock by 16
+ * and by the divisor.
+ */
+static bool bcm2712_realize_uarts(BCM2712State *s, Error **errp)
+{
+    DeviceState *uarta = DEVICE(&s->uarta);
+
+    qdev_prop_set_chr(DEVICE(&s->uart10), "chardev", serial_hd(0));
+    if (!sysbus_realize(SYS_BUS_DEVICE(&s->uart10), errp)) {
+        return false;
+    }
+    bcm2712_map(SYS_BUS_DEVICE(&s->uart10), 0, BCM2712_UART10);
+    sysbus_connect_irq(SYS_BUS_DEVICE(&s->uart10), 0,
+                       bcm2712_spi(s, BCM2712_SPI_UART10));
+
+    qdev_prop_set_uint8(uarta, "regshift", 2);
+    qdev_prop_set_uint32(uarta, "baudbase", BCM2712_UARTA_CLK_HZ / 16);
+    qdev_prop_set_uint8(uarta, "endianness", DEVICE_LITTLE_ENDIAN);
+    qdev_prop_set_uint32(uarta, "fifo-size", BCM2712_UARTA_FIFO_SIZE);
+    qdev_prop_set_chr(uarta, "chardev", serial_hd(1));
+    if (!sysbus_realize(SYS_BUS_DEVICE(uarta), errp)) {
+        return false;
+    }
+    bcm2712_map(SYS_BUS_DEVICE(uarta), 0, BCM2712_UARTA);
+    sysbus_connect_irq(SYS_BUS_DEVICE(uarta), 0,
+                       bcm2712_spi(s, BCM2712_SPI_UARTA));
+    return true;
 }
 
 static void bcm2712_realize(DeviceState *dev, Error **errp)
@@ -423,19 +709,16 @@ static void bcm2712_realize(DeviceState *dev, Error **errp)
     }
 
     if (!bcm2712_realize_cpus(s, errp) || !bcm2712_realize_gic(s, errp) ||
+        !bcm2712_realize_l2_intcs(s, errp) ||
+        !bcm2712_realize_gpios(s, errp) ||
+        !bcm2712_realize_pinctrl(&s->pinctrl, BCM2712_PINCTRL, errp) ||
+        !bcm2712_realize_pinctrl(&s->pinctrl_aon, BCM2712_PINCTRL_AON, errp) ||
+        !bcm2712_realize_ddcs(s, errp) || !bcm2712_realize_sdios(s, errp) ||
         !bcm2712_realize_systimer(s, errp) || !bcm2712_realize_pm(s, errp) ||
-        !bcm2712_realize_rng(s, errp) || !bcm2712_realize_vc(s, errp)) {
+        !bcm2712_realize_rng(s, errp) || !bcm2712_realize_avs(s, errp) ||
+        !bcm2712_realize_vc(s, errp) || !bcm2712_realize_uarts(s, errp)) {
         return;
     }
-
-    /* UART10: the PL011 debug UART on the 3-pin JST header */
-    qdev_prop_set_chr(DEVICE(&s->uart10), "chardev", serial_hd(0));
-    if (!sysbus_realize(SYS_BUS_DEVICE(&s->uart10), errp)) {
-        return;
-    }
-    bcm2712_map(SYS_BUS_DEVICE(&s->uart10), 0, BCM2712_UART10);
-    sysbus_connect_irq(SYS_BUS_DEVICE(&s->uart10), 0,
-                       bcm2712_spi(s, BCM2712_SPI_UART10));
 
     /*
      * Everything not yet modelled logs its accesses under -d unimp. The
@@ -473,10 +756,17 @@ static void bcm2712_realize(DeviceState *dev, Error **errp)
 #define BCM2712_FDT_SOC_BUS_BASE    0x1000000000ULL
 #define BCM2712_FDT_SOC_BUS_SIZE    0x80000000U
 
+/* The DDC buses' speed in bcm2712.dtsi, in Hz; the model has none */
+#define BCM2712_FDT_DDC_HZ          97500
+
 /* Fixed clocks of the firmware's tree, in Hz */
 #define BCM2712_FDT_CLK_OSC         54000000
 #define BCM2712_FDT_CLK_VPU         750000000
 #define BCM2712_FDT_CLK_UART        9216000
+#define BCM2712_FDT_CLK_EMMC2       200000000   /* the SD hosts' base clock */
+
+/* The SD hosts' "host" registers in the tree: SDHCI and command queueing */
+#define BCM2712_FDT_SDHCI_HOST_SIZE 0x260
 
 /* The firmware's default CMA pool */
 #define BCM2712_FDT_CMA_SIZE        (64 * MiB)
@@ -609,6 +899,202 @@ static uint32_t bcm2712_fdt_gic(BCM2712State *s, void *fdt)
     return phandle;
 }
 
+/* In reverse, since libfdt adds each subnode first */
+static void bcm2712_fdt_l2_intcs(void *fdt, uint32_t *phandles)
+{
+    for (int i = BCM2712_NUM_L2_INTCS - 1; i >= 0; i--) {
+        g_autofree char *path = bcm2712_fdt_soc_node(fdt,
+            "interrupt-controller", bcm2712_l2_intcs[i].dev,
+            bcm2712_l2_intcs[i].compat, bcm2712_l2_intcs[i].compat_len);
+
+        phandles[i] = qemu_fdt_alloc_phandle(fdt);
+        qemu_fdt_setprop_cells(fdt, path, "interrupts", GIC_FDT_IRQ_TYPE_SPI,
+                               bcm2712_l2_intcs[i].spi,
+                               GIC_FDT_IRQ_FLAGS_LEVEL_HI);
+        qemu_fdt_setprop(fdt, path, "interrupt-controller", NULL, 0);
+        qemu_fdt_setprop_cell(fdt, path, "#interrupt-cells", 1);
+        if (bcm2712_l2_intcs[i].disabled) {
+            qemu_fdt_setprop_string(fdt, path, "status", "disabled");
+        }
+        qemu_fdt_setprop_cell(fdt, path, "phandle", phandles[i]);
+    }
+}
+
+/*
+ * A GPIO block, as bcm2712.dtsi has it; the binding takes no
+ * brcm,gpio-direct, which the firmware's tree adds. The phandle is for
+ * the board's nodes that use its lines.
+ */
+static char *bcm2712_fdt_gpio(void *fdt, BCM2712Device dev,
+                              const uint32_t *widths, size_t banks)
+{
+    static const char compat[] = "brcm,bcm7445-gpio\0brcm,brcmstb-gpio";
+    g_autofree uint32_t *cells = g_new(uint32_t, banks);
+    char *path = bcm2712_fdt_soc_node(fdt, "gpio", dev, compat,
+                                      sizeof(compat));
+
+    for (size_t i = 0; i < banks; i++) {
+        cells[i] = cpu_to_be32(widths[i]);
+    }
+    qemu_fdt_setprop(fdt, path, "gpio-controller", NULL, 0);
+    qemu_fdt_setprop_cell(fdt, path, "#gpio-cells", 2);
+    qemu_fdt_setprop(fdt, path, "brcm,gpio-bank-widths", cells,
+                     banks * sizeof(uint32_t));
+    qemu_fdt_setprop_cell(fdt, path, "phandle", qemu_fdt_alloc_phandle(fdt));
+    return path;
+}
+
+/* In reverse, since libfdt adds each subnode first */
+static void bcm2712_fdt_gpios(void *fdt, const uint32_t *l2_phandles)
+{
+    g_autofree char *gio_aon = NULL, *gio = NULL;
+
+    gio_aon = bcm2712_fdt_gpio(fdt, BCM2712_GIO_AON, bcm2712_gio_aon_widths,
+                               ARRAY_SIZE(bcm2712_gio_aon_widths));
+
+    gio = bcm2712_fdt_gpio(fdt, BCM2712_GIO, bcm2712_gio_widths,
+                           ARRAY_SIZE(bcm2712_gio_widths));
+    qemu_fdt_setprop_cell(fdt, gio, "interrupt-parent",
+                          l2_phandles[BCM2712_L2_MAIN_IRQ]);
+    qemu_fdt_setprop_cell(fdt, gio, "interrupts", BCM2712_MAIN_IRQ_GIO);
+    qemu_fdt_setprop(fdt, gio, "interrupt-controller", NULL, 0);
+    qemu_fdt_setprop_cell(fdt, gio, "#interrupt-cells", 2);
+}
+
+/*
+ * The pin controllers, as bcm2712.dtsi has them, in reverse since libfdt
+ * adds each subnode first. The phandles are for the board's pin states.
+ */
+static void bcm2712_fdt_pinctrls(void *fdt)
+{
+    static const char aon_compat[] = "brcm,bcm2712c0-aon-pinctrl";
+    static const char compat[] = "brcm,bcm2712c0-pinctrl";
+    g_autofree char *aon = NULL, *pinctrl = NULL;
+
+    aon = bcm2712_fdt_soc_node(fdt, "pinctrl", BCM2712_PINCTRL_AON,
+                               aon_compat, sizeof(aon_compat));
+    qemu_fdt_setprop_cell(fdt, aon, "phandle", qemu_fdt_alloc_phandle(fdt));
+
+    pinctrl = bcm2712_fdt_soc_node(fdt, "pinctrl", BCM2712_PINCTRL, compat,
+                                   sizeof(compat));
+    qemu_fdt_setprop_cell(fdt, pinctrl, "phandle",
+                          qemu_fdt_alloc_phandle(fdt));
+}
+
+/*
+ * The DDC I2C controllers, as bcm2712.dtsi has them, in reverse since
+ * libfdt adds each subnode first
+ */
+static void bcm2712_fdt_ddcs(void *fdt, const uint32_t *l2_phandles)
+{
+    static const char compat[] = "brcm,brcmstb-i2c";
+
+    for (int i = BCM2712_NUM_HDMI - 1; i >= 0; i--) {
+        g_autofree char *path = bcm2712_fdt_soc_node(fdt, "i2c",
+            bcm2712_ddcs[i].dev, compat, sizeof(compat));
+
+        qemu_fdt_setprop_cell(fdt, path, "interrupt-parent",
+                              l2_phandles[BCM2712_L2_BSC_IRQ]);
+        qemu_fdt_setprop_cell(fdt, path, "interrupts", bcm2712_ddcs[i].irq);
+        qemu_fdt_setprop_cell(fdt, path, "clock-frequency",
+                              BCM2712_FDT_DDC_HZ);
+        qemu_fdt_setprop_cell(fdt, path, "#address-cells", 1);
+        qemu_fdt_setprop_cell(fdt, path, "#size-cells", 0);
+    }
+}
+
+/*
+ * The SD/eMMC host controllers, SDIO1 as bcm2712.dtsi has it and SDIO2 as
+ * bcm2712-ds.dtsi has it, in reverse since libfdt adds each subnode first.
+ * SDIO2 serves the board's Wi-Fi radio, so it is the board's to enable.
+ */
+static void bcm2712_fdt_sdios(void *fdt, uint32_t clk_emmc2)
+{
+    static const char compat[] = "brcm,bcm2712-sdhci\0brcm,sdhci-brcmstb";
+    static const char reg_names[] = "host\0cfg";
+
+    for (int i = BCM2712_NUM_SDIO - 1; i >= 0; i--) {
+        uint32_t addr = bcm2712_fdt_bus_addr(
+            bcm2712_memmap[bcm2712_sdios[i].dev].base);
+        g_autofree char *path = bcm2712_fdt_soc_node(fdt, "mmc",
+            bcm2712_sdios[i].dev, compat, sizeof(compat));
+
+        qemu_fdt_setprop_cells(fdt, path, "reg",
+                               addr, BCM2712_FDT_SDHCI_HOST_SIZE,
+                               addr + BCM2712_SDHCI_CFG_OFFSET,
+                               BCM2712_SDHCI_CFG_SIZE);
+        qemu_fdt_setprop(fdt, path, "reg-names", reg_names,
+                         sizeof(reg_names));
+        qemu_fdt_setprop_cells(fdt, path, "interrupts", GIC_FDT_IRQ_TYPE_SPI,
+                               bcm2712_sdios[i].spi,
+                               GIC_FDT_IRQ_FLAGS_LEVEL_HI);
+        qemu_fdt_setprop_cell(fdt, path, "clocks", clk_emmc2);
+        qemu_fdt_setprop_string(fdt, path, "clock-names", "sw_sdio");
+        qemu_fdt_setprop(fdt, path, "mmc-ddr-3_3v", NULL, 0);
+        if (bcm2712_sdios[i].dev == BCM2712_SDIO2) {
+            /* The silicon's re-tuning modes, which the model lacks */
+            qemu_fdt_setprop_cells(fdt, path, "sdhci-caps-mask", 0xc000, 0);
+            qemu_fdt_setprop_cells(fdt, path, "sdhci-caps", 0, 0);
+            qemu_fdt_setprop_string(fdt, path, "status", "disabled");
+        }
+    }
+}
+
+/*
+ * The AVS monitor and its temperature sensor, as the firmware's tree has
+ * them, and the thermal zone of the Pi 5's trees, which converts the
+ * sensor's code and has Linux shut down at the critical temperature. Their
+ * other trips switch the fan, which is behind RP1.
+ */
+static void bcm2712_fdt_avs(void *fdt)
+{
+    static const char compat[] =
+        "brcm,bcm2711-avs-monitor\0syscon\0simple-mfd";
+    const char *zone = "/thermal-zones/cpu-thermal";
+    const char *crit = "/thermal-zones/cpu-thermal/trips/cpu-crit";
+    g_autofree char *avs = bcm2712_fdt_soc_node(fdt, "avs-monitor",
+                                                BCM2712_AVS, compat,
+                                                sizeof(compat));
+    g_autofree char *sensor = g_strdup_printf("%s/thermal", avs);
+    uint32_t phandle = qemu_fdt_alloc_phandle(fdt);
+
+    qemu_fdt_add_subnode(fdt, sensor);
+    qemu_fdt_setprop_string(fdt, sensor, "compatible", "brcm,bcm2711-thermal");
+    qemu_fdt_setprop_cell(fdt, sensor, "#thermal-sensor-cells", 0);
+    qemu_fdt_setprop_cell(fdt, sensor, "phandle", phandle);
+
+    qemu_fdt_add_path(fdt, crit);
+    qemu_fdt_setprop_cell(fdt, zone, "polling-delay-passive", 1000);
+    qemu_fdt_setprop_cell(fdt, zone, "polling-delay", 1000);
+    qemu_fdt_setprop_cells(fdt, zone, "coefficients",
+                           (uint32_t)BCM2712_AVS_TEMP_SLOPE,
+                           BCM2712_AVS_TEMP_OFFSET);
+    qemu_fdt_setprop_cell(fdt, zone, "thermal-sensors", phandle);
+    qemu_fdt_setprop_cell(fdt, crit, "temperature", BCM2712_TEMP_CRITICAL);
+    qemu_fdt_setprop_cell(fdt, crit, "hysteresis", 0);
+    qemu_fdt_setprop_string(fdt, crit, "type", "critical");
+}
+
+char *bcm2712_fdt_node_path(void *fdt, BCM2712Device dev)
+{
+    g_autofree char *unit = g_strdup_printf("@%x",
+        bcm2712_fdt_bus_addr(bcm2712_memmap[dev].base));
+    int soc = fdt_path_offset(fdt, BCM2712_FDT_SOC_PATH);
+    int node;
+
+    if (soc < 0) {
+        return NULL;
+    }
+    fdt_for_each_subnode(node, fdt, soc) {
+        const char *name = fdt_get_name(fdt, node, NULL);
+
+        if (name && g_str_has_suffix(name, unit)) {
+            return g_strdup_printf(BCM2712_FDT_SOC_PATH "/%s", name);
+        }
+    }
+    return NULL;
+}
+
 void bcm2712_fdt_populate(BCM2712State *s, void *fdt)
 {
     static const char uart_compat[] = "arm,pl011\0arm,primecell";
@@ -616,11 +1102,17 @@ void bcm2712_fdt_populate(BCM2712State *s, void *fdt)
     static const char firmware_compat[] =
         "raspberrypi,bcm2835-firmware\0simple-mfd";
     uint32_t cpu_phandles[BCM2712_NUM_CPUS];
-    uint32_t gic, clk_uart, clk_vpu, mbox;
+    uint32_t l2_phandles[BCM2712_NUM_L2_INTCS];
+    uint32_t gic, clk_sw_baud, clk_emmc2, clk_uart, clk_vpu, mbox;
     g_autofree char *systimer = NULL, *mailbox = NULL, *uart = NULL;
-    g_autofree char *pm = NULL, *rng = NULL;
+    g_autofree char *uarta = NULL, *pm = NULL, *rng = NULL;
     const char *firmware = BCM2712_FDT_SOC_PATH "/firmware";
-    uint32_t spi;
+    const char *fw_clocks = BCM2712_FDT_SOC_PATH "/firmware/clocks";
+    const char *fw_reset = BCM2712_FDT_SOC_PATH "/firmware/reset";
+    const char *fw_vcio = BCM2712_FDT_SOC_PATH "/firmware/vcio";
+    const char *power = BCM2712_FDT_SOC_PATH "/power";
+    const char *rtc = BCM2712_FDT_SOC_PATH "/rpi_rtc";
+    uint32_t spi, fw;
 
     /* libfdt adds each subnode first: create them in reverse order */
     qemu_fdt_add_subnode(fdt, BCM2712_FDT_SOC_PATH);
@@ -634,6 +1126,10 @@ void bcm2712_fdt_populate(BCM2712State *s, void *fdt)
                            BCM2712_FDT_SOC_BUS_SIZE);
 
     qemu_fdt_add_subnode(fdt, "/clocks");
+    clk_sw_baud = bcm2712_fdt_clock(fdt, "clk-sw-baud", "sw-baud",
+                                    BCM2712_UARTA_CLK_HZ);
+    clk_emmc2 = bcm2712_fdt_clock(fdt, "clk-emmc2", "emmc2-clock",
+                                  BCM2712_FDT_CLK_EMMC2);
     clk_uart = bcm2712_fdt_clock(fdt, "clk-uart", "uart-clock",
                                  BCM2712_FDT_CLK_UART);
     clk_vpu = bcm2712_fdt_clock(fdt, "clk-vpu", "vpu-clock",
@@ -645,6 +1141,12 @@ void bcm2712_fdt_populate(BCM2712State *s, void *fdt)
     qemu_fdt_setprop_cell(fdt, "/", "interrupt-parent", gic);
     bcm2712_fdt_cpu_irqs(s, fdt, cpu_phandles);
 
+    bcm2712_fdt_avs(fdt);
+    bcm2712_fdt_l2_intcs(fdt, l2_phandles);
+    bcm2712_fdt_gpios(fdt, l2_phandles);
+    bcm2712_fdt_pinctrls(fdt);
+    bcm2712_fdt_ddcs(fdt, l2_phandles);
+
     rng = bcm2712_fdt_soc_node(fdt, "rng", BCM2712_RNG,
                                "brcm,bcm2711-rng200",
                                sizeof("brcm,bcm2711-rng200"));
@@ -655,6 +1157,20 @@ void bcm2712_fdt_populate(BCM2712State *s, void *fdt)
     qemu_fdt_setprop_cell(fdt, pm, "#power-domain-cells", 1);
     qemu_fdt_setprop_cell(fdt, pm, "#reset-cells", 1);
     qemu_fdt_setprop(fdt, pm, "system-power-controller", NULL, 0);
+
+    /*
+     * UARTA as bcm2712.dtsi has it; the firmware's tree gives it a
+     * clock-frequency instead of the clock, which the binding does not take
+     */
+    uarta = bcm2712_fdt_soc_node(fdt, "serial", BCM2712_UARTA,
+                                 "brcm,bcm7271-uart",
+                                 sizeof("brcm,bcm7271-uart"));
+    qemu_fdt_setprop_string(fdt, uarta, "reg-names", "uart");
+    qemu_fdt_setprop_cell(fdt, uarta, "clocks", clk_sw_baud);
+    qemu_fdt_setprop_string(fdt, uarta, "clock-names", "sw_baud");
+    qemu_fdt_setprop_cells(fdt, uarta, "interrupts", GIC_FDT_IRQ_TYPE_SPI,
+                           BCM2712_SPI_UARTA, GIC_FDT_IRQ_FLAGS_LEVEL_HI);
+    qemu_fdt_setprop_string(fdt, uarta, "interrupt-names", "uart");
 
     uart = bcm2712_fdt_soc_node(fdt, "serial", BCM2712_UART10, uart_compat,
                                 sizeof(uart_compat));
@@ -694,10 +1210,28 @@ void bcm2712_fdt_populate(BCM2712State *s, void *fdt)
                            GIC_FDT_IRQ_FLAGS_LEVEL_HI);
     qemu_fdt_setprop_cell(fdt, systimer, "clock-frequency", 1000000);
 
+    bcm2712_fdt_sdios(fdt, clk_emmc2);
+
     /*
      * The firmware interface, behind the mailbox, as in the firmware's
-     * tree: Linux passes it buffers by their "soc" bus address.
+     * tree: Linux passes it buffers by their "soc" bus address. Its clocks
+     * and reset controller, and beside it the power domains it switches,
+     * as mainline's tree has them; then its real-time clock and the vcio
+     * device through which user space reaches the interface, which only
+     * the firmware's tree has, the clock with the battery's charger off.
      */
+    fw = qemu_fdt_alloc_phandle(fdt);
+    qemu_fdt_add_subnode(fdt, rtc);
+    qemu_fdt_setprop_string(fdt, rtc, "compatible", "raspberrypi,rpi-rtc");
+    qemu_fdt_setprop_cell(fdt, rtc, "firmware", fw);
+    qemu_fdt_setprop_cell(fdt, rtc, "trickle-charge-microvolt", 0);
+
+    qemu_fdt_add_subnode(fdt, power);
+    qemu_fdt_setprop_string(fdt, power, "compatible",
+                            "raspberrypi,bcm2835-power");
+    qemu_fdt_setprop_cell(fdt, power, "firmware", fw);
+    qemu_fdt_setprop_cell(fdt, power, "#power-domain-cells", 1);
+
     qemu_fdt_add_subnode(fdt, firmware);
     qemu_fdt_setprop(fdt, firmware, "compatible", firmware_compat,
                      sizeof(firmware_compat));
@@ -705,6 +1239,17 @@ void bcm2712_fdt_populate(BCM2712State *s, void *fdt)
     qemu_fdt_setprop_cell(fdt, firmware, "#size-cells", 1);
     qemu_fdt_setprop(fdt, firmware, "dma-ranges", NULL, 0);
     qemu_fdt_setprop_cell(fdt, firmware, "mboxes", mbox);
+    qemu_fdt_setprop_cell(fdt, firmware, "phandle", fw);
+    qemu_fdt_add_subnode(fdt, fw_reset);
+    qemu_fdt_setprop_string(fdt, fw_reset, "compatible",
+                            "raspberrypi,firmware-reset");
+    qemu_fdt_setprop_cell(fdt, fw_reset, "#reset-cells", 1);
+    qemu_fdt_add_subnode(fdt, fw_clocks);
+    qemu_fdt_setprop_string(fdt, fw_clocks, "compatible",
+                            "raspberrypi,firmware-clocks");
+    qemu_fdt_setprop_cell(fdt, fw_clocks, "#clock-cells", 1);
+    qemu_fdt_add_subnode(fdt, fw_vcio);
+    qemu_fdt_setprop_string(fdt, fw_vcio, "compatible", "raspberrypi,vcio");
 
     /*
      * Keep the default CMA pool, where Linux allocates the buffers it

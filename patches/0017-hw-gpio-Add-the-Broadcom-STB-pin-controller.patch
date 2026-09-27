@@ -1,0 +1,55 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: A7om <hatter6822@gmail.com>
+Date: Sat, 26 Sep 2026 00:00:00 +0000
+Subject: [PATCH] hw/gpio: Add the Broadcom STB pin controller
+
+Broadcom set-top-box SoCs, including the BCM2712 of the Raspberry Pi 5,
+pair their GPIO blocks with pin controllers: runs of 32-bit registers
+that select the function of each pin, 4 bits per pin, and its pull, 2
+bits per pin. Linux drives them with pinctrl-brcmstb.c. The "num-regs"
+property sets the number of registers.
+
+The model stores the registers, so that a driver reads back the
+settings it made, but the settings have no effect on the pins. Reset
+clears every register.
+---
+ hw/gpio/Kconfig      | 3 +++
+ hw/gpio/meson.build  | 1 +
+ hw/gpio/trace-events | 4 ++++
+ 3 files changed, 8 insertions(+)
+
+diff --git a/hw/gpio/Kconfig b/hw/gpio/Kconfig
+index 85a2299..8cb44c1 100644
+--- a/hw/gpio/Kconfig
++++ b/hw/gpio/Kconfig
+@@ -41,3 +41,6 @@ config BCM2838_GPIO
+ 
+ config BRCMSTB_GPIO
+     bool
++
++config BRCMSTB_PINCTRL
++    bool
+diff --git a/hw/gpio/meson.build b/hw/gpio/meson.build
+index 53e3785..e629c39 100644
+--- a/hw/gpio/meson.build
++++ b/hw/gpio/meson.build
+@@ -13,6 +13,7 @@ system_ss.add(when: 'CONFIG_OMAP', if_true: files('omap_gpio.c'))
+ system_ss.add(when: 'CONFIG_BCM2835_GPIO', if_true: files('bcm2835_gpio.c'))
+ system_ss.add(when: 'CONFIG_BCM2838_GPIO', if_true: files('bcm2838_gpio.c'))
+ system_ss.add(when: 'CONFIG_BRCMSTB_GPIO', if_true: files('brcmstb_gpio.c'))
++system_ss.add(when: 'CONFIG_BRCMSTB_PINCTRL', if_true: files('brcmstb_pinctrl.c'))
+ system_ss.add(when: 'CONFIG_STM32L4X5_SOC', if_true: files('stm32l4x5_gpio.c'))
+ system_ss.add(when: 'CONFIG_ASPEED_SOC', if_true: files('aspeed_gpio.c'))
+ system_ss.add(when: 'CONFIG_ASPEED_SOC', if_true: files('aspeed_sgpio.c'))
+diff --git a/hw/gpio/trace-events b/hw/gpio/trace-events
+index 1398f4b..b5bef81 100644
+--- a/hw/gpio/trace-events
++++ b/hw/gpio/trace-events
+@@ -53,3 +53,7 @@ brcmstb_gpio_write(const char *id, uint64_t offset, uint64_t value) "%s: offset
+ brcmstb_gpio_set_input(const char *id, int line, int level) "%s: input %d level %d"
+ brcmstb_gpio_output(const char *id, int line, int level) "%s: line %d level %d"
+ brcmstb_gpio_irq(const char *id, int level) "%s: interrupt %d"
++
++# brcmstb_pinctrl.c
++brcmstb_pinctrl_read(const char *id, uint64_t offset, uint32_t value) "%s: offset 0x%02" PRIx64 " value 0x%08" PRIx32
++brcmstb_pinctrl_write(const char *id, uint64_t offset, uint64_t value) "%s: offset 0x%02" PRIx64 " value 0x%08" PRIx64

@@ -5,21 +5,21 @@ Subject: [PATCH] docs/system/arm: Document the raspi5b machine
 
 Describe the Raspberry Pi 5 model: the devices it implements and those
 it does not yet, how it boots (EL2 with PSCI, or EL3 with secure=on),
-its device tree handling and machine properties, and how to run a
-bare-metal image or the Raspberry Pi OS kernel on it. List the page next
-to the other Raspberry Pi boards.
+its device tree handling and machine properties, how to give it an SD
+card, and how to run a bare-metal image or the Raspberry Pi OS kernel on
+it. List the page next to the other Raspberry Pi boards.
 ---
  MAINTAINERS                | 1 +
  docs/system/target-arm.rst | 1 +
  2 files changed, 2 insertions(+)
 
 diff --git a/MAINTAINERS b/MAINTAINERS
-index d2fc7ba..f109d0b 100644
+index 2bb2f5f..a794116 100644
 --- a/MAINTAINERS
 +++ b/MAINTAINERS
-@@ -1024,6 +1024,7 @@ F: include/hw/arm/rasp*
- F: include/hw/*/bcm27*
+@@ -1026,6 +1026,7 @@ F: include/hw/*/bcm27*
  F: include/hw/*/bcm283*
+ F: include/hw/*/brcmstb*
  F: docs/system/arm/raspi.rst
 +F: docs/system/arm/raspi5b.rst
  F: tests/functional/arm/test_raspi2.py

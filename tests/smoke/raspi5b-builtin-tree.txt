@@ -9,7 +9,7 @@
 #   python3 tests/smoke/fdt.py builtin.dtb
 /
     serial-number = "0123456789abcdef"
-    interrupt-parent = <0x8007>
+    interrupt-parent = <0x8009>
     #size-cells = <0x2>
     #address-cells = <0x2>
     model = "Raspberry Pi 5 Model B Rev 1.0"
@@ -49,7 +49,44 @@
     rsts = <0x1000>
     partition = <0x0>
     boot-mode = <0x3>
+/sd-io-1v8-reg
+    phandle = <0x801b>
+    states = <0x1b7740 0x1 0x325aa0 0x0>
+    gpios = <0x8012 0x3 0x0>
+    regulator-settling-time-us = <0x1388>
+    regulator-always-on
+    regulator-boot-on
+    regulator-max-microvolt = <0x325aa0>
+    regulator-min-microvolt = <0x1b7740>
+    regulator-name = "vdd-sd-io"
+    compatible = "regulator-gpio"
+/sd-vcc-reg
+    phandle = <0x801c>
+    gpios = <0x8012 0x4 0x0>
+    enable-active-high
+    regulator-boot-on
+    regulator-max-microvolt = <0x325aa0>
+    regulator-min-microvolt = <0x325aa0>
+    regulator-name = "vcc-sd"
+    compatible = "regulator-fixed"
+/leds
+    compatible = "gpio-leds"
+/leds/led-act
+    linux,default-trigger = "mmc0"
+    default-state = "off"
+    gpios = <0x8012 0x9 0x1>
+    label = "ACT"
+/gpio-keys
+    pinctrl-0 = <0x8018>
+    pinctrl-names = "default"
+    compatible = "gpio-keys"
+/gpio-keys/power-button
+    debounce-interval = <0x32>
+    gpios = <0x8013 0x14 0x1>
+    linux,code = <0x74>
+    label = "pwr_button"
 /aliases
+    mmc0 = "/soc@107c000000/mmc@fff000"
     console = "/soc@107c000000/serial@7d001000"
     serial10 = "/soc@107c000000/serial@7d001000"
 /reserved-memory
@@ -62,8 +99,19 @@
     reusable
     size = <0x0 0x4000000>
     compatible = "shared-dma-pool"
+/thermal-zones
+/thermal-zones/cpu-thermal
+    thermal-sensors = <0x800a>
+    coefficients = <0xfffffdda 0x6ddd0>
+    polling-delay = <0x3e8>
+    polling-delay-passive = <0x3e8>
+/thermal-zones/cpu-thermal/trips
+/thermal-zones/cpu-thermal/trips/cpu-crit
+    type = "critical"
+    hysteresis = <0x0>
+    temperature = <0x1adb0>
 /arm-pmu
-    interrupt-affinity = <0x8006 0x8005 0x8004 0x8003>
+    interrupt-affinity = <0x8008 0x8007 0x8006 0x8005>
     interrupts = <0x0 0x10 0x4 0x0 0x11 0x4 0x0 0x12 0x4 0x0 0x13 0x4>
     compatible = "arm,cortex-a76-pmu"
 /timer
@@ -73,46 +121,58 @@
     #size-cells = <0x0>
     #address-cells = <0x1>
 /cpus/cpu@0
-    phandle = <0x8006>
+    phandle = <0x8008>
     enable-method = "psci"
     reg = <0x0>
     compatible = "arm,cortex-a76"
     device_type = "cpu"
 /cpus/cpu@100
-    phandle = <0x8005>
+    phandle = <0x8007>
     enable-method = "psci"
     reg = <0x100>
     compatible = "arm,cortex-a76"
     device_type = "cpu"
 /cpus/cpu@200
-    phandle = <0x8004>
+    phandle = <0x8006>
     enable-method = "psci"
     reg = <0x200>
     compatible = "arm,cortex-a76"
     device_type = "cpu"
 /cpus/cpu@300
-    phandle = <0x8003>
+    phandle = <0x8005>
     enable-method = "psci"
     reg = <0x300>
     compatible = "arm,cortex-a76"
     device_type = "cpu"
 /clocks
 /clocks/clk-osc
-    phandle = <0x8002>
+    phandle = <0x8004>
     clock-output-names = "osc"
     clock-frequency = <0x337f980>
     #clock-cells = <0x0>
     compatible = "fixed-clock"
 /clocks/clk-vpu
-    phandle = <0x8001>
+    phandle = <0x8003>
     clock-output-names = "vpu-clock"
     clock-frequency = <0x2cb41780>
     #clock-cells = <0x0>
     compatible = "fixed-clock"
 /clocks/clk-uart
-    phandle = <0x8000>
+    phandle = <0x8002>
     clock-output-names = "uart-clock"
     clock-frequency = <0x8ca000>
+    #clock-cells = <0x0>
+    compatible = "fixed-clock"
+/clocks/clk-emmc2
+    phandle = <0x8001>
+    clock-output-names = "emmc2-clock"
+    clock-frequency = <0xbebc200>
+    #clock-cells = <0x0>
+    compatible = "fixed-clock"
+/clocks/clk-sw-baud
+    phandle = <0x8000>
+    clock-output-names = "sw-baud"
+    clock-frequency = <0x5b8d800>
     #clock-cells = <0x0>
     compatible = "fixed-clock"
 /soc@107c000000
@@ -121,18 +181,63 @@
     #address-cells = <0x1>
     compatible = "simple-bus"
 /soc@107c000000/firmware
-    mboxes = <0x8008>
+    phandle = <0x8017>
+    mboxes = <0x8016>
     dma-ranges
     #size-cells = <0x1>
     #address-cells = <0x1>
     compatible = "raspberrypi,bcm2835-firmware", "simple-mfd"
+/soc@107c000000/firmware/vcio
+    compatible = "raspberrypi,vcio"
+/soc@107c000000/firmware/clocks
+    #clock-cells = <0x1>
+    compatible = "raspberrypi,firmware-clocks"
+/soc@107c000000/firmware/reset
+    #reset-cells = <0x1>
+    compatible = "raspberrypi,firmware-reset"
+/soc@107c000000/power
+    #power-domain-cells = <0x1>
+    firmware = <0x8017>
+    compatible = "raspberrypi,bcm2835-power"
+/soc@107c000000/rpi_rtc
+    trickle-charge-microvolt = <0x0>
+    firmware = <0x8017>
+    compatible = "raspberrypi,rpi-rtc"
+/soc@107c000000/mmc@fff000
+    cd-gpios = <0x8012 0x5 0x1>
+    sd-uhs-sdr104
+    sd-uhs-ddr50
+    sd-uhs-sdr50
+    bus-width = <0x4>
+    vmmc-supply = <0x801c>
+    vqmmc-supply = <0x801b>
+    pinctrl-names = "default"
+    pinctrl-0 = <0x8019 0x801a>
+    mmc-ddr-3_3v
+    clock-names = "sw_sdio"
+    clocks = <0x8001>
+    interrupts = <0x0 0x111 0x4>
+    reg-names = "host", "cfg"
+    reg = <0xfff000 0x260 0xfff400 0x200>
+    compatible = "brcm,bcm2712-sdhci", "brcm,sdhci-brcmstb"
+/soc@107c000000/mmc@1100000
+    status = "disabled"
+    sdhci-caps = <0x0 0x0>
+    sdhci-caps-mask = <0xc000 0x0>
+    mmc-ddr-3_3v
+    clock-names = "sw_sdio"
+    clocks = <0x8001>
+    interrupts = <0x0 0x112 0x4>
+    reg-names = "host", "cfg"
+    reg = <0x1100000 0x260 0x1100400 0x200>
+    compatible = "brcm,bcm2712-sdhci", "brcm,sdhci-brcmstb"
 /soc@107c000000/timer@7c003000
     clock-frequency = <0xf4240>
     interrupts = <0x0 0x40 0x4 0x0 0x41 0x4 0x0 0x42 0x4 0x0 0x43 0x4>
     reg = <0x7c003000 0x1000>
     compatible = "brcm,bcm2835-system-timer"
 /soc@107c000000/mailbox@7c013880
-    phandle = <0x8008>
+    phandle = <0x8016>
     #mbox-cells = <0x0>
     interrupts = <0x0 0x21 0x4>
     reg = <0x7c013880 0x40>
@@ -140,22 +245,148 @@
 /soc@107c000000/serial@7d001000
     arm,primecell-periphid = <0x141011>
     clock-names = "uartclk", "apb_pclk"
-    clocks = <0x8000 0x8001>
+    clocks = <0x8002 0x8003>
     interrupts = <0x0 0x79 0x4>
     reg = <0x7d001000 0x200>
     compatible = "arm,pl011", "arm,primecell"
+/soc@107c000000/serial@7d50c000
+    interrupt-names = "uart"
+    interrupts = <0x0 0x114 0x4>
+    clock-names = "sw_baud"
+    clocks = <0x8000>
+    reg-names = "uart"
+    reg = <0x7d50c000 0x20>
+    compatible = "brcm,bcm7271-uart"
 /soc@107c000000/watchdog@7d200000
     system-power-controller
     #reset-cells = <0x1>
     #power-domain-cells = <0x1>
     reg-names = "pm"
-    reg = <0x7d200000 0x604>
+    reg = <0x7d200000 0x308>
     compatible = "brcm,bcm2712-pm"
 /soc@107c000000/rng@7d208000
     reg = <0x7d208000 0x28>
     compatible = "brcm,bcm2711-rng200"
+/soc@107c000000/i2c@7d508200
+    #size-cells = <0x0>
+    #address-cells = <0x1>
+    clock-frequency = <0x17cdc>
+    interrupts = <0x1>
+    interrupt-parent = <0x800f>
+    reg = <0x7d508200 0x58>
+    compatible = "brcm,brcmstb-i2c"
+/soc@107c000000/i2c@7d508280
+    #size-cells = <0x0>
+    #address-cells = <0x1>
+    clock-frequency = <0x17cdc>
+    interrupts = <0x2>
+    interrupt-parent = <0x800f>
+    reg = <0x7d508280 0x58>
+    compatible = "brcm,brcmstb-i2c"
+/soc@107c000000/pinctrl@7d504100
+    phandle = <0x8015>
+    reg = <0x7d504100 0x30>
+    compatible = "brcm,bcm2712c0-pinctrl"
+/soc@107c000000/pinctrl@7d504100/emmc-sd-default-state
+    phandle = <0x8019>
+    bias-pull-up
+    pins = "emmc_cmd", "emmc_dat0", "emmc_dat1", "emmc_dat2", "emmc_dat3"
+/soc@107c000000/pinctrl@7d504100/pwr-button-default-state
+    phandle = <0x8018>
+    bias-pull-up
+    pins = "gpio20"
+    function = "gpio"
+/soc@107c000000/pinctrl@7d510700
+    phandle = <0x8014>
+    reg = <0x7d510700 0x20>
+    compatible = "brcm,bcm2712c0-aon-pinctrl"
+/soc@107c000000/pinctrl@7d510700/emmc-aon-cd-default-state
+    phandle = <0x801a>
+    bias-pull-up
+    pins = "aon_gpio5"
+    function = "sd_card_g"
+/soc@107c000000/gpio@7d508500
+    gpio-line-names = "-", "2712_BOOT_CS_N", "2712_BOOT_MISO", "2712_BOOT_MOSI", "2712_BOOT_SCLK", "-", "-", "-", "-", "-", "-", "-", "-", "-", "PCIE_SDA", "PCIE_SCL", "-", "-", "-", "-", "PWR_GPIO", "2712_G21_FS", "-", "-", "BT_RTS", "BT_CTS", "BT_TXD", "BT_RXD", "WL_ON", "BT_ON", "WIFI_SDIO_CLK", "WIFI_SDIO_CMD", "WIFI_SDIO_D0", "WIFI_SDIO_D1", "WIFI_SDIO_D2", "WIFI_SDIO_D3"
+    #interrupt-cells = <0x2>
+    interrupt-controller
+    interrupts = <0x0>
+    interrupt-parent = <0x800e>
+    phandle = <0x8013>
+    brcm,gpio-bank-widths = <0x20 0x4>
+    #gpio-cells = <0x2>
+    gpio-controller
+    reg = <0x7d508500 0x40>
+    compatible = "brcm,bcm7445-gpio", "brcm,brcmstb-gpio"
+/soc@107c000000/gpio@7d517c00
+    gpio-line-names = <0x5250315f 0x53444100 0x5250315f 0x53434c00 0x5250315f 0x52554e00 0x53445f49 0x4f564444 0x5f53454c 0x53445f 0x5057525f 0x4f4e0053 0x445f4344 0x45545f4e 0x53445f 0x464c475f 0x4e002d00 0x32373132 0x5f57414b 0x45003237 0x31325f53 0x5441545f 0x4c454400 0x2d002d00 0x504d4943 0x5f494e54 0x554152 0x545f5458 0x5f465300 0x55415254 0x5f52585f 0x4653002d 0x2d0000 0x0 0x0 0x0 0x4844 0x4d49305f 0x53434c00 0x48444d49 0x305f5344 0x41004844 0x4d49315f 0x53434c00 0x48444d49 0x315f5344 0x4100504d 0x49435f53 0x434c0050 0x4d49435f 0x53444100>
+    phandle = <0x8012>
+    brcm,gpio-bank-widths = <0x11 0x6>
+    #gpio-cells = <0x2>
+    gpio-controller
+    reg = <0x7d517c00 0x40>
+    compatible = "brcm,bcm7445-gpio", "brcm,brcmstb-gpio"
+/soc@107c000000/interrupt-controller@7c502000
+    phandle = <0x8011>
+    status = "disabled"
+    #interrupt-cells = <0x1>
+    interrupt-controller
+    interrupts = <0x0 0x61 0x4>
+    reg = <0x7c502000 0x30>
+    compatible = "brcm,bcm2711-l2-intc", "brcm,l2-intc"
+/soc@107c000000/interrupt-controller@7d503000
+    phandle = <0x8010>
+    #interrupt-cells = <0x1>
+    interrupt-controller
+    interrupts = <0x0 0xee 0x4>
+    reg = <0x7d503000 0x18>
+    compatible = "brcm,l2-intc"
+/soc@107c000000/interrupt-controller@7d508380
+    phandle = <0x800f>
+    #interrupt-cells = <0x1>
+    interrupt-controller
+    interrupts = <0x0 0xf2 0x4>
+    reg = <0x7d508380 0x10>
+    compatible = "brcm,bcm7271-l2-intc"
+/soc@107c000000/interrupt-controller@7d508400
+    phandle = <0x800e>
+    #interrupt-cells = <0x1>
+    interrupt-controller
+    interrupts = <0x0 0xf4 0x4>
+    reg = <0x7d508400 0x10>
+    compatible = "brcm,bcm7271-l2-intc"
+/soc@107c000000/interrupt-controller@7d510600
+    phandle = <0x800d>
+    status = "disabled"
+    #interrupt-cells = <0x1>
+    interrupt-controller
+    interrupts = <0x0 0xef 0x4>
+    reg = <0x7d510600 0x30>
+    compatible = "brcm,bcm2711-l2-intc", "brcm,l2-intc"
+/soc@107c000000/interrupt-controller@7d517000
+    phandle = <0x800c>
+    status = "disabled"
+    #interrupt-cells = <0x1>
+    interrupt-controller
+    interrupts = <0x0 0xf7 0x4>
+    reg = <0x7d517000 0x10>
+    compatible = "brcm,bcm7271-l2-intc"
+/soc@107c000000/interrupt-controller@7d517ac0
+    phandle = <0x800b>
+    status = "disabled"
+    #interrupt-cells = <0x1>
+    interrupt-controller
+    interrupts = <0x0 0xf5 0x4>
+    reg = <0x7d517ac0 0x10>
+    compatible = "brcm,bcm7271-l2-intc"
+/soc@107c000000/avs-monitor@7d542000
+    reg = <0x7d542000 0xf00>
+    compatible = "brcm,bcm2711-avs-monitor", "syscon", "simple-mfd"
+/soc@107c000000/avs-monitor@7d542000/thermal
+    phandle = <0x800a>
+    #thermal-sensor-cells = <0x0>
+    compatible = "brcm,bcm2711-thermal"
 /soc@107c000000/interrupt-controller@7fff9000
-    phandle = <0x8007>
+    phandle = <0x8009>
     interrupts = <0x1 0x9 0xf04>
     #address-cells = <0x0>
     #interrupt-cells = <0x3>

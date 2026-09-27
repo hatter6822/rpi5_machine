@@ -1,0 +1,98 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: A7om <hatter6822@gmail.com>
+Date: Sat, 26 Sep 2026 00:00:00 +0000
+Subject: [PATCH] hw/misc: Add the Raspberry Pi 5 firmware's property interface
+
+Linux's raspberrypi-clk driver registers the clocks the firmware lists
+in answer to GET_CLOCKS, and raspberrypi-cpufreq scales the CPUs through
+the ARM clock, between the least and the most rate the firmware gives
+for it. Its raspberrypi-power driver switches the SoC's power domains
+through the domain interface that the firmware of the BCM2711 and later
+SoCs adds, GET_DOMAIN_STATE and SET_DOMAIN_STATE. bcm2835-property lists
+the ARM clock only, answers each clock's rates with a fixed value
+whatever a guest sets, and does not know the domain interface, or the
+reboot flags through which Linux asks the bootloader for a tryboot.
+
+Add bcm2712-property, a bcm2835-property that answers those tags as the
+Raspberry Pi 5's firmware does, and keeps what a guest sets through
+them: the rate and state of each of the five clocks the Pi 5's device
+trees take from the firmware, at the ranges the Raspberry Pi
+documentation gives, the state of each power domain and power device,
+and the reboot flags. The flags outlive a reset, for the board to report
+a tryboot in the device tree of the boot the reset starts.
+
+The Pi 5's firmware also keeps the board's real-time clock, which sits
+in its power management IC, and answers for it through tags of its own,
+GET_RTC_REG and SET_RTC_REG, with which Linux's rtc-rpi driver and EDK2
+read and set it. bcm2712-property answers them too: the time starts
+as QEMU's RTC, runs on through a reset and raises RTC_CHANGE when a
+guest sets it, the alarm goes pending when the time reaches it, and the
+backup battery's charger keeps a voltage within its range. On a Pi 5
+the alarm powers a halted board back on, which QEMU leaves out.
+---
+ hw/misc/Kconfig                      | 5 +++++
+ hw/misc/meson.build                  | 1 +
+ hw/misc/trace-events                 | 8 ++++++++
+ include/hw/arm/raspberrypi-fw-defs.h | 2 ++
+ 4 files changed, 16 insertions(+)
+
+diff --git a/hw/misc/Kconfig b/hw/misc/Kconfig
+index dcb97722..00327b7d 100644
+--- a/hw/misc/Kconfig
++++ b/hw/misc/Kconfig
+@@ -265,6 +265,11 @@ config BCM2711_AVS_MONITOR
+ config BCM2711_RNG200
+     bool
+ 
++config BCM2712_PROPERTY
++    bool
++    select BCM2711_AVS_MONITOR
++    select BCM2835_PROPERTY
++
+ config BCM2835_CPRMAN
+     bool
+ 
+diff --git a/hw/misc/meson.build b/hw/misc/meson.build
+index 13e0748f..0505f5fa 100644
+--- a/hw/misc/meson.build
++++ b/hw/misc/meson.build
+@@ -88,6 +88,7 @@ system_ss.add(when: 'CONFIG_OMAP', if_true: files(
+ ))
+ system_ss.add(when: 'CONFIG_BCM2711_AVS_MONITOR', if_true: files('bcm2711_avs_monitor.c'))
+ system_ss.add(when: 'CONFIG_BCM2711_RNG200', if_true: files('bcm2711_rng200.c'))
++system_ss.add(when: 'CONFIG_BCM2712_PROPERTY', if_true: files('bcm2712_property.c'))
+ system_ss.add(when: 'CONFIG_BCM2835_CPRMAN', if_true: files('bcm2835_cprman.c'))
+ system_ss.add(when: 'CONFIG_BCM2835_MBOX', if_true: files('bcm2835_mbox.c'))
+ system_ss.add(when: 'CONFIG_BCM2835_MPHI', if_true: files('bcm2835_mphi.c'))
+diff --git a/hw/misc/trace-events b/hw/misc/trace-events
+index c28b9fb8..77b82232 100644
+--- a/hw/misc/trace-events
++++ b/hw/misc/trace-events
+@@ -347,6 +347,14 @@ bcm2711_avs_monitor_temperature(int32_t temperature) "%" PRId32 " millidegrees C
+ bcm2711_rng200_read(uint64_t offset, uint32_t value) "offset 0x%02" PRIx64 " value 0x%08" PRIx32
+ bcm2711_rng200_write(uint64_t offset, uint64_t value) "offset 0x%02" PRIx64 " value 0x%08" PRIx64
+ 
++# bcm2712_property.c
++bcm2712_property_clock(uint32_t id, uint32_t rate, int on) "clock %" PRIu32 ": %" PRIu32 " Hz, on %d"
++bcm2712_property_domain(uint32_t domain, int on) "power domain %" PRIu32 ": on %d"
++bcm2712_property_device(uint32_t device, int on) "power device %" PRIu32 ": on %d"
++bcm2712_property_reboot_flags(uint32_t flags) "reboot flags 0x%" PRIx32
++bcm2712_property_rtc(uint32_t reg, uint32_t value) "real-time clock register %" PRIu32 " set to %" PRIu32
++bcm2712_property_rtc_alarm(uint32_t time) "real-time clock alarm at %" PRIu32
++
+ # bcm2835_property.c
+ bcm2835_mbox_property(uint32_t tag, uint32_t bufsize, size_t resplen) "mbox property tag:0x%08x in_sz:%u out_sz:%zu"
+ 
+diff --git a/include/hw/arm/raspberrypi-fw-defs.h b/include/hw/arm/raspberrypi-fw-defs.h
+index bee0dd63..bcb3354f 100644
+--- a/include/hw/arm/raspberrypi-fw-defs.h
++++ b/include/hw/arm/raspberrypi-fw-defs.h
+@@ -80,6 +80,8 @@ enum rpi_firmware_property_tag {
+     RPI_FWREQ_GET_REBOOT_FLAGS =                       0x00030064,
+     RPI_FWREQ_SET_REBOOT_FLAGS =                       0x00038064,
+     RPI_FWREQ_NOTIFY_DISPLAY_DONE =                    0x00030066,
++    RPI_FWREQ_GET_RTC_REG =                            0x00030087,
++    RPI_FWREQ_SET_RTC_REG =                            0x00038087,
+ 
+     /* Dispmanx TAGS */
+     RPI_FWREQ_FRAMEBUFFER_ALLOCATE =                   0x00040001,

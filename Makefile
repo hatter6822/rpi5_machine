@@ -143,6 +143,7 @@ check-dt: build guest $(DT_SCHEMA)
 # Real firmware booted with -bios: scripts/firmware builds it at pinned
 # versions in $(FIRMWARE_DIR), which must be new, empty, or marked as made
 # there by an earlier run, as for check-dt. It skips what is up to date.
+# The rpi5-boot tests use its overlays, dtmerge and kernel.
 FIRMWARE_DIR ?= build-firmware
 
 firmware:
@@ -151,7 +152,8 @@ firmware:
 check-firmware: build guest firmware
 	QEMU=$(abspath $(QEMU_BIN)) GUEST=$(GUEST_BUILD)/hello.elf \
 		SUITE=$(GUEST_BUILD)/suite.elf FIRMWARE=$(abspath $(FIRMWARE_DIR)) \
-		$(PYTHON) -m unittest discover -s tests/smoke -p test_firmware.py -v
+		PYTHONPATH=$(CURDIR)/tests/smoke$${PYTHONPATH:+:$$PYTHONPATH} \
+		$(PYTHON) -m unittest -v test_firmware test_rpi5_boot
 
 # The upstream series (scripts/qemu-tree export): SERIES_FLAGS takes
 # -v <n>, --build (build every commit) and --signoff

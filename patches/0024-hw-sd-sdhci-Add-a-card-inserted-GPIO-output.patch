@@ -1,0 +1,50 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: A7om <hatter6822@gmail.com>
+Date: Sat, 26 Sep 2026 00:00:00 +0000
+Subject: [PATCH] hw/sd/sdhci: Add a card-inserted GPIO output
+
+A slot's card detect switch often reaches a GPIO pin as well as the SD
+host controller: on the Raspberry Pi 5 it is a line of the BCM2712's
+always-on GPIO block, which Linux watches for the slot through the
+controller's cd-gpios property. Give the SDHCI a "card-inserted" output,
+as the PL181 has, that is high while a card is in the slot, for boards to
+wire to such a pin. It follows the card at once, where the Present State
+register holds back a card inserted while the guest has yet to
+acknowledge the removal of the one before, and is driven again on reset.
+---
+ hw/sd/sdhci.c         | 2 ++
+ include/hw/sd/sdhci.h | 1 +
+ 2 files changed, 3 insertions(+)
+
+diff --git a/hw/sd/sdhci.c b/hw/sd/sdhci.c
+index 02f0918..82923b9 100644
+--- a/hw/sd/sdhci.c
++++ b/hw/sd/sdhci.c
+@@ -248,6 +248,7 @@ static void sdhci_set_inserted(DeviceState *dev, bool level)
+     SDHCIState *s = (SDHCIState *)dev;
+ 
+     trace_sdhci_set_inserted(level ? "insert" : "eject");
++    qemu_set_irq(s->card_inserted, level);
+     if ((s->norintsts & SDHC_NIS_REMOVE) && level) {
+         /* Give target some time to notice card ejection */
+         timer_mod(s->insert_timer,
+@@ -1423,6 +1424,7 @@ static void sdhci_init_readonly_registers(SDHCIState *s, Error **errp)
+ void sdhci_initfn(SDHCIState *s)
+ {
+     qbus_init(&s->sdbus, sizeof(s->sdbus), TYPE_SDHCI_BUS, DEVICE(s), "sd-bus");
++    qdev_init_gpio_out_named(DEVICE(s), &s->card_inserted, "card-inserted", 1);
+ 
+     s->insert_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL,
+                                    sdhci_raise_insertion_irq, s);
+diff --git a/include/hw/sd/sdhci.h b/include/hw/sd/sdhci.h
+index c485277..0a807d3 100644
+--- a/include/hw/sd/sdhci.h
++++ b/include/hw/sd/sdhci.h
+@@ -49,6 +49,7 @@ struct SDHCIState {
+     QEMUTimer *insert_timer;       /* timer for 'changing' sd card. */
+     QEMUTimer *transfer_timer;
+     qemu_irq irq;
++    qemu_irq card_inserted;        /* high while a card is in the slot */
+ 
+     /* Registers cleared on reset */
+     uint32_t sdmasysad;    /* SDMA System Address register */

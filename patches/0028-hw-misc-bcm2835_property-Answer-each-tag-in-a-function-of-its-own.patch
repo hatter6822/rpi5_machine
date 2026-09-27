@@ -1,0 +1,894 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: A7om <hatter6822@gmail.com>
+Date: Sat, 26 Sep 2026 00:00:00 +0000
+Subject: [PATCH] hw/misc/bcm2835_property: Answer each tag in a function of
+ its own
+
+Move the switch that answers one tag out of the loop that walks the
+request, into a function that returns the response length. The
+framebuffer tags change the configuration through a pointer to the
+copy the loop keeps.
+
+No functional change.
+---
+ hw/misc/bcm2835_property.c | 813 +++++++++++++++++++------------------
+ 1 file changed, 416 insertions(+), 397 deletions(-)
+
+diff --git a/hw/misc/bcm2835_property.c b/hw/misc/bcm2835_property.c
+index 48404a83..c9abd9bd 100644
+--- a/hw/misc/bcm2835_property.c
++++ b/hw/misc/bcm2835_property.c
+@@ -75,457 +75,476 @@ static void bcm2835_property_put32(BCM2835PropertyState *s, hwaddr value,
+     }
+ }
+ 
+-static void bcm2835_property_mbox_push(BCM2835PropertyState *s, uint32_t value)
++/*
++ * Answer the tag @tag, whose header is at @value and whose value buffer
++ * holds @bufsize bytes; returns the response length. A change to the
++ * framebuffer's configuration goes into @fbconfig, and sets
++ * @fbconfig_updated.
++ */
++static size_t bcm2835_property_answer_tag(BCM2835PropertyState *s,
++                                          uint32_t tag, hwaddr value,
++                                          uint32_t bufsize,
++                                          BCM2835FBConfig *fbconfig,
++                                          bool *fbconfig_updated)
+ {
+-    uint32_t tot_len;
+-    uint32_t bufsize = 0;
+-    hwaddr end, pos;
+-    bool malformed = false;
++    size_t resplen = 0;
+ 
+-    /*
+-     * Copy the current state of the framebuffer config; we will update
+-     * this copy as we process tags and then ask the framebuffer to use
+-     * it at the end.
+-     */
+-    BCM2835FBConfig fbconfig = s->fbdev->config;
+-    bool fbconfig_updated = false;
++    switch (tag) {
++    case RPI_FWREQ_GET_FIRMWARE_REVISION:
++        resplen = bcm2835_property_answer32(s, value, bufsize, 346337);
++        break;
++    case RPI_FWREQ_GET_FIRMWARE_VARIANT:
++        resplen = bcm2835_property_answer32(s, value, bufsize,
++                                           FIRMWARE_VARIANT_START);
++        break;
++    case RPI_FWREQ_GET_FIRMWARE_HASH:
++        /* No firmware build: an all-zero hash, clipped to the buffer */
++        resplen = FIRMWARE_HASH_SIZE;
++        address_space_set(&s->dma_as, value + 12, 0,
++                          MIN(bufsize, FIRMWARE_HASH_SIZE),
++                          MEMTXATTRS_UNSPECIFIED);
++        break;
++    case RPI_FWREQ_GET_BOARD_MODEL:
++        /* As current firmware: boards are told apart by revision */
++        resplen = bcm2835_property_answer32(s, value, bufsize, 0);
++        break;
++    case RPI_FWREQ_GET_BOARD_REVISION:
++        resplen = bcm2835_property_answer32(s, value, bufsize,
++                                           s->board_rev);
++        break;
++    case RPI_FWREQ_GET_BOARD_MAC_ADDRESS:
++        resplen = bcm2835_property_answer(s, value, bufsize, s->macaddr.a,
++                                          sizeof(s->macaddr.a));
++        break;
++    case RPI_FWREQ_GET_BOARD_SERIAL: {
++        uint64_t serial = cpu_to_le64(s->board_serial);
+ 
+-    value &= ~0xf;
++        resplen = bcm2835_property_answer(s, value, bufsize, &serial,
++                                          sizeof(serial));
++        break;
++    }
++    case RPI_FWREQ_GET_ARM_MEMORY:
++        /* base */
++        bcm2835_property_put32(s, value, bufsize, 0, 0);
++        /* size */
++        bcm2835_property_put32(s, value, bufsize, 4, s->fbdev->vcram_base);
++        resplen = 8;
++        break;
++    case RPI_FWREQ_GET_VC_MEMORY:
++        /* base */
++        bcm2835_property_put32(s, value, bufsize, 0, s->fbdev->vcram_base);
++        /* size */
++        bcm2835_property_put32(s, value, bufsize, 4, s->fbdev->vcram_size);
++        resplen = 8;
++        break;
++    case RPI_FWREQ_SET_POWER_STATE:
++    {
++        /*
++         * Assume that whatever device they asked for exists,
++         * and we'll just claim we set it to the desired state.
++         */
++        uint32_t state = bcm2835_property_get32(s, value, bufsize, 4);
++        bcm2835_property_put32(s, value, bufsize, 4, (state & 1));
++        resplen = 8;
++        break;
++    }
+ 
+-    s->addr = value;
++    /* Clocks */
+ 
+-    tot_len = ldl_le_phys(&s->dma_as, value);
+-    end = (hwaddr)s->addr + tot_len;
++    case RPI_FWREQ_GET_CLOCK_STATE:
++        bcm2835_property_put32(s, value, bufsize, 4, 0x1);
++        resplen = 8;
++        break;
+ 
+-    /* @(addr + 4) : Buffer response code */
+-    for (pos = (hwaddr)s->addr + 8; ; pos += 12 + bufsize) {
+-        uint32_t tag;
+-        /* @(value + 8) : Request/response indicator */
+-        size_t resplen = 0;
++    case RPI_FWREQ_SET_CLOCK_STATE:
++        qemu_log_mask(LOG_UNIMP,
++                      "bcm2835_property: 0x%08x set clock state NYI\n",
++                      tag);
++        resplen = 8;
++        break;
+ 
+-        /*
+-         * Only the buffer the header sizes was checked to be readable, so
+-         * every tag must lie within it: the end tag's word, and for any
+-         * other tag its 12-byte header and the value buffer it declares.
+-         * A request cut short is answered with the error code instead.
+-         */
+-        if (pos + 4 > end) {
+-            malformed = true;
+-            break;
+-        }
+-        tag = ldl_le_phys(&s->dma_as, pos);
+-        if (tag == RPI_FWREQ_PROPERTY_END) {
+-            break;
+-        }
+-        if (pos + 12 > end) {
+-            malformed = true;
+-            break;
+-        }
+-        bufsize = ldl_le_phys(&s->dma_as, pos + 4);
+-        if (pos + 12 + bufsize > end) {
+-            malformed = true;
+-            break;
+-        }
+-        value = pos;
+-        switch (tag) {
+-        case RPI_FWREQ_GET_FIRMWARE_REVISION:
+-            resplen = bcm2835_property_answer32(s, value, bufsize, 346337);
+-            break;
+-        case RPI_FWREQ_GET_FIRMWARE_VARIANT:
+-            resplen = bcm2835_property_answer32(s, value, bufsize,
+-                                               FIRMWARE_VARIANT_START);
+-            break;
+-        case RPI_FWREQ_GET_FIRMWARE_HASH:
+-            /* No firmware build: an all-zero hash, clipped to the buffer */
+-            resplen = FIRMWARE_HASH_SIZE;
+-            address_space_set(&s->dma_as, value + 12, 0,
+-                              MIN(bufsize, FIRMWARE_HASH_SIZE),
+-                              MEMTXATTRS_UNSPECIFIED);
+-            break;
+-        case RPI_FWREQ_GET_BOARD_MODEL:
+-            /* As current firmware: boards are told apart by revision */
+-            resplen = bcm2835_property_answer32(s, value, bufsize, 0);
+-            break;
+-        case RPI_FWREQ_GET_BOARD_REVISION:
+-            resplen = bcm2835_property_answer32(s, value, bufsize,
+-                                               s->board_rev);
+-            break;
+-        case RPI_FWREQ_GET_BOARD_MAC_ADDRESS:
+-            resplen = bcm2835_property_answer(s, value, bufsize, s->macaddr.a,
+-                                              sizeof(s->macaddr.a));
+-            break;
+-        case RPI_FWREQ_GET_BOARD_SERIAL: {
+-            uint64_t serial = cpu_to_le64(s->board_serial);
++    case RPI_FWREQ_GET_CLOCK_RATE:
++    case RPI_FWREQ_GET_MAX_CLOCK_RATE:
++    case RPI_FWREQ_GET_MIN_CLOCK_RATE:
++    {
++        uint32_t rate;
+ 
+-            resplen = bcm2835_property_answer(s, value, bufsize, &serial,
+-                                              sizeof(serial));
++        switch (bcm2835_property_get32(s, value, bufsize, 0)) {
++        case RPI_FIRMWARE_EMMC_CLK_ID:
++            rate = RPI_FIRMWARE_EMMC_CLK_RATE;
+             break;
+-        }
+-        case RPI_FWREQ_GET_ARM_MEMORY:
+-            /* base */
+-            bcm2835_property_put32(s, value, bufsize, 0, 0);
+-            /* size */
+-            bcm2835_property_put32(s, value, bufsize, 4, s->fbdev->vcram_base);
+-            resplen = 8;
++        case RPI_FIRMWARE_UART_CLK_ID:
++            rate = RPI_FIRMWARE_UART_CLK_RATE;
+             break;
+-        case RPI_FWREQ_GET_VC_MEMORY:
+-            /* base */
+-            bcm2835_property_put32(s, value, bufsize, 0, s->fbdev->vcram_base);
+-            /* size */
+-            bcm2835_property_put32(s, value, bufsize, 4, s->fbdev->vcram_size);
+-            resplen = 8;
++        case RPI_FIRMWARE_CORE_CLK_ID:
++            rate = RPI_FIRMWARE_CORE_CLK_RATE;
+             break;
+-        case RPI_FWREQ_SET_POWER_STATE:
+-        {
+-            /*
+-             * Assume that whatever device they asked for exists,
+-             * and we'll just claim we set it to the desired state.
+-             */
+-            uint32_t state = bcm2835_property_get32(s, value, bufsize, 4);
+-            bcm2835_property_put32(s, value, bufsize, 4, (state & 1));
+-            resplen = 8;
++        default:
++            rate = RPI_FIRMWARE_DEFAULT_CLK_RATE;
+             break;
+         }
++        bcm2835_property_put32(s, value, bufsize, 4, rate);
++        resplen = 8;
++        break;
++    }
+ 
+-        /* Clocks */
++    case RPI_FWREQ_GET_CLOCKS:
++        /* TODO: add more clock IDs if needed */
++        bcm2835_property_put32(s, value, bufsize, 0, 0);
++        bcm2835_property_put32(s, value, bufsize, 4,
++                               RPI_FIRMWARE_ARM_CLK_ID);
++        resplen = 8;
++        break;
+ 
+-        case RPI_FWREQ_GET_CLOCK_STATE:
+-            bcm2835_property_put32(s, value, bufsize, 4, 0x1);
+-            resplen = 8;
+-            break;
++    case RPI_FWREQ_SET_CLOCK_RATE:
++    case RPI_FWREQ_SET_MAX_CLOCK_RATE:
++    case RPI_FWREQ_SET_MIN_CLOCK_RATE:
++        qemu_log_mask(LOG_UNIMP,
++                      "bcm2835_property: 0x%08x set clock rate NYI\n",
++                      tag);
++        resplen = 8;
++        break;
+ 
+-        case RPI_FWREQ_SET_CLOCK_STATE:
+-            qemu_log_mask(LOG_UNIMP,
+-                          "bcm2835_property: 0x%08x set clock state NYI\n",
+-                          tag);
+-            resplen = 8;
+-            break;
++    /* Temperature */
++
++    case RPI_FWREQ_GET_TEMPERATURE:
++        bcm2835_property_put32(s, value, bufsize, 4, 25000);
++        resplen = 8;
++        break;
++
++    case RPI_FWREQ_GET_MAX_TEMPERATURE:
++        bcm2835_property_put32(s, value, bufsize, 4, 99000);
++        resplen = 8;
++        break;
+ 
+-        case RPI_FWREQ_GET_CLOCK_RATE:
+-        case RPI_FWREQ_GET_MAX_CLOCK_RATE:
+-        case RPI_FWREQ_GET_MIN_CLOCK_RATE:
+-        {
+-            uint32_t rate;
+-
+-            switch (bcm2835_property_get32(s, value, bufsize, 0)) {
+-            case RPI_FIRMWARE_EMMC_CLK_ID:
+-                rate = RPI_FIRMWARE_EMMC_CLK_RATE;
+-                break;
+-            case RPI_FIRMWARE_UART_CLK_ID:
+-                rate = RPI_FIRMWARE_UART_CLK_RATE;
+-                break;
+-            case RPI_FIRMWARE_CORE_CLK_ID:
+-                rate = RPI_FIRMWARE_CORE_CLK_RATE;
+-                break;
+-            default:
+-                rate = RPI_FIRMWARE_DEFAULT_CLK_RATE;
+-                break;
++    /* Frame buffer */
++
++    case RPI_FWREQ_FRAMEBUFFER_ALLOCATE:
++        bcm2835_property_put32(s, value, bufsize, 0, fbconfig->base);
++        bcm2835_property_put32(s, value, bufsize, 4,
++                               bcm2835_fb_get_size(fbconfig));
++        resplen = 8;
++        break;
++    case RPI_FWREQ_FRAMEBUFFER_RELEASE:
++        resplen = 0;
++        break;
++    case RPI_FWREQ_FRAMEBUFFER_BLANK:
++        resplen = 4;
++        break;
++    case RPI_FWREQ_FRAMEBUFFER_TEST_PHYSICAL_WIDTH_HEIGHT:
++    case RPI_FWREQ_FRAMEBUFFER_TEST_VIRTUAL_WIDTH_HEIGHT:
++        resplen = 8;
++        break;
++    case RPI_FWREQ_FRAMEBUFFER_SET_PHYSICAL_WIDTH_HEIGHT:
++        fbconfig->xres = bcm2835_property_get32(s, value, bufsize, 0);
++        fbconfig->yres = bcm2835_property_get32(s, value, bufsize, 4);
++        bcm2835_fb_validate_config(fbconfig);
++        *fbconfig_updated = true;
++        /* fall through */
++    case RPI_FWREQ_FRAMEBUFFER_GET_PHYSICAL_WIDTH_HEIGHT:
++        bcm2835_property_put32(s, value, bufsize, 0, fbconfig->xres);
++        bcm2835_property_put32(s, value, bufsize, 4, fbconfig->yres);
++        resplen = 8;
++        break;
++    case RPI_FWREQ_FRAMEBUFFER_SET_VIRTUAL_WIDTH_HEIGHT:
++        fbconfig->xres_virtual = bcm2835_property_get32(s, value, bufsize,
++                                                       0);
++        fbconfig->yres_virtual = bcm2835_property_get32(s, value, bufsize,
++                                                       4);
++        bcm2835_fb_validate_config(fbconfig);
++        *fbconfig_updated = true;
++        /* fall through */
++    case RPI_FWREQ_FRAMEBUFFER_GET_VIRTUAL_WIDTH_HEIGHT:
++        bcm2835_property_put32(s, value, bufsize, 0, fbconfig->xres_virtual);
++        bcm2835_property_put32(s, value, bufsize, 4, fbconfig->yres_virtual);
++        resplen = 8;
++        break;
++    case RPI_FWREQ_FRAMEBUFFER_TEST_DEPTH:
++        resplen = 4;
++        break;
++    case RPI_FWREQ_FRAMEBUFFER_SET_DEPTH:
++        fbconfig->bpp = bcm2835_property_get32(s, value, bufsize, 0);
++        bcm2835_fb_validate_config(fbconfig);
++        *fbconfig_updated = true;
++        /* fall through */
++    case RPI_FWREQ_FRAMEBUFFER_GET_DEPTH:
++        bcm2835_property_put32(s, value, bufsize, 0, fbconfig->bpp);
++        resplen = 4;
++        break;
++    case RPI_FWREQ_FRAMEBUFFER_TEST_PIXEL_ORDER:
++        resplen = 4;
++        break;
++    case RPI_FWREQ_FRAMEBUFFER_SET_PIXEL_ORDER:
++        fbconfig->pixo = bcm2835_property_get32(s, value, bufsize, 0);
++        bcm2835_fb_validate_config(fbconfig);
++        *fbconfig_updated = true;
++        /* fall through */
++    case RPI_FWREQ_FRAMEBUFFER_GET_PIXEL_ORDER:
++        bcm2835_property_put32(s, value, bufsize, 0, fbconfig->pixo);
++        resplen = 4;
++        break;
++    case RPI_FWREQ_FRAMEBUFFER_TEST_ALPHA_MODE:
++        resplen = 4;
++        break;
++    case RPI_FWREQ_FRAMEBUFFER_SET_ALPHA_MODE:
++        fbconfig->alpha = bcm2835_property_get32(s, value, bufsize, 0);
++        bcm2835_fb_validate_config(fbconfig);
++        *fbconfig_updated = true;
++        /* fall through */
++    case RPI_FWREQ_FRAMEBUFFER_GET_ALPHA_MODE:
++        bcm2835_property_put32(s, value, bufsize, 0, fbconfig->alpha);
++        resplen = 4;
++        break;
++    case RPI_FWREQ_FRAMEBUFFER_GET_PITCH:
++        bcm2835_property_put32(s, value, bufsize, 0,
++                               bcm2835_fb_get_pitch(fbconfig));
++        resplen = 4;
++        break;
++    case RPI_FWREQ_FRAMEBUFFER_TEST_VIRTUAL_OFFSET:
++        resplen = 8;
++        break;
++    case RPI_FWREQ_FRAMEBUFFER_SET_VIRTUAL_OFFSET:
++        fbconfig->xoffset = bcm2835_property_get32(s, value, bufsize, 0);
++        fbconfig->yoffset = bcm2835_property_get32(s, value, bufsize, 4);
++        bcm2835_fb_validate_config(fbconfig);
++        *fbconfig_updated = true;
++        /* fall through */
++    case RPI_FWREQ_FRAMEBUFFER_GET_VIRTUAL_OFFSET:
++        bcm2835_property_put32(s, value, bufsize, 0, fbconfig->xoffset);
++        bcm2835_property_put32(s, value, bufsize, 4, fbconfig->yoffset);
++        resplen = 8;
++        break;
++    case RPI_FWREQ_FRAMEBUFFER_GET_OVERSCAN:
++    case RPI_FWREQ_FRAMEBUFFER_TEST_OVERSCAN:
++    case RPI_FWREQ_FRAMEBUFFER_SET_OVERSCAN:
++        for (unsigned i = 0; i < 4; i++) {
++            bcm2835_property_put32(s, value, bufsize, 4 * i, 0);
++        }
++        resplen = 16;
++        break;
++    case RPI_FWREQ_FRAMEBUFFER_SET_PALETTE:
++    {
++        uint32_t offset = bcm2835_property_get32(s, value, bufsize, 0);
++        uint32_t length = bcm2835_property_get32(s, value, bufsize, 4);
++        int resp;
++
++        /* Invalid request: out of range, or entries not in the buffer */
++        if (offset > 255 || length < 1 || length > 256 ||
++            8 + 4 * length > bufsize) {
++            resp = 1;
++        } else {
++            for (uint32_t e = 0; e < length; e++) {
++                uint32_t color = bcm2835_property_get32(s, value, bufsize,
++                                                        8 + 4 * e);
++                stl_le_phys(&s->dma_as,
++                            s->fbdev->vcram_base + ((offset + e) << 2), color);
+             }
+-            bcm2835_property_put32(s, value, bufsize, 4, rate);
+-            resplen = 8;
+-            break;
++            resp = 0;
+         }
++        bcm2835_property_put32(s, value, bufsize, 0, resp);
++        resplen = 4;
++        break;
++    }
++    case RPI_FWREQ_FRAMEBUFFER_GET_NUM_DISPLAYS:
++        resplen = bcm2835_property_answer32(s, value, bufsize, 1);
++        break;
+ 
+-        case RPI_FWREQ_GET_CLOCKS:
+-            /* TODO: add more clock IDs if needed */
+-            bcm2835_property_put32(s, value, bufsize, 0, 0);
+-            bcm2835_property_put32(s, value, bufsize, 4,
+-                                   RPI_FIRMWARE_ARM_CLK_ID);
+-            resplen = 8;
+-            break;
++    case RPI_FWREQ_GET_DMA_CHANNELS:
++        resplen = bcm2835_property_answer32(s, value, bufsize,
++                                           s->dma_channel_mask);
++        break;
+ 
+-        case RPI_FWREQ_SET_CLOCK_RATE:
+-        case RPI_FWREQ_SET_MAX_CLOCK_RATE:
+-        case RPI_FWREQ_SET_MIN_CLOCK_RATE:
+-            qemu_log_mask(LOG_UNIMP,
+-                          "bcm2835_property: 0x%08x set clock rate NYI\n",
+-                          tag);
+-            resplen = 8;
+-            break;
++    case RPI_FWREQ_GET_COMMAND_LINE:
++        /*
++         * We follow the firmware behaviour: no NUL terminator is
++         * written to the buffer, and if the buffer is too short
++         * we report the required length in the response header
++         * and copy nothing to the buffer.
++         */
++        resplen = strlen(s->command_line);
++        if (bufsize >= resplen)
++            address_space_write(&s->dma_as, value + 12,
++                                MEMTXATTRS_UNSPECIFIED, s->command_line,
++                                resplen);
++        break;
+ 
+-        /* Temperature */
++    case RPI_FWREQ_GET_THROTTLED:
++        resplen = bcm2835_property_answer32(s, value, bufsize, 0);
++        break;
+ 
+-        case RPI_FWREQ_GET_TEMPERATURE:
+-            bcm2835_property_put32(s, value, bufsize, 4, 25000);
+-            resplen = 8;
+-            break;
++    case RPI_FWREQ_NOTIFY_REBOOT:
++        /*
++         * Sent before a reset or a power-off, for the firmware to stop
++         * what it drives; the model has nothing to stop
++         */
++        resplen = 0;
++        break;
+ 
+-        case RPI_FWREQ_GET_MAX_TEMPERATURE:
+-            bcm2835_property_put32(s, value, bufsize, 4, 99000);
+-            resplen = 8;
+-            break;
++    case RPI_FWREQ_VCHIQ_INIT:
++        bcm2835_property_put32(s, value, bufsize, 0, 0);
++        resplen = VCHI_BUSADDR_SIZE;
++        break;
+ 
+-        /* Frame buffer */
++    /* Customer OTP */
+ 
+-        case RPI_FWREQ_FRAMEBUFFER_ALLOCATE:
+-            bcm2835_property_put32(s, value, bufsize, 0, fbconfig.base);
+-            bcm2835_property_put32(s, value, bufsize, 4,
+-                                   bcm2835_fb_get_size(&fbconfig));
+-            resplen = 8;
+-            break;
+-        case RPI_FWREQ_FRAMEBUFFER_RELEASE:
+-            resplen = 0;
+-            break;
+-        case RPI_FWREQ_FRAMEBUFFER_BLANK:
+-            resplen = 4;
+-            break;
+-        case RPI_FWREQ_FRAMEBUFFER_TEST_PHYSICAL_WIDTH_HEIGHT:
+-        case RPI_FWREQ_FRAMEBUFFER_TEST_VIRTUAL_WIDTH_HEIGHT:
+-            resplen = 8;
+-            break;
+-        case RPI_FWREQ_FRAMEBUFFER_SET_PHYSICAL_WIDTH_HEIGHT:
+-            fbconfig.xres = bcm2835_property_get32(s, value, bufsize, 0);
+-            fbconfig.yres = bcm2835_property_get32(s, value, bufsize, 4);
+-            bcm2835_fb_validate_config(&fbconfig);
+-            fbconfig_updated = true;
+-            /* fall through */
+-        case RPI_FWREQ_FRAMEBUFFER_GET_PHYSICAL_WIDTH_HEIGHT:
+-            bcm2835_property_put32(s, value, bufsize, 0, fbconfig.xres);
+-            bcm2835_property_put32(s, value, bufsize, 4, fbconfig.yres);
+-            resplen = 8;
+-            break;
+-        case RPI_FWREQ_FRAMEBUFFER_SET_VIRTUAL_WIDTH_HEIGHT:
+-            fbconfig.xres_virtual = bcm2835_property_get32(s, value, bufsize,
+-                                                           0);
+-            fbconfig.yres_virtual = bcm2835_property_get32(s, value, bufsize,
+-                                                           4);
+-            bcm2835_fb_validate_config(&fbconfig);
+-            fbconfig_updated = true;
+-            /* fall through */
+-        case RPI_FWREQ_FRAMEBUFFER_GET_VIRTUAL_WIDTH_HEIGHT:
+-            bcm2835_property_put32(s, value, bufsize, 0, fbconfig.xres_virtual);
+-            bcm2835_property_put32(s, value, bufsize, 4, fbconfig.yres_virtual);
+-            resplen = 8;
+-            break;
+-        case RPI_FWREQ_FRAMEBUFFER_TEST_DEPTH:
+-            resplen = 4;
+-            break;
+-        case RPI_FWREQ_FRAMEBUFFER_SET_DEPTH:
+-            fbconfig.bpp = bcm2835_property_get32(s, value, bufsize, 0);
+-            bcm2835_fb_validate_config(&fbconfig);
+-            fbconfig_updated = true;
+-            /* fall through */
+-        case RPI_FWREQ_FRAMEBUFFER_GET_DEPTH:
+-            bcm2835_property_put32(s, value, bufsize, 0, fbconfig.bpp);
+-            resplen = 4;
+-            break;
+-        case RPI_FWREQ_FRAMEBUFFER_TEST_PIXEL_ORDER:
+-            resplen = 4;
+-            break;
+-        case RPI_FWREQ_FRAMEBUFFER_SET_PIXEL_ORDER:
+-            fbconfig.pixo = bcm2835_property_get32(s, value, bufsize, 0);
+-            bcm2835_fb_validate_config(&fbconfig);
+-            fbconfig_updated = true;
+-            /* fall through */
+-        case RPI_FWREQ_FRAMEBUFFER_GET_PIXEL_ORDER:
+-            bcm2835_property_put32(s, value, bufsize, 0, fbconfig.pixo);
+-            resplen = 4;
+-            break;
+-        case RPI_FWREQ_FRAMEBUFFER_TEST_ALPHA_MODE:
+-            resplen = 4;
+-            break;
+-        case RPI_FWREQ_FRAMEBUFFER_SET_ALPHA_MODE:
+-            fbconfig.alpha = bcm2835_property_get32(s, value, bufsize, 0);
+-            bcm2835_fb_validate_config(&fbconfig);
+-            fbconfig_updated = true;
+-            /* fall through */
+-        case RPI_FWREQ_FRAMEBUFFER_GET_ALPHA_MODE:
+-            bcm2835_property_put32(s, value, bufsize, 0, fbconfig.alpha);
+-            resplen = 4;
+-            break;
+-        case RPI_FWREQ_FRAMEBUFFER_GET_PITCH:
+-            bcm2835_property_put32(s, value, bufsize, 0,
+-                                   bcm2835_fb_get_pitch(&fbconfig));
+-            resplen = 4;
+-            break;
+-        case RPI_FWREQ_FRAMEBUFFER_TEST_VIRTUAL_OFFSET:
+-            resplen = 8;
+-            break;
+-        case RPI_FWREQ_FRAMEBUFFER_SET_VIRTUAL_OFFSET:
+-            fbconfig.xoffset = bcm2835_property_get32(s, value, bufsize, 0);
+-            fbconfig.yoffset = bcm2835_property_get32(s, value, bufsize, 4);
+-            bcm2835_fb_validate_config(&fbconfig);
+-            fbconfig_updated = true;
+-            /* fall through */
+-        case RPI_FWREQ_FRAMEBUFFER_GET_VIRTUAL_OFFSET:
+-            bcm2835_property_put32(s, value, bufsize, 0, fbconfig.xoffset);
+-            bcm2835_property_put32(s, value, bufsize, 4, fbconfig.yoffset);
+-            resplen = 8;
+-            break;
+-        case RPI_FWREQ_FRAMEBUFFER_GET_OVERSCAN:
+-        case RPI_FWREQ_FRAMEBUFFER_TEST_OVERSCAN:
+-        case RPI_FWREQ_FRAMEBUFFER_SET_OVERSCAN:
+-            for (unsigned i = 0; i < 4; i++) {
+-                bcm2835_property_put32(s, value, bufsize, 4 * i, 0);
+-            }
+-            resplen = 16;
+-            break;
+-        case RPI_FWREQ_FRAMEBUFFER_SET_PALETTE:
+-        {
+-            uint32_t offset = bcm2835_property_get32(s, value, bufsize, 0);
+-            uint32_t length = bcm2835_property_get32(s, value, bufsize, 4);
+-            int resp;
+-
+-            /* Invalid request: out of range, or entries not in the buffer */
+-            if (offset > 255 || length < 1 || length > 256 ||
+-                8 + 4 * length > bufsize) {
+-                resp = 1;
+-            } else {
+-                for (uint32_t e = 0; e < length; e++) {
+-                    uint32_t color = bcm2835_property_get32(s, value, bufsize,
+-                                                            8 + 4 * e);
+-                    stl_le_phys(&s->dma_as,
+-                                s->fbdev->vcram_base + ((offset + e) << 2), color);
+-                }
+-                resp = 0;
+-            }
+-            bcm2835_property_put32(s, value, bufsize, 0, resp);
+-            resplen = 4;
+-            break;
+-        }
+-        case RPI_FWREQ_FRAMEBUFFER_GET_NUM_DISPLAYS:
+-            resplen = bcm2835_property_answer32(s, value, bufsize, 1);
+-            break;
++    case RPI_FWREQ_GET_CUSTOMER_OTP:
++    {
++        uint32_t start_num = bcm2835_property_get32(s, value, bufsize, 0);
++        uint32_t number = bcm2835_property_get32(s, value, bufsize, 4);
+ 
+-        case RPI_FWREQ_GET_DMA_CHANNELS:
+-            resplen = bcm2835_property_answer32(s, value, bufsize,
+-                                               s->dma_channel_mask);
+-            break;
++        resplen = 8 + 4 * number;
+ 
+-        case RPI_FWREQ_GET_COMMAND_LINE:
+-            /*
+-             * We follow the firmware behaviour: no NUL terminator is
+-             * written to the buffer, and if the buffer is too short
+-             * we report the required length in the response header
+-             * and copy nothing to the buffer.
+-             */
+-            resplen = strlen(s->command_line);
+-            if (bufsize >= resplen)
+-                address_space_write(&s->dma_as, value + 12,
+-                                    MEMTXATTRS_UNSPECIFIED, s->command_line,
+-                                    resplen);
+-            break;
++        for (uint32_t n = start_num; n < start_num + number &&
++             n < BCM2835_OTP_CUSTOMER_OTP_LEN; n++) {
++            uint32_t otp_row = bcm2835_otp_get_row(s->otp,
++                                          BCM2835_OTP_CUSTOMER_OTP + n);
++            bcm2835_property_put32(s, value, bufsize,
++                                   8 + 4 * (n - start_num), otp_row);
++        }
++        break;
++    }
++    case RPI_FWREQ_SET_CUSTOMER_OTP:
++    {
++        uint32_t start_num = bcm2835_property_get32(s, value, bufsize, 0);
++        uint32_t number = bcm2835_property_get32(s, value, bufsize, 4);
+ 
+-        case RPI_FWREQ_GET_THROTTLED:
+-            resplen = bcm2835_property_answer32(s, value, bufsize, 0);
+-            break;
++        resplen = 4;
+ 
+-        case RPI_FWREQ_NOTIFY_REBOOT:
+-            /*
+-             * Sent before a reset or a power-off, for the firmware to stop
+-             * what it drives; the model has nothing to stop
+-             */
+-            resplen = 0;
++        /* Magic numbers to permanently lock customer OTP */
++        if (start_num == BCM2835_OTP_LOCK_NUM1 &&
++            number == BCM2835_OTP_LOCK_NUM2) {
++            bcm2835_otp_set_row(s->otp,
++                                BCM2835_OTP_ROW_32,
++                                BCM2835_OTP_ROW_32_LOCK);
+             break;
++        }
+ 
+-        case RPI_FWREQ_VCHIQ_INIT:
+-            bcm2835_property_put32(s, value, bufsize, 0, 0);
+-            resplen = VCHI_BUSADDR_SIZE;
++        /* If row 32 has the lock bit, don't allow further writes */
++        if (bcm2835_otp_get_row(s->otp, BCM2835_OTP_ROW_32) &
++                                BCM2835_OTP_ROW_32_LOCK) {
+             break;
++        }
+ 
+-        /* Customer OTP */
++        /* Only the rows the request holds */
++        number = MIN(number, bufsize < 8 ? 0 : (bufsize - 8) / 4);
++        for (uint32_t n = start_num; n < start_num + number &&
++             n < BCM2835_OTP_CUSTOMER_OTP_LEN; n++) {
++            uint32_t offset = 8 + 4 * (n - start_num);
++            uint32_t otp_row = bcm2835_property_get32(s, value, bufsize,
++                                                      offset);
++            bcm2835_otp_set_row(s->otp,
++                                BCM2835_OTP_CUSTOMER_OTP + n, otp_row);
++        }
++        break;
++    }
+ 
+-        case RPI_FWREQ_GET_CUSTOMER_OTP:
+-        {
+-            uint32_t start_num = bcm2835_property_get32(s, value, bufsize, 0);
+-            uint32_t number = bcm2835_property_get32(s, value, bufsize, 4);
++    /* Device-specific private key */
++    case RPI_FWREQ_GET_PRIVATE_KEY:
++    {
++        uint32_t start_num = bcm2835_property_get32(s, value, bufsize, 0);
++        uint32_t number = bcm2835_property_get32(s, value, bufsize, 4);
+ 
+-            resplen = 8 + 4 * number;
++        resplen = 8 + 4 * number;
+ 
+-            for (uint32_t n = start_num; n < start_num + number &&
+-                 n < BCM2835_OTP_CUSTOMER_OTP_LEN; n++) {
+-                uint32_t otp_row = bcm2835_otp_get_row(s->otp,
+-                                              BCM2835_OTP_CUSTOMER_OTP + n);
+-                bcm2835_property_put32(s, value, bufsize,
+-                                       8 + 4 * (n - start_num), otp_row);
+-            }
+-            break;
++        for (uint32_t n = start_num; n < start_num + number &&
++             n < BCM2835_OTP_PRIVATE_KEY_LEN; n++) {
++            uint32_t otp_row = bcm2835_otp_get_row(s->otp,
++                                          BCM2835_OTP_PRIVATE_KEY + n);
++            bcm2835_property_put32(s, value, bufsize,
++                                   8 + 4 * (n - start_num), otp_row);
+         }
+-        case RPI_FWREQ_SET_CUSTOMER_OTP:
+-        {
+-            uint32_t start_num = bcm2835_property_get32(s, value, bufsize, 0);
+-            uint32_t number = bcm2835_property_get32(s, value, bufsize, 4);
+-
+-            resplen = 4;
+-
+-            /* Magic numbers to permanently lock customer OTP */
+-            if (start_num == BCM2835_OTP_LOCK_NUM1 &&
+-                number == BCM2835_OTP_LOCK_NUM2) {
+-                bcm2835_otp_set_row(s->otp,
+-                                    BCM2835_OTP_ROW_32,
+-                                    BCM2835_OTP_ROW_32_LOCK);
+-                break;
+-            }
++        break;
++    }
++    case RPI_FWREQ_SET_PRIVATE_KEY:
++    {
++        uint32_t start_num = bcm2835_property_get32(s, value, bufsize, 0);
++        uint32_t number = bcm2835_property_get32(s, value, bufsize, 4);
+ 
+-            /* If row 32 has the lock bit, don't allow further writes */
+-            if (bcm2835_otp_get_row(s->otp, BCM2835_OTP_ROW_32) &
+-                                    BCM2835_OTP_ROW_32_LOCK) {
+-                break;
+-            }
++        resplen = 4;
+ 
+-            /* Only the rows the request holds */
+-            number = MIN(number, bufsize < 8 ? 0 : (bufsize - 8) / 4);
+-            for (uint32_t n = start_num; n < start_num + number &&
+-                 n < BCM2835_OTP_CUSTOMER_OTP_LEN; n++) {
+-                uint32_t offset = 8 + 4 * (n - start_num);
+-                uint32_t otp_row = bcm2835_property_get32(s, value, bufsize,
+-                                                          offset);
+-                bcm2835_otp_set_row(s->otp,
+-                                    BCM2835_OTP_CUSTOMER_OTP + n, otp_row);
+-            }
++        /* If row 32 has the lock bit, don't allow further writes */
++        if (bcm2835_otp_get_row(s->otp, BCM2835_OTP_ROW_32) &
++                                BCM2835_OTP_ROW_32_LOCK) {
+             break;
+         }
+ 
+-        /* Device-specific private key */
+-        case RPI_FWREQ_GET_PRIVATE_KEY:
+-        {
+-            uint32_t start_num = bcm2835_property_get32(s, value, bufsize, 0);
+-            uint32_t number = bcm2835_property_get32(s, value, bufsize, 4);
++        /* Only the rows the request holds */
++        number = MIN(number, bufsize < 8 ? 0 : (bufsize - 8) / 4);
++        for (uint32_t n = start_num; n < start_num + number &&
++             n < BCM2835_OTP_PRIVATE_KEY_LEN; n++) {
++            uint32_t offset = 8 + 4 * (n - start_num);
++            uint32_t otp_row = bcm2835_property_get32(s, value, bufsize,
++                                                      offset);
++            bcm2835_otp_set_row(s->otp,
++                                BCM2835_OTP_PRIVATE_KEY + n, otp_row);
++        }
++        break;
++    }
++    default:
++        qemu_log_mask(LOG_UNIMP,
++                      "bcm2835_property: unhandled tag 0x%08x\n", tag);
++        break;
++    }
+ 
+-            resplen = 8 + 4 * number;
++    return resplen;
++}
+ 
+-            for (uint32_t n = start_num; n < start_num + number &&
+-                 n < BCM2835_OTP_PRIVATE_KEY_LEN; n++) {
+-                uint32_t otp_row = bcm2835_otp_get_row(s->otp,
+-                                              BCM2835_OTP_PRIVATE_KEY + n);
+-                bcm2835_property_put32(s, value, bufsize,
+-                                       8 + 4 * (n - start_num), otp_row);
+-            }
+-            break;
+-        }
+-        case RPI_FWREQ_SET_PRIVATE_KEY:
+-        {
+-            uint32_t start_num = bcm2835_property_get32(s, value, bufsize, 0);
+-            uint32_t number = bcm2835_property_get32(s, value, bufsize, 4);
++static void bcm2835_property_mbox_push(BCM2835PropertyState *s, uint32_t value)
++{
++    uint32_t tot_len;
++    uint32_t bufsize = 0;
++    hwaddr end, pos;
++    bool malformed = false;
++
++    /*
++     * Copy the current state of the framebuffer config; we will update
++     * this copy as we process tags and then ask the framebuffer to use
++     * it at the end.
++     */
++    BCM2835FBConfig fbconfig = s->fbdev->config;
++    bool fbconfig_updated = false;
+ 
+-            resplen = 4;
++    value &= ~0xf;
+ 
+-            /* If row 32 has the lock bit, don't allow further writes */
+-            if (bcm2835_otp_get_row(s->otp, BCM2835_OTP_ROW_32) &
+-                                    BCM2835_OTP_ROW_32_LOCK) {
+-                break;
+-            }
++    s->addr = value;
+ 
+-            /* Only the rows the request holds */
+-            number = MIN(number, bufsize < 8 ? 0 : (bufsize - 8) / 4);
+-            for (uint32_t n = start_num; n < start_num + number &&
+-                 n < BCM2835_OTP_PRIVATE_KEY_LEN; n++) {
+-                uint32_t offset = 8 + 4 * (n - start_num);
+-                uint32_t otp_row = bcm2835_property_get32(s, value, bufsize,
+-                                                          offset);
+-                bcm2835_otp_set_row(s->otp,
+-                                    BCM2835_OTP_PRIVATE_KEY + n, otp_row);
+-            }
++    tot_len = ldl_le_phys(&s->dma_as, value);
++    end = (hwaddr)s->addr + tot_len;
++
++    /* @(addr + 4) : Buffer response code */
++    for (pos = (hwaddr)s->addr + 8; ; pos += 12 + bufsize) {
++        uint32_t tag;
++        /* @(pos + 8) : Request/response indicator */
++        size_t resplen;
++
++        /*
++         * Only the buffer the header sizes was checked to be readable, so
++         * every tag must lie within it: the end tag's word, and for any
++         * other tag its 12-byte header and the value buffer it declares.
++         * A request cut short is answered with the error code instead.
++         */
++        if (pos + 4 > end) {
++            malformed = true;
+             break;
+         }
+-        default:
+-            qemu_log_mask(LOG_UNIMP,
+-                          "bcm2835_property: unhandled tag 0x%08x\n", tag);
++        tag = ldl_le_phys(&s->dma_as, pos);
++        if (tag == RPI_FWREQ_PROPERTY_END) {
++            break;
++        }
++        if (pos + 12 > end) {
++            malformed = true;
++            break;
++        }
++        bufsize = ldl_le_phys(&s->dma_as, pos + 4);
++        if (pos + 12 + bufsize > end) {
++            malformed = true;
+             break;
+         }
++        resplen = bcm2835_property_answer_tag(s, tag, pos, bufsize,
++                                              &fbconfig, &fbconfig_updated);
+ 
+         trace_bcm2835_mbox_property(tag, bufsize, resplen);
+-        stl_le_phys(&s->dma_as, value + 8,
++        stl_le_phys(&s->dma_as, pos + 8,
+                     RPI_FIRMWARE_STATUS_SUCCESS | resplen);
+     }
+     if (malformed) {

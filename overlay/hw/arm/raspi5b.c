@@ -22,6 +22,7 @@
 #include "qemu/guest-random.h"
 #include "qemu/host-utils.h"
 #include "qemu/range.h"
+#include "qemu/timer.h"
 #include "qemu/units.h"
 #include "qapi/error.h"
 #include "qapi/visitor.h"
@@ -29,13 +30,20 @@
 #include "hw/arm/boot.h"
 #include "hw/arm/machines-qom.h"
 #include "hw/core/boards.h"
+#include "hw/core/irq.h"
 #include "hw/core/loader.h"
 #include "hw/core/qdev-properties.h"
 #include "hw/core/registerfields.h"
+#include "hw/display/i2c-ddc.h"
+#include "hw/misc/led.h"
+#include "hw/sd/sd.h"
 #include "migration/vmstate.h"
+#include "standard-headers/linux/input.h"
 #include "system/address-spaces.h"
+#include "system/blockdev.h"
 #include "system/device_tree.h"
 #include "system/reset.h"
+#include "system/runstate.h"
 #include "elf.h"
 #include <libfdt.h>
 
@@ -63,10 +71,63 @@ struct Raspi5bMachineState {
      * keeps in a register a reset leaves alone
      */
     uint8_t boot_count;
+    /*
+     * The rest of what a reset leaves for the boot it starts, when given
+     * for the first boot (see raspi5b_carry_reset()): the reset status
+     * and the firmware's reboot flags
+     */
+    uint32_t reset_status;
+    bool reset_status_set;
+    uint32_t reboot_flags;
+    /* The partition the boot's files come from, when given */
+    uint32_t boot_partition;
+    bool boot_partition_set;
+
+    /*
+     * The power button, which system_powerdown presses for a moment: its
+     * line, and the timer that releases it
+     */
+    Notifier powerdown;
+    qemu_irq pwr_button;
+    QEMUTimer *pwr_button_release;
 };
 
 /* An obviously made-up serial number, overridden with "serial=" */
 #define RASPI5B_DEFAULT_SERIAL  0x0123456789abcdefULL
+
+/*
+ * The board's use of the SoC's GPIO lines, from the firmware's device
+ * tree. The power button pulls GIO 20 (PWR_GPIO) low while pressed; AON
+ * GPIO 9 lights the green activity LED while driven low. Both lines are
+ * pulled up. So is AON GPIO 5 (SD_CDET_N), which the SD card slot's
+ * switch pulls low while a card is in; AON GPIO 4 switches the card's
+ * supply on, and AON GPIO 3 its signalling from 3.3 V to 1.8 V.
+ */
+#define RASPI5B_GIO_PWR_BUTTON          20
+#define RASPI5B_AON_GPIO_SD_IO_1V8      3
+#define RASPI5B_AON_GPIO_SD_VCC         4
+#define RASPI5B_AON_GPIO_SD_CDET_N      5
+#define RASPI5B_AON_GPIO_ACT_LED        9
+
+/*
+ * system_powerdown presses the power button for a moment. Linux reports
+ * KEY_POWER once the line has stayed low for the debounce interval, and
+ * systemd-logind then powers off; the press outlasts the interval with
+ * room to spare for a busy guest.
+ */
+#define RASPI5B_PWR_BUTTON_DEBOUNCE_MS  50
+#define RASPI5B_PWR_BUTTON_PRESS_MS     200
+
+/* A monitor's EDID answers at this address on its HDMI port's DDC bus */
+#define RASPI5B_DDC_EDID_ADDR           0x50
+
+/* include/dt-bindings/gpio/gpio.h */
+#define RASPI5B_FDT_GPIO_ACTIVE_HIGH    0
+#define RASPI5B_FDT_GPIO_ACTIVE_LOW     1
+
+/* The SD card's supply and the signalling voltages, in microvolts */
+#define RASPI5B_FDT_SD_3V3              3300000
+#define RASPI5B_FDT_SD_1V8              1800000
 
 /*
  * With -bios the machine loads what the firmware runs at EL3 (config.txt's
@@ -171,15 +232,14 @@ static uint32_t raspi5b_board_rev(uint64_t ram_size)
 
 /*
  * Device tree nodes for hardware that is not modelled yet. They are marked
- * disabled rather than deleted so that phandle references stay valid. This
- * list should only ever shrink; see docs/PLAN.md.
+ * disabled rather than deleted so that phandle references stay valid. The
+ * list shrinks as models land; a device behind a newly modelled one, such
+ * as the Bluetooth radio on UARTA, joins it while it stays unmodelled, as
+ * does a device whose driver needs one that is not. See docs/PLAN.md.
  */
 static const char *const raspi5b_unmodelled_compatibles[] = {
     "brcm,bcm2712-pcie",
     "brcm,bcm2712-mip",
-    "brcm,bcm2712-sdhci",
-    "brcm,bcm7271-uart",
-    "brcm,brcmstb-i2c",
     "brcm,2712-v3d",
     "brcm,bcm2712-vc6",
     "brcm,bcm2712-hvs",
@@ -190,30 +250,31 @@ static const char *const raspi5b_unmodelled_compatibles[] = {
     "brcm,bcm2712-mop",
     "brcm,bcm2712-moplet",
     "brcm,bcm2712-pispbe",
-    "brcm,bcm2712c0-pinctrl",
-    "brcm,bcm2712c0-aon-pinctrl",
-    "brcm,brcmstb-gpio",
-    "brcm,l2-intc",             /* also matches brcm,bcm2711-l2-intc nodes */
-    "brcm,bcm7271-l2-intc",
     "brcm,brcmstb-reset",
     "brcm,bcm7216-pcie-sata-rescal",
     /* Nodes only present in the Raspberry Pi downstream device tree */
     "brcm,bcm2712-iommu",
     "brcm,bcm2712-iommuc",
-    "brcm,bcm2711-avs-monitor",
     "brcm,bcm2712-dma",
     "brcm,bcm2712-hevc-dec",
     "raspberrypi,pispbe",
     "brcm,syscon-piarbctl",
     "brcm,brcm2711-dvp",
     "brcm,bcm2835-spi",
-    "raspberrypi,gpiomem",
     /* Clients of the VideoCore firmware (mailbox) or of RP1's */
-    "brcm,bcm2708-fb",
     "raspberrypi,rpi-otp",
-    "raspberrypi,bcm2835-power",
-    "raspberrypi,rpi-rtc",
     "raspberrypi,rp1-firmware",
+    /*
+     * The firmware's framebuffer, whose Linux driver (bcm2708_fb) takes a
+     * channel of the DMA controller above
+     */
+    "brcm,bcm2708-fb",
+    /*
+     * Behind modelled devices: the Bluetooth radio on UARTA, the Wi-Fi
+     * radio on SDIO2
+     */
+    "brcm,bcm43438-bt",
+    "brcm,bcm4329-fmac",
 };
 
 /*
@@ -281,6 +342,172 @@ static void raspi5b_fdt_memory(void *fdt, uint64_t ram_size)
     }
 }
 
+/* The GPIO lines' names on the board, as the firmware's tree has them */
+static const char raspi5b_gio_line_names[] =
+    "-\0" "2712_BOOT_CS_N\0" "2712_BOOT_MISO\0" "2712_BOOT_MOSI\0"
+    "2712_BOOT_SCLK\0" "-\0" "-\0" "-\0" "-\0" "-\0" "-\0" "-\0" "-\0" "-\0"
+    "PCIE_SDA\0" "PCIE_SCL\0" "-\0" "-\0" "-\0" "-\0" "PWR_GPIO\0"
+    "2712_G21_FS\0" "-\0" "-\0" "BT_RTS\0" "BT_CTS\0" "BT_TXD\0" "BT_RXD\0"
+    "WL_ON\0" "BT_ON\0" "WIFI_SDIO_CLK\0" "WIFI_SDIO_CMD\0" "WIFI_SDIO_D0\0"
+    "WIFI_SDIO_D1\0" "WIFI_SDIO_D2\0" "WIFI_SDIO_D3";
+
+static const char raspi5b_gio_aon_line_names[] =
+    "RP1_SDA\0" "RP1_SCL\0" "RP1_RUN\0" "SD_IOVDD_SEL\0" "SD_PWR_ON\0"
+    "SD_CDET_N\0" "SD_FLG_N\0" "-\0" "2712_WAKE\0" "2712_STAT_LED\0" "-\0"
+    "-\0" "PMIC_INT\0" "UART_TX_FS\0" "UART_RX_FS\0" "-\0" "-\0" "\0" "\0"
+    "\0" "\0" "\0" "\0" "\0" "\0" "\0" "\0" "\0" "\0" "\0" "\0" "\0"
+    "HDMI0_SCL\0" "HDMI0_SDA\0" "HDMI1_SCL\0" "HDMI1_SDA\0" "PMIC_SCL\0"
+    "PMIC_SDA";
+
+/*
+ * The board's GPIO lines: the second bank of GIO has only the 4 lines the
+ * board uses, and the lines have the names the firmware's tree gives them.
+ * The power button, with the state of its pin, and the activity LED, as
+ * the firmware's tree has them but under node names their bindings
+ * accept. The power LED hangs off RP1, which is not modelled.
+ */
+static void raspi5b_fdt_gpio_users(void *fdt)
+{
+    g_autofree char *gio = bcm2712_fdt_node_path(fdt, BCM2712_GIO);
+    g_autofree char *gio_aon = bcm2712_fdt_node_path(fdt, BCM2712_GIO_AON);
+    g_autofree char *pinctrl = bcm2712_fdt_node_path(fdt, BCM2712_PINCTRL);
+    g_autofree char *button_pin = g_strdup_printf(
+        "%s/pwr-button-default-state", pinctrl);
+    g_autofree char *button_gpio = g_strdup_printf(
+        "gpio%d", RASPI5B_GIO_PWR_BUTTON);
+    uint32_t button_pin_phandle = qemu_fdt_alloc_phandle(fdt);
+    uint32_t gio_widths[] = { cpu_to_be32(32), cpu_to_be32(4) };
+    const char *button = "/gpio-keys/power-button";
+    const char *led = "/leds/led-act";
+
+    qemu_fdt_setprop(fdt, gio, "brcm,gpio-bank-widths", gio_widths,
+                     sizeof(gio_widths));
+    qemu_fdt_setprop(fdt, gio, "gpio-line-names", raspi5b_gio_line_names,
+                     sizeof(raspi5b_gio_line_names));
+    qemu_fdt_setprop(fdt, gio_aon, "gpio-line-names",
+                     raspi5b_gio_aon_line_names,
+                     sizeof(raspi5b_gio_aon_line_names));
+
+    qemu_fdt_add_subnode(fdt, button_pin);
+    qemu_fdt_setprop_string(fdt, button_pin, "function", "gpio");
+    qemu_fdt_setprop_string(fdt, button_pin, "pins", button_gpio);
+    qemu_fdt_setprop(fdt, button_pin, "bias-pull-up", NULL, 0);
+    qemu_fdt_setprop_cell(fdt, button_pin, "phandle", button_pin_phandle);
+
+    qemu_fdt_add_subnode(fdt, "/gpio-keys");
+    qemu_fdt_setprop_string(fdt, "/gpio-keys", "compatible", "gpio-keys");
+    qemu_fdt_setprop_string(fdt, "/gpio-keys", "pinctrl-names", "default");
+    qemu_fdt_setprop_cell(fdt, "/gpio-keys", "pinctrl-0", button_pin_phandle);
+    qemu_fdt_add_subnode(fdt, button);
+    qemu_fdt_setprop_string(fdt, button, "label", "pwr_button");
+    qemu_fdt_setprop_cell(fdt, button, "linux,code", KEY_POWER);
+    qemu_fdt_setprop_cells(fdt, button, "gpios",
+                           qemu_fdt_get_phandle(fdt, gio),
+                           RASPI5B_GIO_PWR_BUTTON,
+                           RASPI5B_FDT_GPIO_ACTIVE_LOW);
+    qemu_fdt_setprop_cell(fdt, button, "debounce-interval",
+                          RASPI5B_PWR_BUTTON_DEBOUNCE_MS);
+
+    qemu_fdt_add_subnode(fdt, "/leds");
+    qemu_fdt_setprop_string(fdt, "/leds", "compatible", "gpio-leds");
+    qemu_fdt_add_subnode(fdt, led);
+    qemu_fdt_setprop_string(fdt, led, "label", "ACT");
+    qemu_fdt_setprop_cells(fdt, led, "gpios",
+                           qemu_fdt_get_phandle(fdt, gio_aon),
+                           RASPI5B_AON_GPIO_ACT_LED,
+                           RASPI5B_FDT_GPIO_ACTIVE_LOW);
+    qemu_fdt_setprop_string(fdt, led, "default-state", "off");
+    qemu_fdt_setprop_string(fdt, led, "linux,default-trigger", "mmc0");
+}
+
+/*
+ * The SD card slot on SDIO1, as the firmware's tree has it: the pull-ups
+ * of the card's lines and its card detect switch, the regulators of its
+ * supply and signalling voltage, and the UHS-I modes, which need 1.8 V
+ * signalling that QEMU's cards do not offer.
+ */
+static void raspi5b_fdt_sd_slot(void *fdt)
+{
+    static const char sd_pins[] =
+        "emmc_cmd\0emmc_dat0\0emmc_dat1\0emmc_dat2\0emmc_dat3";
+    g_autofree char *gio_aon = bcm2712_fdt_node_path(fdt, BCM2712_GIO_AON);
+    g_autofree char *pinctrl = bcm2712_fdt_node_path(fdt, BCM2712_PINCTRL);
+    g_autofree char *pinctrl_aon = bcm2712_fdt_node_path(fdt,
+                                                         BCM2712_PINCTRL_AON);
+    g_autofree char *sdio1 = bcm2712_fdt_node_path(fdt, BCM2712_SDIO1);
+    g_autofree char *sd_state = g_strdup_printf(
+        "%s/emmc-sd-default-state", pinctrl);
+    g_autofree char *cd_state = g_strdup_printf(
+        "%s/emmc-aon-cd-default-state", pinctrl_aon);
+    g_autofree char *cd_pin = g_strdup_printf(
+        "aon_gpio%d", RASPI5B_AON_GPIO_SD_CDET_N);
+    uint32_t gio_aon_phandle = qemu_fdt_get_phandle(fdt, gio_aon);
+    uint32_t sd_state_phandle = qemu_fdt_alloc_phandle(fdt);
+    uint32_t cd_state_phandle = qemu_fdt_alloc_phandle(fdt);
+    uint32_t io_reg_phandle = qemu_fdt_alloc_phandle(fdt);
+    uint32_t vcc_reg_phandle = qemu_fdt_alloc_phandle(fdt);
+    const char *io_reg = "/sd-io-1v8-reg";
+    const char *vcc_reg = "/sd-vcc-reg";
+
+    qemu_fdt_add_subnode(fdt, sd_state);
+    qemu_fdt_setprop(fdt, sd_state, "pins", sd_pins, sizeof(sd_pins));
+    qemu_fdt_setprop(fdt, sd_state, "bias-pull-up", NULL, 0);
+    qemu_fdt_setprop_cell(fdt, sd_state, "phandle", sd_state_phandle);
+
+    qemu_fdt_add_subnode(fdt, cd_state);
+    qemu_fdt_setprop_string(fdt, cd_state, "function", "sd_card_g");
+    qemu_fdt_setprop_string(fdt, cd_state, "pins", cd_pin);
+    qemu_fdt_setprop(fdt, cd_state, "bias-pull-up", NULL, 0);
+    qemu_fdt_setprop_cell(fdt, cd_state, "phandle", cd_state_phandle);
+
+    /* In reverse, since libfdt adds each subnode first */
+    qemu_fdt_add_subnode(fdt, vcc_reg);
+    qemu_fdt_setprop_string(fdt, vcc_reg, "compatible", "regulator-fixed");
+    qemu_fdt_setprop_string(fdt, vcc_reg, "regulator-name", "vcc-sd");
+    qemu_fdt_setprop_cell(fdt, vcc_reg, "regulator-min-microvolt",
+                          RASPI5B_FDT_SD_3V3);
+    qemu_fdt_setprop_cell(fdt, vcc_reg, "regulator-max-microvolt",
+                          RASPI5B_FDT_SD_3V3);
+    qemu_fdt_setprop(fdt, vcc_reg, "regulator-boot-on", NULL, 0);
+    qemu_fdt_setprop(fdt, vcc_reg, "enable-active-high", NULL, 0);
+    qemu_fdt_setprop_cells(fdt, vcc_reg, "gpios", gio_aon_phandle,
+                           RASPI5B_AON_GPIO_SD_VCC,
+                           RASPI5B_FDT_GPIO_ACTIVE_HIGH);
+    qemu_fdt_setprop_cell(fdt, vcc_reg, "phandle", vcc_reg_phandle);
+
+    qemu_fdt_add_subnode(fdt, io_reg);
+    qemu_fdt_setprop_string(fdt, io_reg, "compatible", "regulator-gpio");
+    qemu_fdt_setprop_string(fdt, io_reg, "regulator-name", "vdd-sd-io");
+    qemu_fdt_setprop_cell(fdt, io_reg, "regulator-min-microvolt",
+                          RASPI5B_FDT_SD_1V8);
+    qemu_fdt_setprop_cell(fdt, io_reg, "regulator-max-microvolt",
+                          RASPI5B_FDT_SD_3V3);
+    qemu_fdt_setprop(fdt, io_reg, "regulator-boot-on", NULL, 0);
+    qemu_fdt_setprop(fdt, io_reg, "regulator-always-on", NULL, 0);
+    qemu_fdt_setprop_cell(fdt, io_reg, "regulator-settling-time-us", 5000);
+    qemu_fdt_setprop_cells(fdt, io_reg, "gpios", gio_aon_phandle,
+                           RASPI5B_AON_GPIO_SD_IO_1V8,
+                           RASPI5B_FDT_GPIO_ACTIVE_HIGH);
+    qemu_fdt_setprop_cells(fdt, io_reg, "states", RASPI5B_FDT_SD_1V8, 1,
+                           RASPI5B_FDT_SD_3V3, 0);
+    qemu_fdt_setprop_cell(fdt, io_reg, "phandle", io_reg_phandle);
+
+    qemu_fdt_setprop_cells(fdt, sdio1, "pinctrl-0", sd_state_phandle,
+                           cd_state_phandle);
+    qemu_fdt_setprop_string(fdt, sdio1, "pinctrl-names", "default");
+    qemu_fdt_setprop_cell(fdt, sdio1, "vqmmc-supply", io_reg_phandle);
+    qemu_fdt_setprop_cell(fdt, sdio1, "vmmc-supply", vcc_reg_phandle);
+    qemu_fdt_setprop_cell(fdt, sdio1, "bus-width", 4);
+    qemu_fdt_setprop(fdt, sdio1, "sd-uhs-sdr50", NULL, 0);
+    qemu_fdt_setprop(fdt, sdio1, "sd-uhs-ddr50", NULL, 0);
+    qemu_fdt_setprop(fdt, sdio1, "sd-uhs-sdr104", NULL, 0);
+    qemu_fdt_setprop_cells(fdt, sdio1, "cd-gpios", gio_aon_phandle,
+                           RASPI5B_AON_GPIO_SD_CDET_N,
+                           RASPI5B_FDT_GPIO_ACTIVE_LOW);
+
+    qemu_fdt_setprop_string(fdt, "/aliases", "mmc0", sdio1);
+}
+
 /*
  * Room left in the built-in tree for what arm_load_dtb() and
  * raspi5b_modify_dtb() add: memory, PSCI, /chosen with the command line,
@@ -290,9 +517,9 @@ static void raspi5b_fdt_memory(void *fdt, uint64_t ram_size)
 
 /*
  * The device tree given without -dtb: the board's own nodes, the SoC's,
- * and the console on UART10 as on the firmware's tree. arm_load_dtb()
- * adds the memory, PSCI and /chosen properties, then the same fix-ups as
- * for a -dtb blob apply.
+ * the board's users of GPIO lines, and the console on UART10 as on the
+ * firmware's tree. arm_load_dtb() adds the memory, PSCI and /chosen
+ * properties, then the same fix-ups as for a -dtb blob apply.
  */
 static void *raspi5b_get_dtb(const struct arm_boot_info *info, int *size)
 {
@@ -309,6 +536,8 @@ static void *raspi5b_get_dtb(const struct arm_boot_info *info, int *size)
     qemu_fdt_setprop_cell(fdt, "/", "#size-cells", 2);
 
     bcm2712_fdt_populate(&s->soc, fdt);
+    raspi5b_fdt_gpio_users(fdt);
+    raspi5b_fdt_sd_slot(fdt);
 
     qemu_fdt_add_subnode(fdt, "/chosen");
     qemu_fdt_setprop_string(fdt, "/chosen", "stdout-path",
@@ -358,15 +587,17 @@ static uint32_t raspi5b_rsts_partition(uint32_t rsts)
 /*
  * What the firmware reports about the boot it is making, which it writes
  * afresh each time: the reset status it found, the partition it boots
- * from, which for files QEMU supplies is the one the OS asked for (0 on
- * power-on), and the boot's number since power-on
+ * from, and the boot's number since power-on. The files QEMU supplies
+ * come from the partition boot-partition names, if it names one, and
+ * otherwise stand for the one the OS asked for (0 at power-on).
  */
 static void raspi5b_boot_values(const Raspi5bMachineState *s,
                                 uint32_t *rsts, uint32_t *partition,
                                 uint8_t *count)
 {
     *rsts = s->soc.pm.rsts;
-    *partition = raspi5b_rsts_partition(*rsts);
+    *partition = s->boot_partition_set ? s->boot_partition
+                                       : raspi5b_rsts_partition(*rsts);
     *count = s->boot_count + 1;
 }
 
@@ -396,11 +627,14 @@ static void raspi5b_fdt_identity(const Raspi5bMachineState *s, void *fdt)
  */
 static char *raspi5b_dtb_bootargs(const char *filename)
 {
+    g_autofree char *path = NULL;
     g_autofree void *fdt = NULL;
     const char *args;
     int size, len;
 
-    fdt = filename ? load_device_tree(filename, &size) : NULL;
+    /* The file as arm_load_dtb() found it, in the data directories too */
+    path = filename ? qemu_find_file(QEMU_FILE_TYPE_BIOS, filename) : NULL;
+    fdt = path ? load_device_tree(path, &size) : NULL;
     if (!fdt) {
         return NULL;
     }
@@ -425,7 +659,7 @@ static void raspi5b_fdt_bootargs(const Raspi5bMachineState *s, void *fdt,
 {
     g_autofree char *base = raspi5b_dtb_bootargs(dtb_filename);
     const char *append = MACHINE(s)->kernel_cmdline;
-    const uint8_t *mac = s->soc.property.macaddr.a;
+    const uint8_t *mac = s->soc.property.parent_obj.macaddr.a;
     g_autoptr(GString) args = g_string_new(base);
 
     if (args->len) {
@@ -442,10 +676,20 @@ static void raspi5b_fdt_bootargs(const Raspi5bMachineState *s, void *fdt,
     qemu_fdt_setprop_string(fdt, "/chosen", "bootargs", args->str);
 }
 
+/* A string property of /chosen, unless the tree has one of that name */
+static void raspi5b_fdt_chosen_default(void *fdt, const char *name,
+                                       const char *value)
+{
+    if (!fdt_getprop(fdt, fdt_path_offset(fdt, "/chosen"), name, NULL)) {
+        qemu_fdt_setprop_string(fdt, "/chosen", name, value);
+    }
+}
+
 /*
  * /chosen as the firmware fills it in, beyond bootargs: entropy for the
  * kernel, the boot the bootloader made, the power supply, and the
- * config.txt prefixes, at their defaults
+ * config.txt prefixes, at their defaults unless the tree has them (as a
+ * host that evaluated config.txt for the boot writes them)
  */
 static void raspi5b_fdt_chosen(const Raspi5bMachineState *s, void *fdt,
                                uint64_t ram_size)
@@ -466,7 +710,9 @@ static void raspi5b_fdt_chosen(const Raspi5bMachineState *s, void *fdt,
                           RASPI5B_BOOT_MODE_RPIBOOT);
     qemu_fdt_setprop_cell(fdt, "/chosen/bootloader", "partition", partition);
     qemu_fdt_setprop_cell(fdt, "/chosen/bootloader", "rsts", rsts);
-    qemu_fdt_setprop_cell(fdt, "/chosen/bootloader", "tryboot", 0);
+    /* The reboot flags a reset left, which raspi5b_bootloader() takes */
+    qemu_fdt_setprop_cell(fdt, "/chosen/bootloader", "tryboot",
+        !!(s->soc.property.reboot_flags & BCM2712_REBOOT_FLAG_TRYBOOT));
     /* No USB, network, tryboot, RAM disk, NVMe or secure boot */
     qemu_fdt_setprop_cell(fdt, "/chosen/bootloader", "capabilities", 0);
     qemu_fdt_setprop_cell(fdt, "/chosen/bootloader", "arg1", 0);
@@ -482,8 +728,8 @@ static void raspi5b_fdt_chosen(const Raspi5bMachineState *s, void *fdt,
                           0);
     qemu_fdt_setprop_cell(fdt, "/chosen/power", "power_reset", 0);
 
-    qemu_fdt_setprop_string(fdt, "/chosen", "os_prefix", "");
-    qemu_fdt_setprop_string(fdt, "/chosen", "overlay_prefix", "overlays/");
+    raspi5b_fdt_chosen_default(fdt, "os_prefix", "");
+    raspi5b_fdt_chosen_default(fdt, "overlay_prefix", "overlays/");
     qemu_fdt_setprop_cell(fdt, "/chosen", "rpi-sdram-size-gbit",
                           ram_size / (GiB / 8));
 }
@@ -529,10 +775,15 @@ static void raspi5b_fdt_blconfig(void *fdt)
     for (char **path = paths; *path; path++) {
         int parent = fdt_parent_offset(fdt, fdt_path_offset(fdt, *path));
 
-        qemu_fdt_setprop_sized_cells(fdt, *path, "reg",
-                                     fdt_address_cells(fdt, parent),
-                                     RASPI5B_BLCONFIG_ADDR,
-                                     fdt_size_cells(fdt, parent), size);
+        if (qemu_fdt_setprop_sized_cells(fdt, *path, "reg",
+                                         fdt_address_cells(fdt, parent),
+                                         RASPI5B_BLCONFIG_ADDR,
+                                         fdt_size_cells(fdt, parent),
+                                         size) < 0) {
+            /* A parent with cells of another size: the node stays as it is */
+            warn_report("raspi5b: cannot set %s's reg", *path);
+            continue;
+        }
         qemu_fdt_setprop_string(fdt, *path, "status", "okay");
     }
 }
@@ -546,8 +797,8 @@ static void raspi5b_fdt_mac(const Raspi5bMachineState *s, void *fdt)
         g_autofree char *node = g_strdup(path);
 
         qemu_fdt_setprop(fdt, node, "local-mac-address",
-                         s->soc.property.macaddr.a,
-                         sizeof(s->soc.property.macaddr.a));
+                         s->soc.property.parent_obj.macaddr.a,
+                         sizeof(s->soc.property.parent_obj.macaddr.a));
     }
 }
 
@@ -584,48 +835,96 @@ static void raspi5b_modify_dtb(const struct arm_boot_info *info, void *fdt)
 }
 
 /*
- * QEMU copies the same tree back into memory at every reset, where the
- * firmware writes a new one for each boot: bring the values that change
- * from boot to boot up to date first, including a new KASLR seed (QEMU
- * renews rng-seed itself). Registered before the ROMs' own reset, so the
- * boot the reset starts sees them.
+ * What the bootloader does for each boot. It counts the boot, with a
+ * device tree or without, and takes the reboot flags the last boot left
+ * in the firmware, which are for this boot only. QEMU copies the same
+ * tree back into memory at every reset, where the firmware writes a new
+ * one for each boot: bring the values that change from boot to boot up
+ * to date first, including a new KASLR seed (QEMU renews rng-seed
+ * itself). Registered before the ROMs' own reset, so the boot the reset
+ * starts sees them.
  */
-static void raspi5b_fdt_boot(void *opaque)
+static void raspi5b_bootloader(void *opaque)
 {
     Raspi5bMachineState *s = opaque;
     AddressSpace *as = arm_boot_address_space(&s->soc.cpu[0], &s->binfo);
-    void *fdt = rom_ptr_for_as(as, s->binfo.dtb_start,
-                               sizeof(struct fdt_header));
+    uint32_t reboot_flags = s->soc.property.reboot_flags;
+    void *fdt;
     int node;
     uint64_t kaslr_seed;
     uint32_t rsts, partition;
     uint8_t count;
 
+    raspi5b_boot_values(s, &rsts, &partition, &count);
+    s->boot_count = count;
+    s->soc.property.reboot_flags = 0;
+    /* arm_load_dtb() has left the tree here if it loaded one */
+    if (!MACHINE(s)->fdt) {
+        return;
+    }
+    fdt = rom_ptr_for_as(as, s->binfo.dtb_start, sizeof(struct fdt_header));
     if (!fdt || fdt_check_header(fdt) ||
         !rom_ptr_for_as(as, s->binfo.dtb_start, fdt_totalsize(fdt))) {
         return;
     }
-    raspi5b_boot_values(s, &rsts, &partition, &count);
-    s->boot_count = count;
     node = fdt_path_offset(fdt, "/chosen/bootloader");
     if (node >= 0) {
         fdt_setprop_inplace_u32(fdt, node, "rsts", rsts);
         fdt_setprop_inplace_u32(fdt, node, "partition", partition);
         fdt_setprop_inplace_u32(fdt, node, "count", count);
+        fdt_setprop_inplace_u32(fdt, node, "tryboot",
+                                !!(reboot_flags & BCM2712_REBOOT_FLAG_TRYBOOT));
     }
     qemu_guest_getrandom_nofail(&kaslr_seed, sizeof(kaslr_seed));
     fdt_setprop_inplace_u64(fdt, fdt_path_offset(fdt, "/chosen"),
                             "kaslr-seed", kaslr_seed);
 }
 
-/* The boot count outlives resets, so it moves with the machine */
+static bool raspi5b_pwr_button_needed(void *opaque)
+{
+    Raspi5bMachineState *s = opaque;
+
+    return timer_pending(s->pwr_button_release);
+}
+
+/* A press in progress: when the button comes back up */
+static const VMStateDescription vmstate_raspi5b_pwr_button = {
+    .name = "raspi5b/pwr-button",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = raspi5b_pwr_button_needed,
+    .fields = (const VMStateField[]) {
+        VMSTATE_TIMER_PTR(pwr_button_release, Raspi5bMachineState),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
+/* Without the subsection, no press is in progress */
+static int raspi5b_pre_load(void *opaque)
+{
+    Raspi5bMachineState *s = opaque;
+
+    timer_del(s->pwr_button_release);
+    return 0;
+}
+
+/*
+ * The boot count outlives resets, so it moves with the machine, and so
+ * does a press of the power button; the level of its line moves with
+ * GIO
+ */
 static const VMStateDescription vmstate_raspi5b = {
     .name = "raspi5b",
     .version_id = 1,
     .minimum_version_id = 1,
+    .pre_load = raspi5b_pre_load,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT8(boot_count, Raspi5bMachineState),
         VMSTATE_END_OF_LIST()
+    },
+    .subsections = (const VMStateDescription * const []) {
+        &vmstate_raspi5b_pwr_button,
+        NULL
     },
 };
 
@@ -838,6 +1137,95 @@ static void raspi5b_boot_armstub(Raspi5bMachineState *s,
     }
 }
 
+static void raspi5b_pwr_button_release(void *opaque)
+{
+    Raspi5bMachineState *s = opaque;
+
+    qemu_set_irq(s->pwr_button, 1);
+}
+
+/*
+ * A reset leaves a press in progress alone, as it would a finger on the
+ * button: the line stays low through it and comes back up on time
+ */
+static void raspi5b_powerdown_req(Notifier *n, void *opaque)
+{
+    Raspi5bMachineState *s = container_of(n, Raspi5bMachineState, powerdown);
+
+    qemu_set_irq(s->pwr_button, 0);
+    timer_mod(s->pwr_button_release,
+              qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
+              RASPI5B_PWR_BUTTON_PRESS_MS * SCALE_MS);
+}
+
+/*
+ * Connect the power button, the activity LED and the SD card slot's card
+ * detect switch to their GPIO lines, and hold the first two at the level
+ * of their pull-ups: the button released, the LED dark. SDIO1 drives the
+ * switch's line from its reset on, low while a card is in the slot.
+ */
+static void raspi5b_wire_gpio(Raspi5bMachineState *s)
+{
+    DeviceState *gio = DEVICE(&s->soc.gio);
+    DeviceState *gio_aon = DEVICE(&s->soc.gio_aon);
+    LEDState *act_led;
+
+    s->pwr_button = qdev_get_gpio_in(gio, RASPI5B_GIO_PWR_BUTTON);
+    qemu_set_irq(s->pwr_button, 1);
+    s->pwr_button_release = timer_new_ns(QEMU_CLOCK_VIRTUAL,
+                                         raspi5b_pwr_button_release, s);
+    s->powerdown.notify = raspi5b_powerdown_req;
+    qemu_register_powerdown_notifier(&s->powerdown);
+
+    act_led = led_create_simple(OBJECT(s), GPIO_POLARITY_ACTIVE_LOW,
+                                LED_COLOR_GREEN, "ACT");
+    qdev_connect_gpio_out(gio_aon, RASPI5B_AON_GPIO_ACT_LED,
+                          qdev_get_gpio_in(DEVICE(act_led), 0));
+    qemu_set_irq(qdev_get_gpio_in(gio_aon, RASPI5B_AON_GPIO_ACT_LED), 1);
+
+    qdev_connect_gpio_out_named(DEVICE(&s->soc.sdio[0]), "card-inserted", 0,
+        qemu_irq_invert(qdev_get_gpio_in(gio_aon,
+                                          RASPI5B_AON_GPIO_SD_CDET_N)));
+}
+
+/*
+ * The card in the SD card slot, from -drive if=sd. Without one, QEMU's
+ * default drive stands in, a slot without a card until the monitor's
+ * "change sd0" inserts one; with -nodefaults, the slot stays empty.
+ */
+static void raspi5b_sd_card(Raspi5bMachineState *s)
+{
+    DriveInfo *di = drive_get(IF_SD, 0, 0);
+    BusState *bus = qdev_get_child_bus(DEVICE(&s->soc), "sd-bus");
+    DeviceState *card;
+
+    if (!di) {
+        return;
+    }
+    card = qdev_new(TYPE_SD_CARD);
+    /* For the monitor: the card is /machine/sd-card */
+    object_property_add_child(OBJECT(s), "sd-card", OBJECT(card));
+    qdev_prop_set_drive_err(card, "drive", blk_by_legacy_dinfo(di),
+                            &error_fatal);
+    qdev_realize_and_unref(card, bus, &error_fatal);
+}
+
+/*
+ * What a reset leaves for the boot it starts (the reset status, the
+ * firmware's reboot flags and the boot count) may be given for the first
+ * boot, as the properties of those names read it from a machine whose
+ * guest has asked for a reset that QEMU has not made yet: the first boot
+ * is then the one that reset would have started, for a host that runs
+ * QEMU afresh for each boot.
+ */
+static void raspi5b_carry_reset(Raspi5bMachineState *s)
+{
+    if (s->reset_status_set) {
+        s->soc.pm.rsts = s->reset_status;
+    }
+    s->soc.property.reboot_flags = s->reboot_flags;
+}
+
 static void raspi5b_machine_init(MachineState *machine)
 {
     Raspi5bMachineState *s = RASPI5B_MACHINE(machine);
@@ -880,6 +1268,12 @@ static void raspi5b_machine_init(MachineState *machine)
     /* The command line tag answers with -append: cmdline.txt's part */
     qdev_prop_set_string(soc, "command-line", machine->kernel_cmdline);
     qdev_realize(soc, NULL, &error_fatal);
+    raspi5b_carry_reset(s);
+    raspi5b_wire_gpio(s);
+    raspi5b_sd_card(s);
+    /* A monitor on HDMI0 */
+    i2c_slave_create_simple(s->soc.ddc[0].bus, TYPE_I2CDDC,
+                            RASPI5B_DDC_EDID_ADDR);
 
     s->binfo = (struct arm_boot_info) {
         .ram_size = machine->ram_size,
@@ -895,10 +1289,7 @@ static void raspi5b_machine_init(MachineState *machine)
     } else {
         arm_load_kernel(&s->soc.cpu[0], machine, &s->binfo);
     }
-    /* arm_load_dtb() has left the tree here if it loaded one */
-    if (machine->fdt) {
-        qemu_register_reset_nosnapshotload(raspi5b_fdt_boot, s);
-    }
+    qemu_register_reset_nosnapshotload(raspi5b_bootloader, s);
     vmstate_register(NULL, 0, &vmstate_raspi5b, s);
 }
 
@@ -950,6 +1341,102 @@ static void raspi5b_set_builtin_dtb(Object *obj, bool value, Error **errp)
     RASPI5B_MACHINE(obj)->builtin_dtb = value;
 }
 
+/*
+ * The state a reset leaves is given for the first boot only, and reads as
+ * it stands once the machine exists
+ */
+static bool raspi5b_settable(const char *name, Error **errp)
+{
+    if (phase_check(PHASE_MACHINE_INITIALIZED)) {
+        error_setg(errp, "'%s' can only be set when the machine is created",
+                   name);
+        return false;
+    }
+    return true;
+}
+
+static void raspi5b_get_reset_status(Object *obj, Visitor *v,
+                                     const char *name, void *opaque,
+                                     Error **errp)
+{
+    Raspi5bMachineState *s = RASPI5B_MACHINE(obj);
+    uint32_t value = phase_check(PHASE_MACHINE_INITIALIZED) ?
+                     s->soc.pm.rsts : s->reset_status;
+
+    visit_type_uint32(v, name, &value, errp);
+}
+
+static void raspi5b_set_reset_status(Object *obj, Visitor *v,
+                                     const char *name, void *opaque,
+                                     Error **errp)
+{
+    Raspi5bMachineState *s = RASPI5B_MACHINE(obj);
+
+    if (raspi5b_settable(name, errp) &&
+        visit_type_uint32(v, name, &s->reset_status, errp)) {
+        s->reset_status_set = true;
+    }
+}
+
+static void raspi5b_get_reboot_flags(Object *obj, Visitor *v,
+                                     const char *name, void *opaque,
+                                     Error **errp)
+{
+    Raspi5bMachineState *s = RASPI5B_MACHINE(obj);
+    uint32_t value = phase_check(PHASE_MACHINE_INITIALIZED) ?
+                     s->soc.property.reboot_flags : s->reboot_flags;
+
+    visit_type_uint32(v, name, &value, errp);
+}
+
+static void raspi5b_set_reboot_flags(Object *obj, Visitor *v,
+                                     const char *name, void *opaque,
+                                     Error **errp)
+{
+    Raspi5bMachineState *s = RASPI5B_MACHINE(obj);
+
+    if (raspi5b_settable(name, errp)) {
+        visit_type_uint32(v, name, &s->reboot_flags, errp);
+    }
+}
+
+static void raspi5b_get_boot_count(Object *obj, Visitor *v,
+                                   const char *name, void *opaque,
+                                   Error **errp)
+{
+    visit_type_uint8(v, name, &RASPI5B_MACHINE(obj)->boot_count, errp);
+}
+
+static void raspi5b_set_boot_count(Object *obj, Visitor *v,
+                                   const char *name, void *opaque,
+                                   Error **errp)
+{
+    Raspi5bMachineState *s = RASPI5B_MACHINE(obj);
+
+    if (raspi5b_settable(name, errp)) {
+        visit_type_uint8(v, name, &s->boot_count, errp);
+    }
+}
+
+static void raspi5b_get_boot_partition(Object *obj, Visitor *v,
+                                       const char *name, void *opaque,
+                                       Error **errp)
+{
+    visit_type_uint32(v, name, &RASPI5B_MACHINE(obj)->boot_partition, errp);
+}
+
+static void raspi5b_set_boot_partition(Object *obj, Visitor *v,
+                                       const char *name, void *opaque,
+                                       Error **errp)
+{
+    Raspi5bMachineState *s = RASPI5B_MACHINE(obj);
+
+    if (raspi5b_settable(name, errp) &&
+        visit_type_uint32(v, name, &s->boot_partition, errp)) {
+        s->boot_partition_set = true;
+    }
+}
+
 static void raspi5b_machine_instance_init(Object *obj)
 {
     Raspi5bMachineState *s = RASPI5B_MACHINE(obj);
@@ -978,6 +1465,9 @@ static void raspi5b_machine_class_init(ObjectClass *oc, const void *data)
     mc->no_parallel = 1;
     mc->no_floppy = 1;
     mc->no_cdrom = 1;
+    /* -drive goes in the SD card slot, which is empty by default */
+    mc->block_default_type = IF_SD;
+    mc->auto_create_sdcard = true;
 
     object_class_property_add_bool(oc, "secure", raspi5b_get_secure,
                                    raspi5b_set_secure);
@@ -1006,6 +1496,34 @@ static void raspi5b_machine_class_init(ObjectClass *oc, const void *data)
                               raspi5b_set_serial, NULL, NULL);
     object_class_property_set_description(oc, "serial",
         "The board serial number the firmware reports (GET_BOARD_SERIAL)");
+
+    object_class_property_add(oc, "boot-partition", "uint32",
+                              raspi5b_get_boot_partition,
+                              raspi5b_set_boot_partition, NULL, NULL);
+    object_class_property_set_description(oc, "boot-partition",
+        "The partition of the SD card the boot files come from, which the "
+        "firmware reports; by default, the one the reset status asks for");
+
+    object_class_property_add(oc, "reset-status", "uint32",
+                              raspi5b_get_reset_status,
+                              raspi5b_set_reset_status, NULL, NULL);
+    object_class_property_set_description(oc, "reset-status",
+        "PM_RSTS for the first boot, with the partition the OS asked for "
+        "(by default, a power-on's); a running machine reads it as it is");
+
+    object_class_property_add(oc, "reboot-flags", "uint32",
+                              raspi5b_get_reboot_flags,
+                              raspi5b_set_reboot_flags, NULL, NULL);
+    object_class_property_set_description(oc, "reboot-flags",
+        "The firmware's reboot flags for the first boot (1: tryboot); a "
+        "running machine reads those the OS has set for the next");
+
+    object_class_property_add(oc, "boot-count", "uint8",
+                              raspi5b_get_boot_count, raspi5b_set_boot_count,
+                              NULL, NULL);
+    object_class_property_set_description(oc, "boot-count",
+        "The boots before the first one, as the firmware counts them in 8 "
+        "bits; a running machine reads its boots so far");
 }
 
 static const TypeInfo raspi5b_machine_types[] = {

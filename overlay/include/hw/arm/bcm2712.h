@@ -11,13 +11,20 @@
 
 #include "exec/hwaddr.h"
 #include "hw/char/pl011.h"
+#include "hw/char/serial-mm.h"
 #include "hw/display/bcm2835_fb.h"
+#include "hw/gpio/brcmstb_gpio.h"
+#include "hw/gpio/brcmstb_pinctrl.h"
+#include "hw/i2c/brcmstb_i2c.h"
 #include "hw/intc/arm_gic.h"
+#include "hw/intc/brcmstb_l2_intc.h"
+#include "hw/misc/bcm2711_avs_monitor.h"
 #include "hw/misc/bcm2711_rng200.h"
 #include "hw/misc/bcm2835_mbox.h"
 #include "hw/misc/bcm2835_powermgt.h"
-#include "hw/misc/bcm2835_property.h"
+#include "hw/misc/bcm2712_property.h"
 #include "hw/nvram/bcm2835_otp.h"
+#include "hw/sd/bcm2712_sdhci.h"
 #include "hw/timer/bcm2835_systmr.h"
 #include "qemu/units.h"
 #include "qom/object.h"
@@ -98,15 +105,20 @@ typedef enum BCM2712Device {
     BCM2712_UART10,
     BCM2712_PM,
     BCM2712_RNG,
+    BCM2712_CPU_L2_IRQ,
     BCM2712_PINCTRL,
-    BCM2712_BSC,
+    BCM2712_DDC0,
+    BCM2712_DDC1,
+    BCM2712_BSC_IRQ,
     BCM2712_MAIN_IRQ,
     BCM2712_GIO,
     BCM2712_UARTA,
     BCM2712_AON_INTR,
     BCM2712_PINCTRL_AON,
     BCM2712_L2_INTC,
+    BCM2712_MAIN_AON_IRQ,
     BCM2712_GIO_AON,
+    BCM2712_AVS,
     BCM2712_GIC,
 
     BCM2712_NUM_DEVICES
@@ -134,17 +146,61 @@ enum {
     BCM2712_SPI_PCIE2_INTA      = 229,
     BCM2712_SPI_PCIE2           = 233,
     BCM2712_SPI_PCIE2_MSI       = 234,
+    BCM2712_SPI_CPU_L2_IRQ      = 238,
     BCM2712_SPI_AON_INTR        = 239,
     BCM2712_SPI_BSC             = 242,
     BCM2712_SPI_MAIN_IRQ        = 244,
+    BCM2712_SPI_MAIN_AON_IRQ    = 245,
     BCM2712_SPI_L2_INTC         = 247,
-    BCM2712_SPI_V3D_HUB         = 249,
-    BCM2712_SPI_V3D_CORE0       = 250,
-    BCM2712_SPI_MIP1_BASE       = 255,  /* 255..262: MSIs from PCIe1 */
+    BCM2712_SPI_V3D_CORE0       = 249,
+    BCM2712_SPI_V3D_HUB         = 250,
+    /* 247..254: MSIs from PCIe1, on the SPI of the L2 controller too */
+    BCM2712_SPI_MIP1_BASE       = 247,
     BCM2712_SPI_SDIO1           = 273,
     BCM2712_SPI_SDIO2           = 274,
     BCM2712_SPI_UARTA           = 276,
 };
+
+/*
+ * The brcmstb level 2 interrupt controllers, each in front of one SPI,
+ * named after their labels in the firmware's device tree; the comments
+ * give the nodes that use them there.
+ */
+typedef enum BCM2712L2Intc {
+    BCM2712_L2_DISP_INTR,       /* display: HVS, MOP, MOPLET */
+    BCM2712_L2_CPU_L2_IRQ,      /* the firmware's KMS doorbell */
+    BCM2712_L2_BSC_IRQ,         /* the HDMI DDC I2C controllers */
+    BCM2712_L2_MAIN_IRQ,        /* GIO, the main GPIO block */
+    BCM2712_L2_AON_INTR,        /* HDMI0 and HDMI1 */
+    BCM2712_L2_7D517000,        /* unlabelled, unused */
+    BCM2712_L2_MAIN_AON_IRQ,    /* unused */
+    BCM2712_NUM_L2_INTCS
+} BCM2712L2Intc;
+
+/* Inputs of the level 2 controllers, i.e. the N in "interrupts = <N>" */
+enum {
+    BCM2712_BSC_IRQ_DDC0        = 1,    /* of BCM2712_L2_BSC_IRQ */
+    BCM2712_BSC_IRQ_DDC1        = 2,    /* of BCM2712_L2_BSC_IRQ */
+    BCM2712_MAIN_IRQ_GIO        = 0,    /* of BCM2712_L2_MAIN_IRQ */
+};
+
+/* The HDMI ports, each with the I2C bus that reads its monitor's EDID */
+#define BCM2712_NUM_HDMI            2
+
+/* UARTA's baud clock, sw_baud in bcm2712.dtsi, in Hz */
+#define BCM2712_UARTA_CLK_HZ        96000000
+
+/* The SD/eMMC host controllers: SDIO1 for the SD card, SDIO2 for Wi-Fi */
+#define BCM2712_NUM_SDIO            2
+
+/*
+ * The AVS monitor's temperature sensor, whose code the Pi 5's device
+ * trees convert to millidegrees Celsius as slope * code + offset, and
+ * the temperature at which they have Linux shut down
+ */
+#define BCM2712_AVS_TEMP_SLOPE      (-550)
+#define BCM2712_AVS_TEMP_OFFSET     450000
+#define BCM2712_TEMP_CRITICAL       110000
 
 struct BCM2712State {
     /*< private >*/
@@ -157,10 +213,19 @@ struct BCM2712State {
 
     ARMCPU cpu[BCM2712_NUM_CPUS];
     GICState gic;
+    BrcmstbL2IntcState l2_intc[BCM2712_NUM_L2_INTCS];
+    BrcmstbGpioState gio;       /* line n: BCM2712 GPIO n */
+    BrcmstbGpioState gio_aon;   /* line n: always-on GPIO n */
+    BrcmstbPinctrlState pinctrl;
+    BrcmstbPinctrlState pinctrl_aon;
+    BrcmstbI2cState ddc[BCM2712_NUM_HDMI];  /* HDMI n's DDC bus */
+    BCM2712SDHCIState sdio[BCM2712_NUM_SDIO];   /* SDIO1, SDIO2 */
     BCM2835SystemTimerState systimer;
     BCM2835PowerMgtState pm;
     BCM2711Rng200State rng;
+    BCM2711AVSMonitorState avs;
     PL011State uart10;
+    SerialMM uarta;
 
     /* The VideoCore firmware interface, behind the mailbox */
     BCM2835MboxState mbox;
@@ -168,7 +233,7 @@ struct BCM2712State {
     MemoryRegion mbox_chans;
     MemoryRegion vc_bus;        /* the VideoCore's view of memory */
     MemoryRegion vc_ram[2];     /* aliases of the first GiB of RAM in it */
-    BCM2835PropertyState property;
+    BCM2712PropertyState property;
     BCM2835FBState fb;
     BCM2835OTPState otp;
 };
@@ -179,5 +244,12 @@ struct BCM2712State {
  * interface and the serial10 alias, and point the root at the GIC.
  */
 void bcm2712_fdt_populate(BCM2712State *s, void *fdt);
+
+/*
+ * The path of the node at @dev's base address on the "soc" bus of a tree
+ * that bcm2712_fdt_populate() wrote, or NULL if there is none; to be
+ * freed. The nodes of the GPIO blocks and pin controllers have phandles.
+ */
+char *bcm2712_fdt_node_path(void *fdt, BCM2712Device dev);
 
 #endif /* HW_ARM_BCM2712_H */

@@ -82,7 +82,7 @@ TEST(systimer_compare, "systimer/compare")
 {
     for (unsigned n = 0; n < BM_SYSTIMER_COMPARATORS; n++) {
         unsigned intid = bm_plat.systimer_intid[n];
-        uint32_t match;
+        uint32_t match, armed;
         bool fired;
 
         st_write(ST_CS, 0xf);
@@ -91,10 +91,23 @@ TEST(systimer_compare, "systimer/compare")
         gic_enable(intid);
         irq_unmask();
 
-        match = st_read(ST_CLO) + 300;
-        st_write(ST_C(n), match);
-        ASSERT_EQ(st_read(ST_C(n)), match);
-        fired = wait_until(st_fired, 100000);
+        /*
+         * The comparator matches when the counter's low 32 bits equal it,
+         * so a vCPU that a busy host deschedules between reading the
+         * counter and writing the comparator can arm it a wrap of the
+         * counter away: arm it again if the counter had reached the match
+         * by the time it was written.
+         */
+        for (unsigned tries = 0; tries < 3; tries++) {
+            match = st_read(ST_CLO) + 300;
+            st_write(ST_C(n), match);
+            armed = st_read(ST_CLO);
+            ASSERT_EQ(st_read(ST_C(n)), match);
+            fired = wait_until(st_fired, 100000);
+            if (fired || (int32_t)(armed - match) < 0) {
+                break;                  /* fired, or armed in time */
+            }
+        }
 
         irq_mask();
         gic_disable(intid);

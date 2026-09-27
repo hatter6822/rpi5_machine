@@ -124,6 +124,17 @@ BOOTED_NODES = """
 };
 """
 
+# The prefixes a host that evaluated config.txt for the boot writes, as
+# the firmware writes them, from os_prefix and overlay_prefix
+PREFIX_NODES = """
+/ {
+    chosen {
+        os_prefix = "next/";
+        overlay_prefix = "ovl/";
+    };
+};
+"""
+
 # The board's Ethernet address: QEMU's second default one, as the first
 # goes to the default NIC configuration
 MAC = "52:54:00:12:34:57"
@@ -315,6 +326,13 @@ class DtbFixupTest(unittest.TestCase):
                          string("0123456789abcdef0123456789abcdef01234567"))
         self.assertEqual(tree["/chosen/power"]["max_current"], cells(5000))
 
+    def test_prefixes(self):
+        """A tree that names the config.txt prefixes keeps them"""
+        tree = self.tree(dts=MINIMAL_DTS + PREFIX_NODES)
+        self.assertEqual(tree["/chosen"]["os_prefix"], string("next/"))
+        self.assertEqual(tree["/chosen"]["overlay_prefix"],
+                         string("ovl/"))
+
     def test_cma_size(self):
         """A CMA pool sized in one cell gets the parent's two, as the
         firmware writes it (Linux warns of old firmware otherwise)"""
@@ -455,8 +473,15 @@ class BootValuesTest(unittest.TestCase):
     """What the firmware writes afresh for each boot, read from the tree
     the guest gets, at 0 for this guest, before it starts"""
 
-    def start(self, *args):
-        return Qmp(self, "-M", "raspi5b", "-S", "-kernel", str(GUEST), *args)
+    def start(self, *args, machine="raspi5b"):
+        return Qmp(self, "-M", machine, "-S", "-kernel", str(GUEST), *args)
+
+    @staticmethod
+    def boot(tree):
+        """What /chosen/bootloader says of the boot"""
+        node = tree["/chosen/bootloader"]
+        return {name: struct.unpack(">I", node[name])[0]
+                for name in ("rsts", "partition", "tryboot", "count")}
 
     def test_each_boot(self):
         """Each reset counts a boot and brings new seeds; nothing else
@@ -474,6 +499,27 @@ class BootValuesTest(unittest.TestCase):
         for tree in (first, second):
             del tree["/chosen/bootloader"]["count"]
         self.assertEqual(fdt.dump(first), fdt.dump(second))
+
+    def test_carried_reset(self):
+        """A machine given what a reset left, as its properties read it
+        before QEMU makes the reset, starts with the boot that reset
+        would have started: its reset status and tryboot, and the count
+        on, from the partition the files came from"""
+        qmp = self.start(machine="raspi5b,reset-status=0x30,reboot-flags=1,"
+                                 "boot-count=4,boot-partition=3")
+        self.assertEqual(self.boot(qmp.tree(0)), {
+            "rsts": 0x30, "partition": 3, "tryboot": 1, "count": 5})
+        # The flags were for that boot only
+        qmp.reset()
+        self.assertEqual(self.boot(qmp.tree(0)), {
+            "rsts": 0x30, "partition": 3, "tryboot": 0, "count": 6})
+
+    def test_reset_partition(self):
+        """Without boot-partition, the partition is the one the reset
+        status asks for: 4, in bits 0, 2, .. 10"""
+        qmp = self.start(machine="raspi5b,reset-status=0x1010")
+        self.assertEqual(self.boot(qmp.tree(0)), {
+            "rsts": 0x1010, "partition": 4, "tryboot": 0, "count": 1})
 
     def test_count_wraps(self):
         """The count is the firmware's 8-bit one"""

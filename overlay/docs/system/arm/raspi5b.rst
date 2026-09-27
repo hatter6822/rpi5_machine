@@ -9,8 +9,9 @@ and a 40-bit physical address map with peripherals above ``0x10_0000_0000``.
 Most board I/O (Ethernet, USB, GPIO, the 40-pin header) lives on the RP1
 south bridge behind PCIe, which is not modelled yet.
 
-The machine is under active development; it currently targets bare-metal
-and microkernel bring-up, with Linux support following.
+The machine is under active development. Bare-metal code, the Pi's boot
+firmware (TF-A, U-Boot, the EDK2 port) and Linux run on it, the latter
+with its root file system on an SD card.
 
 Implemented devices
 -------------------
@@ -31,11 +32,75 @@ Implemented devices
   ``0x0`` (as Linux passes them) and ``0xc000_0000`` (as code for older
   Pis does); requests elsewhere get no answer, as on hardware. The
   VideoCore keeps the top 4 MiB of that GiB, which the device tree memory
-  node leaves out
+  node leaves out. The firmware's framebuffer, the machine's display, lies
+  1 MiB into it: 640 x 480 pixels at 16 bits per pixel at boot, then the
+  size and depth a guest sets, of which it keeps only the lines that fit
+  in the 3 MiB left (all of 1024 x 768 at 32 bits per pixel)
 * RNG200 random number generator at ``0x10_7d20_8000``, fed by QEMU's
   random source (reproducible with ``-seed``)
+* The AVS monitor's temperature sensor at ``0x10_7d54_2000``, which
+  Linux's ``bcm2711_thermal`` driver reads for ``thermal_zone0``. It
+  reports the SoC's temperature, 25 degrees C by default, in steps of
+  0.55 degrees C from -112.65 to 450 degrees C. The ``temperature``
+  property of ``bcm2711-avs-monitor``, in millidegrees C, sets it:
+  ``-global bcm2711-avs-monitor.temperature=65000`` at startup, or
+  ``qom-set /machine/soc/avs-monitor temperature 65000`` while the
+  machine runs; a value beyond the range is refused. At 110 degrees C,
+  the critical trip in both device trees, Linux powers the machine off.
+  The monitor's other registers read as zero and ignore writes
+* The seven Broadcom level 2 interrupt controllers of the firmware's
+  device tree, each in front of one SPI: the edge-latching
+  ``brcm,l2-intc`` for the firmware's doorbells, ``brcm,bcm2711-l2-intc``
+  (the same registers, a status that follows the inputs) for the display
+  and the always-on block, and the level layout
+  (``brcm,bcm7271-l2-intc``) for the other four, among them those of the
+  GPIO block and the HDMI I2C controllers. The tree leaves four of them
+  disabled, as the Raspberry Pi 5's does
+* The two Broadcom GPIO blocks: GIO at ``0x10_7d50_8500``, 32 + 22 lines,
+  interrupting through the main level 2 controller, and GIO AON at
+  ``0x10_7d51_7c00``, 17 + 6 lines, whose interrupt is not connected, as
+  no device tree gives it one. Every line detects edges and levels,
+  outputs included
+* The pin controllers beside them, at ``0x10_7d50_4100`` (12 registers)
+  and ``0x10_7d51_0700`` (8 registers, always-on). They keep the function
+  and pull that software selects for each pin, so that Linux reads its
+  settings back, but the settings have no effect on the lines
+* The DDC I2C controllers of the two HDMI ports, at ``0x10_7d50_8200``
+  and ``0x10_7d50_8280``, interrupting through their level 2 controller.
+  A transfer completes at once, whatever the bus speed; the combined
+  formats, a write and a read in one command, are not modelled, as Linux
+  does not use them. The board puts a monitor's EDID, QEMU's ``i2c-ddc``,
+  at address 0x50 on HDMI0's bus, ``i2c-bus.0``. HDMI1's, ``i2c-bus.1``,
+  is empty: ``-device i2c-ddc,bus=i2c-bus.1,address=0x50`` connects a
+  second monitor
+* On the board, the power button on GIO 20, which reads high until it is
+  pressed (see below), and the green activity LED on GIO AON 9, a QEMU
+  ``led`` device lit while its line is low, whose changes show as
+  ``led_set_intensity`` and ``led_change_intensity`` trace events. With
+  the firmware's device tree, Linux's ``gpio-leds`` waits for the power
+  LED, which RP1 drives, and so leaves the activity LED alone too
+* The two SD hosts: SDIO1 at ``0x10_00ff_f000`` (SPI 273), for the SD
+  card slot, and SDIO2 at ``0x10_0110_0000`` (SPI 274), wired to the
+  Wi-Fi radio, which is not modelled. Each is an SD Host Controller 3.00
+  with SDMA and ADMA2 with 64-bit addresses, followed by Broadcom
+  configuration registers that keep what software writes, to no effect.
+  Cards run at 3.3 V in high-speed mode: QEMU's cards do not switch to
+  1.8 V, so the UHS-I modes the controllers offer are never used. The
+  command queueing engine is not modelled. The card slot is described
+  under `SD card`_
 * UART10: the PL011 debug UART at ``0x10_7d00_1000``, connected to the
   first ``-serial`` backend
+* UARTA: the 16550 wired to the Bluetooth radio, at ``0x10_7d50_c000``,
+  connected to the second ``-serial`` backend. Its 8-bit registers are 4
+  bytes apart, its FIFOs hold 32 bytes, and its baud rate divides a
+  96 MHz clock by 16 and by the divisor. The receive FIFO interrupts at
+  the 16550A's trigger levels, 1, 4, 8 or 14 bytes, where Linux's driver
+  gives the BCM7271 UART 1, 8, 16 or 30. The radio is not modelled: its
+  node in the firmware's device tree is disabled, which leaves Linux's
+  ``ttyS0`` a plain serial port. The Raspberry Pi OS kernel registers
+  8250 ports only when its command line asks for them, which the
+  firmware's tree does with ``8250.nr_uarts=1``; with the built-in tree,
+  add it to ``-append``
 * 1, 2, 4, 8 or 16 GiB of RAM at physical address 0 (``-m``; default 2 GiB)
 
 Every other block of the BCM2712 memory map is an ``unimplemented-device``
@@ -45,12 +110,12 @@ with ``-d unimp``.
 Missing devices
 ---------------
 
-* Firmware property tags specific to the Pi 5 (clocks, power, RTC, GPIO
-  expander); the BCM283x set is answered
-* SD/eMMC controllers, PCIe root complexes and the RP1 south bridge
-* GPIO, pin control, the Broadcom L2 interrupt controllers
+* PCIe root complexes and the RP1 south bridge
+* The Bluetooth radio on UARTA and the Wi-Fi radio on SDIO2
+* The power LED, which RP1 drives
 * Power domains (only V3D's is driven by Linux on this SoC)
 * Display (HVS, HDMI), V3D and ISP
+* The system DMA controller, whose channels no modelled device uses
 
 Boot and exception levels
 -------------------------
@@ -116,8 +181,10 @@ community EDK2 port for the Pi 5 carries its own TF-A in its
 ``RPI_EFI.fd`` and expects its device tree at ``0x1f_0000``, which its
 ``config.txt`` asks of the firmware: load it with ``-bios RPI_EFI.fd``,
 the device tree its release ships with ``-dtb``, and
-``dtb-address=0x1f0000``. Without SD card, USB or network models, U-Boot
-and EDK2 find nothing to boot on their own.
+``dtb-address=0x1f0000``. With no USB or network models, an SD card is
+the only place U-Boot and EDK2 can find something to boot on their own:
+U-Boot boots, for example, by the ``extlinux.conf`` it finds on one, and
+EDK2 maps the card's partitions.
 
 Firmware property interface
 ---------------------------
@@ -137,13 +204,49 @@ the board and the firmware answer as follows:
 * DMA channels: 0 to 10, the channels of the ``dma32`` and ``dma40``
   device tree nodes.
 
+Where the Pi 5's firmware answers the tag set differently, or knows tags
+the older Pis' firmware does not, the channel answers as the Pi 5's:
+
+* clocks: the list holds the five clocks the Pi 5's device trees take from
+  the firmware, ARM, CORE, V3D, ISP and HEVC, each on and at its most at
+  boot, with ``config.txt``'s default ranges: 1.5 to 2.4 GHz for the ARM,
+  500 to 960 MHz for V3D and 500 to 910 MHz for the others. A guest turns
+  a clock off and on, and sets its rate, which the firmware keeps within
+  the range, as Linux's ``raspberrypi-cpufreq`` sets the ARM's; the
+  rates change what the firmware reports, not how fast anything runs. A
+  clock that is not in the list has a rate of 0 and reports that it does
+  not exist;
+* power: the domains of the newer power interface, 1 to 23, of which only
+  the ARM's is on at boot, and the devices of the older one, 0 to 8, all
+  off at boot. Linux's ``raspberrypi-power`` switches them; no modelled
+  device depends on their states. A domain that does not exist stays off,
+  and a device that does not exist says so;
+* temperatures: the SoC's, as the AVS monitor's sensor reads it, and the
+  limit, 85 degrees C, ``config.txt``'s ``temp_limit``;
+* reboot flags: a guest sets them before a reset, as Linux does for
+  ``reboot "0 tryboot"``, and the next boot takes them: its device tree
+  reports the tryboot, as described below. The reboot notification that
+  follows has nothing to answer;
+* the real-time clock, which Linux's ``rpi-rtc`` driver reads and sets,
+  for ``hwclock``, as do EDK2's ``date`` and ``time``: its time starts as
+  QEMU's RTC (``-rtc``), runs on through a reset, and a guest setting it
+  raises the ``RTC_CHANGE`` event. Its alarm goes off when the time
+  reaches it, if enabled, and stays pending until cleared; on a Pi 5 it
+  powers the board back on after a halt, which QEMU leaves out, as its
+  board is never off. The charger of a backup battery keeps the voltage a
+  guest sets within its range, 1.3 to 4.4 V, or off; no battery is
+  fitted, and it reads 0 V.
+
 Every answer stays within the value buffer its tag declares: a buffer too
 small for it gets as much as fits, and the tag's response length says how
 much the whole answer needs (the command line is the exception, copied
 only when it fits, as the firmware does). A request that is cut short
 inside a tag, or whose tag runs past the request's own length, is answered
 with the interface's error code, ``0x80000001``; a request the VideoCore
-cannot reach is not answered at all.
+cannot reach is not answered at all. A tag the model lacks is answered
+with no value and logged as unimplemented: ``GET_GENCMD_RESULT``, through
+which ``vcgencmd`` sends its commands as text, is one, so ``vcgencmd``
+gets no answers.
 
 Reset and power-off
 -------------------
@@ -153,24 +256,79 @@ reset the machine the same way: every device returns to its reset state,
 RAM is kept, the images given with ``-bios``, ``-kernel`` and ``-dtb`` are
 loaded again and the boot starts over as from power-on, except that the PM
 block's reset status register (``RSTS``) keeps its value and records a
-watchdog reset. PSCI ``SYSTEM_OFF`` and Linux's halt request through the
-watchdog (boot partition 63 in ``RSTS``) power the machine off, and QEMU
-exits with status 0.
+watchdog reset, the reboot flags a guest set in the firmware reach the
+boot the reset starts, and the firmware's real-time clock runs on. PSCI
+``SYSTEM_OFF`` and Linux's halt request through the watchdog (boot
+partition 63 in ``RSTS``) power the machine off, and QEMU exits with
+status 0.
+
+The partition a reboot asks for travels in ``RSTS``, where Linux's
+watchdog driver and bare-metal code put it. The Raspberry Pi kernel
+reboots through PSCI first, though, and passes the partition of
+``reboot N`` to ``SYSTEM_RESET2``, which QEMU's PSCI does not provide;
+the ``SYSTEM_RESET`` it falls back to asks for no partition.
+
+What a reset leaves for the next boot can also go from one run of QEMU to
+the next, for a host that runs QEMU afresh for each boot, as the firmware
+reads the SD card afresh: with ``-action reboot=shutdown,shutdown=pause``,
+the guest's reset stops it before QEMU makes the reset, and the machine
+can be read. The machine's properties ``reset-status`` (``RSTS``),
+``reboot-flags`` and ``boot-count`` (the boots so far) read what the reset
+leaves; given at startup, with ``-machine``, they make the first boot the
+one that reset would have started. They can only be set then, as can
+``boot-partition``, which names the partition of the card that the boot
+files come from.
+
+The monitor's ``system_powerdown`` presses the board's power button for
+200 ms, as a user would; a press carries on through a reset. Linux's
+``gpio-keys`` reports it as ``KEY_POWER``, which systemd-logind takes as
+a request to power off.
+
+SD card
+-------
+
+``-drive if=sd,file=<image>,format=raw`` puts a card in the SD card slot,
+on SDIO1: ``mmc0`` in both device trees, whose partitions Linux names
+``/dev/mmcblk0p1`` and on. Writes go to the image; ``snapshot=on`` keeps
+it unchanged. Cards of up to 2 GiB are SDSC cards and take images whose
+size is a power of 2; larger ones are SDHC or SDXC cards, whose images
+need only be a multiple of 512 KiB. To pad an image that is neither:
+``qemu-img resize -f raw <image> <size>``.
+
+Without ``-drive if=sd``, the slot is empty. Cards go in and come out
+while the machine runs: ``change sd0 <image>`` in the monitor, or
+``blockdev-change-medium`` in QMP with ``"id": "/machine/sd-card"``,
+inserts one, and ``eject`` takes it out. The slot's card-detect switch
+drives GIO AON 5 (``SD_CDET_N``) low while a card is in, and the
+controller reports the card's arrival and removal as well. Linux checks
+the line every second, as neither device tree gives the always-on GPIO
+block an interrupt. With ``-nodefaults``, the slot has no drive and stays
+empty.
+
+QEMU's cards move data 512 bytes at a time, at a few MB/s.
 
 Device tree
 -----------
 
 Without ``-dtb``, the machine generates a device tree describing what it
 models, derived from its memory map: the CPUs with PSCI, the generic timer,
-the PMU, the GIC, the system timer, the mailbox and the firmware interface,
-the PM block, the RNG, UART10 (``serial10``, the ``stdout-path``), the fixed
-clocks, and a CMA pool in the first GiB, where the VideoCore can reach
-Linux's buffers. Node names and properties follow Linux's ``bcm2712.dtsi``
-and the firmware's tree, and the result validates against the Linux
-bindings, but for what the firmware adds for the OS, which no binding
-describes. ``-machine raspi5b,builtin-dtb=off`` gives the guest no device
-tree at all, like an empty ``device_tree=`` line in the firmware's
-``config.txt``.
+the PMU, the GIC, the system timer, the mailbox and the firmware interface
+with its clocks, reset controller, power domains and real-time clock, the
+PM block, the RNG, the AVS monitor with its temperature sensor and the
+thermal zone Linux reads it through, the level 2 interrupt controllers,
+the GPIO blocks
+and their pin controllers, the HDMI ports' DDC I2C controllers, the power
+button with the state of its pin (GPIO, pulled up), the activity LED,
+UART10 (``serial10``, the ``stdout-path``) and UARTA, the SD hosts (the
+card slot on SDIO1, ``mmc0``, with its card-detect line and the
+regulators GIO AON 4 and 3 switch for the card's supply and signalling;
+SDIO2 disabled), the fixed clocks, and a CMA pool in the first GiB, where
+the VideoCore can reach Linux's buffers. Node names and properties follow
+Linux's ``bcm2712.dtsi`` and the firmware's tree, and the result validates
+against the Linux bindings, but for what the firmware adds for the OS,
+which no binding describes. ``-machine raspi5b,builtin-dtb=off`` gives the
+guest no device tree at all, like an empty ``device_tree=`` line in the
+firmware's ``config.txt``.
 
 Whichever tree the guest gets, generated or given with ``-dtb`` (for
 example ``bcm2712-rpi-5-b.dtb``), the machine changes it as the VideoCore
@@ -187,14 +345,16 @@ firmware does before it starts the OS:
   two spaces apart, as the firmware joins them;
 * ``/chosen`` gets ``kaslr-seed`` and ``rng-seed`` from QEMU's random
   source (reproducible with ``-seed``), ``os_prefix`` and
-  ``overlay_prefix`` at their defaults, and the RAM size in
-  ``rpi-sdram-size-gbit``;
+  ``overlay_prefix`` at their defaults unless the tree has them, and the
+  RAM size in ``rpi-sdram-size-gbit``;
 * ``/chosen/bootloader`` describes the boot: ``boot-mode`` 3, RPIBOOT, in
   which the host supplies the boot files, as QEMU does; ``rsts``, the PM
   block's reset status as the boot found it; ``partition``, the
-  partition asked for there (0 at power-on), which files the host
-  supplies come from; ``count``, the boots since power-on, in 8 bits;
-  and 0 for ``tryboot``, ``arg1`` and ``capabilities``;
+  partition the files come from, ``boot-partition`` if it is given and
+  otherwise the one asked for in ``rsts`` (0 at power-on); ``count``,
+  the boots since power-on, in 8 bits; ``tryboot``, 1 when the boot
+  before set the reboot flag that asks for one; and 0 for ``arg1`` and
+  ``capabilities``;
 * ``/chosen/power`` reports a 5 A bench supply (``max_current``), which
   turns the USB ports' high current limit on;
 * the memory node leaves out the VideoCore's memory, and a
@@ -207,11 +367,14 @@ firmware does before it starts the OS:
 * the node ``ethernet0`` names gets the board's Ethernet address in
   ``local-mac-address``;
 * nodes of devices that are not modelled yet get ``status = "disabled"``,
-  and CPU nodes of cores ``-smp`` leaves out ``status = "fail"``.
+  as does the firmware's framebuffer, whose Linux driver takes a channel
+  of the DMA controller, and CPU nodes of cores ``-smp`` leaves out
+  ``status = "fail"``.
 
 Every reset gives the next boot its own tree, as the firmware writes one
-for each boot: ``rsts``, ``partition``, ``count`` and the seeds are the
-new boot's. The count moves with the machine in migration.
+for each boot: ``rsts``, ``partition``, ``count``, ``tryboot`` and the
+seeds are the new boot's. The firmware counts every boot, with a tree or
+without, and the count moves with the machine in migration.
 
 Compared with the tree the firmware gives a Pi 5, the machine's lacks:
 
@@ -231,9 +394,9 @@ Compared with the tree the firmware gives a Pi 5, the machine's lacks:
 * anything ``config.txt`` would change: no overlays and no ``dtparam``, as
   with an empty ``config.txt``.
 
-``arg1`` and ``tryboot`` stay 0, as the property interface does not
-model the requests that set them, and its command line tag answers with
-``-append`` alone.
+``arg1`` stays 0, as nothing sets the reboot argument it reports
+(``config.txt``'s ``set_reboot_arg1``), and the property interface's
+command line tag answers with ``-append`` alone.
 
 Examples
 --------
@@ -252,6 +415,13 @@ Linux on the firmware's device tree::
   $ qemu-system-aarch64 -M raspi5b -m 4G -nographic \
       -kernel Image -dtb bcm2712-rpi-5-b.dtb \
       -append "console=ttyAMA10,115200 earlycon=pl011,mmio32,0x107d001000"
+
+Linux with its root file system on the second partition of an SD card::
+
+  $ qemu-system-aarch64 -M raspi5b -m 4G -nographic \
+      -kernel Image -dtb bcm2712-rpi-5-b.dtb \
+      -drive if=sd,file=sd.img,format=raw \
+      -append "console=ttyAMA10,115200 root=/dev/mmcblk0p2 rootwait"
 
 Linux started by TF-A's BL31, as the firmware starts it::
 

@@ -1,0 +1,75 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: A7om <hatter6822@gmail.com>
+Date: Sat, 26 Sep 2026 00:00:00 +0000
+Subject: [PATCH] hw/display/i2c-ddc: Migrate a transfer in progress
+
+The migration state of i2c-ddc leaves out its I2C slave part. When the
+VM migrates while a transfer to the device holds the bus, the bus on
+the destination remembers the address, but the device does not rejoin
+the transfer, so the rest of the transfer reaches no device and a read
+returns 0xff.
+
+Add the I2C slave state, whose post_load puts the device back into the
+transfer, in a subsection that is sent only while the device takes
+part in one, so migration to and from older versions is otherwise
+unchanged.
+
+The raspi5b machine, later in this series, hits this: its DDC
+controllers read an EDID in transfers of up to 32 bytes that hold the
+bus between them.
+---
+ hw/display/i2c-ddc.c | 34 ++++++++++++++++++++++++++++++++++
+ 1 file changed, 34 insertions(+)
+
+diff --git a/hw/display/i2c-ddc.c b/hw/display/i2c-ddc.c
+index 1fddc58..76435a8 100644
+--- a/hw/display/i2c-ddc.c
++++ b/hw/display/i2c-ddc.c
+@@ -85,6 +85,36 @@ static void i2c_ddc_init(Object *obj)
+     qemu_edid_generate(s->edid_blob, sizeof(s->edid_blob), &s->edid_info);
+ }
+ 
++/* Whether the device takes part in the transfer in progress on its bus */
++static bool i2c_ddc_transfer_needed(void *opaque)
++{
++    I2CSlave *i2c = I2C_SLAVE(opaque);
++    I2CBus *bus = I2C_BUS(qdev_get_parent_bus(DEVICE(i2c)));
++    I2CNode *node;
++
++    QLIST_FOREACH(node, &bus->current_devs, next) {
++        if (node->elt == i2c) {
++            return true;
++        }
++    }
++    return false;
++}
++
++/*
++ * The I2C slave state, whose post_load puts the device back into the
++ * transfer that the bus's own state says is in progress
++ */
++static const VMStateDescription vmstate_i2c_ddc_transfer = {
++    .name = TYPE_I2CDDC "/transfer",
++    .version_id = 1,
++    .minimum_version_id = 1,
++    .needed = i2c_ddc_transfer_needed,
++    .fields = (const VMStateField[]) {
++        VMSTATE_I2C_SLAVE(i2c, I2CDDCState),
++        VMSTATE_END_OF_LIST()
++    }
++};
++
+ static const VMStateDescription vmstate_i2c_ddc = {
+     .name = TYPE_I2CDDC,
+     .version_id = 1,
+@@ -92,6 +122,10 @@ static const VMStateDescription vmstate_i2c_ddc = {
+         VMSTATE_BOOL(firstbyte, I2CDDCState),
+         VMSTATE_UINT8(reg, I2CDDCState),
+         VMSTATE_END_OF_LIST()
++    },
++    .subsections = (const VMStateDescription * const []) {
++        &vmstate_i2c_ddc_transfer,
++        NULL
+     }
+ };
+ 
