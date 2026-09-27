@@ -311,6 +311,94 @@ TEST(mbox_rtc, "mbox/rtc")
     ASSERT(charge == 0 || (charge >= min && charge <= max));
 }
 
+/* Offsets of each tag's code word in the framebuffer request */
+enum {
+    FB_PHYSICAL = 2,                /* value: width, height */
+    FB_VIRTUAL = FB_PHYSICAL + 5,   /* width, height */
+    FB_DEPTH = FB_VIRTUAL + 5,      /* bits per pixel */
+    FB_ALLOCATE = FB_DEPTH + 4,     /* alignment; then base, size */
+    FB_PITCH = FB_ALLOCATE + 5,     /* bytes per line */
+    FB_END = FB_PITCH + 4,
+    FB_WORDS = (FB_END + 4) & ~3,   /* end tag, padding to 16 bytes */
+};
+
+/*
+ * A framebuffer in one request, as bare-metal code sets up a display:
+ * 640 x 480 pixels, then 1920 x 1080, at 32 bits per pixel. The firmware
+ * keeps the width and depth and at least one line, all of them for the
+ * smaller size, and allocates the buffer in its own memory, that of the
+ * VideoCore, which the ARM's does not include: 16-byte aligned, as asked,
+ * with a pitch that holds a line and room for every line it kept. On
+ * raspi5b, 3 MiB of it hold 409 lines of the larger size.
+ */
+TEST(mbox_framebuffer, "mbox/framebuffer")
+{
+    static const uint32_t sizes[][2] = { { 640, 480 }, { 1920, 1080 } };
+    static volatile uint32_t buf[FB_WORDS] __attribute__((aligned(16)));
+    uint32_t displays = 0, arm[2] = { 0, 0 };
+
+    _Static_assert(FB_WORDS % 4 == 0, "whole 16-byte blocks");
+    ASSERT_EQ(mbox_tag(FW_TAG_FB_DISPLAYS, &displays, 1), 4);
+    if (displays == 0) {
+        SKIP("no display");
+    }
+    ASSERT_EQ(mbox_tag(FW_TAG_ARM_MEMORY, arm, 2), 8);
+    ASSERT_EQ(arm[0], 0);
+
+    for (unsigned i = 0; i < 2; i++) {
+        const uint32_t width = sizes[i][0], height = sizes[i][1];
+        uint32_t lines, pitch, base, size;
+
+        buf[0] = sizeof(buf);
+        buf[1] = FW_REQUEST;
+        id_tag(buf, FB_PHYSICAL, FW_TAG_FB_SET_PHYSICAL, 8);
+        buf[FB_PHYSICAL + 3] = width;
+        buf[FB_PHYSICAL + 4] = height;
+        id_tag(buf, FB_VIRTUAL, FW_TAG_FB_SET_VIRTUAL, 8);
+        buf[FB_VIRTUAL + 3] = width;
+        buf[FB_VIRTUAL + 4] = height;
+        id_tag(buf, FB_DEPTH, FW_TAG_FB_SET_DEPTH, 4);
+        buf[FB_DEPTH + 3] = 32;
+        id_tag(buf, FB_ALLOCATE, FW_TAG_FB_ALLOCATE, 8);
+        buf[FB_ALLOCATE + 3] = 16;
+        id_tag(buf, FB_PITCH, FW_TAG_FB_PITCH, 4);
+        for (unsigned w = FB_END; w < FB_WORDS; w++) {
+            buf[w] = 0;
+        }
+
+        ASSERT_MSG(mbox_property(buf, 100000), "no answer from the firmware");
+        ASSERT_EQ(id_code(buf, FB_PHYSICAL), FW_TAG_RESPONSE | 8);
+        ASSERT_EQ(id_code(buf, FB_VIRTUAL), FW_TAG_RESPONSE | 8);
+        ASSERT_EQ(id_code(buf, FB_DEPTH), FW_TAG_RESPONSE | 4);
+        ASSERT_EQ(id_code(buf, FB_ALLOCATE), FW_TAG_RESPONSE | 8);
+        ASSERT_EQ(id_code(buf, FB_PITCH), FW_TAG_RESPONSE | 4);
+
+        lines = id_value(buf, FB_VIRTUAL, 1);
+        pitch = id_value(buf, FB_PITCH, 0);
+        /* A bus address: Linux strips the alias bits the same way */
+        base = id_value(buf, FB_ALLOCATE, 0) & 0x3fffffffu;
+        size = id_value(buf, FB_ALLOCATE, 1);
+        bm_test_note("framebuffer %ux%u: %ux%u, pitch %u, 0x%x-0x%x", width,
+                     height, id_value(buf, FB_VIRTUAL, 0), lines, pitch, base,
+                     base + size);
+
+        ASSERT_EQ(id_value(buf, FB_PHYSICAL, 0), width);
+        ASSERT_EQ(id_value(buf, FB_PHYSICAL, 1), lines);
+        ASSERT_EQ(id_value(buf, FB_VIRTUAL, 0), width);
+        ASSERT_EQ(id_value(buf, FB_DEPTH, 0), 32);
+        ASSERT_GE(lines, 1);
+        ASSERT_LE(lines, height);
+        if (i == 0) {
+            ASSERT_EQ(lines, height);
+        }
+        ASSERT_GE(pitch, width * 4);
+        ASSERT_EQ(base % 16, 0);
+        ASSERT_GE(size, (uint64_t)pitch * lines);
+        ASSERT_GE(base, arm[1]);
+        ASSERT_LE((uint64_t)base + size, 0x40000000u);
+    }
+}
+
 /*
  * The reboot flags a boot leaves are for the next boot only: the
  * bootloader takes them, and the firmware reports a tryboot in the device

@@ -51,6 +51,7 @@
 #define MBOX_STATUS_EMPTY       BIT(30)
 #define MBOX_CONFIG_DATA_IRQ    BIT(0)
 #define MBOX_SPI                33              /* bcm2712.dtsi */
+#define MBOX_CHAN_FB            1
 #define MBOX_CHAN_PROPERTY      8
 
 /* include/soc/bcm2835/raspberrypi-firmware.h */
@@ -85,6 +86,15 @@
 #define FW_TAG_SET_REBOOT_FLAGS 0x00038064
 #define FW_TAG_RTC_REG          0x00030087      /* Linux's rtc-rpi.c */
 #define FW_TAG_SET_RTC_REG      0x00038087
+#define FW_TAG_FB_ALLOCATE      0x00040001
+#define FW_TAG_FB_PHYSICAL      0x00040003      /* width, height */
+#define FW_TAG_FB_SET_PHYSICAL  0x00048003
+#define FW_TAG_FB_VIRTUAL       0x00040004
+#define FW_TAG_FB_SET_VIRTUAL   0x00048004
+#define FW_TAG_FB_DEPTH         0x00040005      /* bits per pixel */
+#define FW_TAG_FB_SET_DEPTH     0x00048005
+#define FW_TAG_FB_PITCH         0x00040008      /* bytes per line */
+#define FW_TAG_FB_DISPLAYS      0x00040013
 #define FW_TAG_RESPONSE         BIT(31)
 
 /* The state word of the clock and power device tags */
@@ -116,6 +126,10 @@
 
 /* The alias of the first GiB of RAM that code for older Pis uses */
 #define VC_BUS_RAM              0xc0000000u
+
+/* The framebuffer: 1 MiB into the VideoCore memory, which ends at 1 GiB */
+#define VC_FB_BASE              0x3fd00000u
+#define VC_FB_END               0x40000000u
 
 /* Linux drivers/watchdog/bcm2835_wdt.c */
 #define PM_RSTC                 0x1c
@@ -1348,6 +1362,161 @@ static void test_mbox_rtc_battery(void)
     g_assert_cmpuint(fw_rtc(qts, 8), ==, 0);
     g_assert_cmpuint(fw_rtc_set(qts, 8, 1), ==, 0);
     g_assert_cmpuint(fw_rtc(qts, 8), ==, 0);
+
+    qtest_quit(qts);
+}
+
+/*
+ * Set the framebuffer to @width x @height pixels, the size of the buffer
+ * too, at @depth bits per pixel, and check that the firmware keeps it
+ * all but the lines past @lines, answering with what it kept
+ */
+static void fb_set(QTestState *qts, uint32_t width, uint32_t height,
+                   uint32_t depth, uint32_t lines)
+{
+    const uint32_t tags[] = { FW_TAG_FB_SET_PHYSICAL, FW_TAG_FB_SET_VIRTUAL };
+    uint32_t val[2];
+
+    val[0] = depth;
+    g_assert_cmphex(mbox_call(qts, FW_TAG_FB_SET_DEPTH, 4, val), ==,
+                    FW_TAG_RESPONSE | 4);
+    g_assert_cmpuint(val[0], ==, depth);
+    for (int i = 0; i < ARRAY_SIZE(tags); i++) {
+        val[0] = width;
+        val[1] = height;
+        g_assert_cmphex(mbox_call(qts, tags[i], sizeof(val), val), ==,
+                        FW_TAG_RESPONSE | sizeof(val));
+        g_assert_cmpuint(val[0], ==, width);
+        g_assert_cmpuint(val[1], ==, MIN(height, lines));
+    }
+}
+
+/*
+ * Check that the framebuffer is @width x @height pixels at @depth bits
+ * per pixel, a buffer of the same size, where the VideoCore keeps it
+ */
+static void fb_check(QTestState *qts, uint32_t width, uint32_t height,
+                     uint32_t depth)
+{
+    const uint32_t pitch = width * depth / 8;
+    uint32_t val[2];
+
+    g_assert_cmphex(mbox_tag(qts, FW_TAG_FB_PHYSICAL, 8, val), ==,
+                    FW_TAG_RESPONSE | 8);
+    g_assert_cmpuint(val[0], ==, width);
+    g_assert_cmpuint(val[1], ==, height);
+    g_assert_cmphex(mbox_tag(qts, FW_TAG_FB_VIRTUAL, 8, val), ==,
+                    FW_TAG_RESPONSE | 8);
+    g_assert_cmpuint(val[0], ==, width);
+    g_assert_cmpuint(val[1], ==, height);
+    g_assert_cmphex(mbox_tag(qts, FW_TAG_FB_DEPTH, 4, val), ==,
+                    FW_TAG_RESPONSE | 4);
+    g_assert_cmpuint(val[0], ==, depth);
+    g_assert_cmphex(mbox_tag(qts, FW_TAG_FB_PITCH, 4, val), ==,
+                    FW_TAG_RESPONSE | 4);
+    g_assert_cmpuint(val[0], ==, pitch);
+
+    /* The request's word is the alignment the guest wants */
+    val[0] = 16;
+    val[1] = 0;
+    g_assert_cmphex(mbox_call(qts, FW_TAG_FB_ALLOCATE, sizeof(val), val),
+                    ==, FW_TAG_RESPONSE | sizeof(val));
+    g_assert_cmphex(val[0], ==, VC_FB_BASE);
+    g_assert_cmpuint(val[1], ==, pitch * height);
+    g_assert_cmphex(VC_FB_BASE + val[1], <=, VC_FB_END);
+}
+
+/*
+ * Save the display with the screendump command, and return its width
+ * and height and the RGB bytes of its first two pixels
+ */
+static void fb_screendump(QTestState *qts, int *width, int *height,
+                          uint8_t rgb[6])
+{
+    g_autofree char *path = tmp_file("raspi5b-fb-XXXXXX", NULL, 0);
+    g_autofree char *ppm = NULL;
+    size_t len;
+    int header;
+
+    qtest_qmp_assert_success(qts, "{ 'execute': 'screendump',"
+                             "  'arguments': { 'filename': %s } }", path);
+    g_assert_true(g_file_get_contents(path, &ppm, &len, NULL));
+    unlink(path);
+    /* The header, then a single newline before the pixels */
+    g_assert_cmpint(sscanf(ppm, "P6 %d %d 255%n", width, height, &header),
+                    ==, 2);
+    g_assert_cmpint(ppm[header++], ==, '\n');
+    g_assert_cmpuint(len, ==, header + 3 * *width * *height);
+    memcpy(rgb, ppm + header, 6);
+}
+
+/*
+ * The firmware's framebuffer lies 1 MiB into the VideoCore memory, 640 x
+ * 480 pixels at 16 bits per pixel at boot. A guest sets its size and
+ * depth, which the display follows, but the VideoCore memory holds only
+ * 3 MiB of it: the firmware keeps no more lines than fit.
+ */
+static void test_mbox_framebuffer(void)
+{
+    QTestState *qts = qtest_init("-machine raspi5b -m 2G");
+    uint32_t val[1];
+    uint8_t rgb[6];
+    int width, height;
+
+    g_assert_cmphex(mbox_tag(qts, FW_TAG_FB_DISPLAYS, 4, val), ==,
+                    FW_TAG_RESPONSE | 4);
+    g_assert_cmpuint(val[0], ==, 1);
+    fb_check(qts, 640, 480, 16);
+
+    /* Linux's bcm2708_fb: 800 x 480 at 32 bits per pixel */
+    fb_set(qts, 800, 480, 32, UINT32_MAX);
+    fb_check(qts, 800, 480, 32);
+    qtest_writel(qts, VC_FB_BASE, 0x0000ff);        /* red, then black */
+    qtest_writel(qts, VC_FB_BASE + 4, 0);
+    fb_screendump(qts, &width, &height, rgb);
+    g_assert_cmpint(width, ==, 800);
+    g_assert_cmpint(height, ==, 480);
+    g_assert_cmpmem(rgb, 6, "\xff\x00\x00\x00\x00\x00", 6);
+
+    /* 3 MiB: all of the lines */
+    fb_set(qts, 1024, 768, 32, UINT32_MAX);
+    fb_check(qts, 1024, 768, 32);
+
+    /* 7.9 MiB: the 409 lines that fit, which the display shows */
+    fb_set(qts, 1920, 1080, 32, 409);
+    fb_check(qts, 1920, 409, 32);
+    fb_screendump(qts, &width, &height, rgb);
+    g_assert_cmpint(width, ==, 1920);
+    g_assert_cmpint(height, ==, 409);
+
+    /* A reset brings back the size at boot */
+    qtest_system_reset(qts);
+    fb_check(qts, 640, 480, 16);
+
+    qtest_quit(qts);
+}
+
+/*
+ * The framebuffer channel of the older Pis sets the size and depth in one
+ * request, and answers with the pitch, base and size of what it kept
+ */
+static void test_mbox_framebuffer_channel(void)
+{
+    QTestState *qts = qtest_init("-machine raspi5b");
+    const uint64_t buf = 0x10000;
+    /* width, height, virtual width, height, pitch, depth, x, y, base, size */
+    const uint32_t req[] = { 1920, 1080, 1920, 1080, 0, 32, 0, 0, 0, 0 };
+
+    for (int i = 0; i < ARRAY_SIZE(req); i++) {
+        qtest_writel(qts, buf + 4 * i, req[i]);
+    }
+    qtest_writel(qts, MBOX_BASE + MBOX_WRITE, VC_BUS_RAM | buf | MBOX_CHAN_FB);
+    g_assert_true(mbox_has_response(qts));
+    g_assert_cmphex(qtest_readl(qts, MBOX_BASE + MBOX_READ), ==, MBOX_CHAN_FB);
+    g_assert_cmpuint(qtest_readl(qts, buf + 16), ==, 1920 * 4);
+    g_assert_cmphex(qtest_readl(qts, buf + 32), ==, VC_FB_BASE);
+    g_assert_cmpuint(qtest_readl(qts, buf + 36), ==, 1920 * 4 * 409);
+    fb_check(qts, 1920, 409, 32);
 
     qtest_quit(qts);
 }
@@ -4347,6 +4516,9 @@ int main(int argc, char **argv)
     qtest_add_func("/raspi5b/mbox/rtc-time", test_mbox_rtc_time);
     qtest_add_func("/raspi5b/mbox/rtc-alarm", test_mbox_rtc_alarm);
     qtest_add_func("/raspi5b/mbox/rtc-battery", test_mbox_rtc_battery);
+    qtest_add_func("/raspi5b/mbox/framebuffer", test_mbox_framebuffer);
+    qtest_add_func("/raspi5b/mbox/framebuffer-channel",
+                   test_mbox_framebuffer_channel);
     qtest_add_func("/raspi5b/mbox/firmware-migrate",
                    test_mbox_firmware_migrate);
     qtest_add_func("/raspi5b/rng/stopped", test_rng_stopped);

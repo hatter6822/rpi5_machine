@@ -223,8 +223,8 @@ static uint32_t raspi5b_board_rev(uint64_t ram_size)
  * Device tree nodes for hardware that is not modelled yet. They are marked
  * disabled rather than deleted so that phandle references stay valid. The
  * list shrinks as models land; a device behind a newly modelled one, such
- * as the Bluetooth radio on UARTA, joins it while it stays unmodelled. See
- * docs/PLAN.md.
+ * as the Bluetooth radio on UARTA, joins it while it stays unmodelled, as
+ * does a device whose driver needs one that is not. See docs/PLAN.md.
  */
 static const char *const raspi5b_unmodelled_compatibles[] = {
     "brcm,bcm2712-pcie",
@@ -252,9 +252,13 @@ static const char *const raspi5b_unmodelled_compatibles[] = {
     "brcm,brcm2711-dvp",
     "brcm,bcm2835-spi",
     /* Clients of the VideoCore firmware (mailbox) or of RP1's */
-    "brcm,bcm2708-fb",
     "raspberrypi,rpi-otp",
     "raspberrypi,rp1-firmware",
+    /*
+     * The firmware's framebuffer, whose Linux driver (bcm2708_fb) takes a
+     * channel of the DMA controller above
+     */
+    "brcm,bcm2708-fb",
     /*
      * Behind modelled devices: the Bluetooth radio on UARTA, the Wi-Fi
      * radio on SDIO2

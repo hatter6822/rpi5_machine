@@ -1,0 +1,172 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: A7om <hatter6822@gmail.com>
+Date: Sat, 26 Sep 2026 00:00:00 +0000
+Subject: [PATCH] hw/display/bcm2835_fb: Keep the framebuffer within the
+ VideoCore memory
+
+The framebuffer lies 1 MiB into the VideoCore memory, and how much of
+that memory it takes follows from the configuration a guest sets, up to
+3840x2560 pixels, with nothing to keep it inside. The boards so far
+give the VideoCore 64 MiB, in which the largest framebuffer fits at 32
+bits per pixel, but the BCM2712 SoC added later in this series gives it
+4 MiB: there, a guest asking for 1920x1080 pixels at 32 bits per pixel
+would be told that its framebuffer runs past the VideoCore memory into
+its own RAM, and would draw over that.
+
+When the configuration is validated, keep no more lines than fit in the
+VideoCore memory. The guest reads back the size it got, as the firmware
+interface expects it to ("The response may not be the same as the
+request so it must be checked"). Validate the configuration the board
+sets too, and require the VideoCore memory to reach past the
+framebuffer's offset.
+
+No functional change for the existing boards at the depths the hardware
+has: their 64 MiB holds the largest framebuffer at 32 bits per pixel.
+---
+ hw/display/bcm2835_fb.c         | 26 ++++++++++++++++++++++++--
+ hw/misc/bcm2835_property.c      | 12 ++++++------
+ include/hw/display/bcm2835_fb.h |  4 +++-
+ 3 files changed, 33 insertions(+), 9 deletions(-)
+
+diff --git a/hw/display/bcm2835_fb.c b/hw/display/bcm2835_fb.c
+index 7e88f942..3e133461 100644
+--- a/hw/display/bcm2835_fb.c
++++ b/hw/display/bcm2835_fb.c
+@@ -214,8 +214,10 @@ static bool fb_update_display(void *opaque)
+     return true;
+ }
+ 
+-void bcm2835_fb_validate_config(BCM2835FBConfig *config)
++void bcm2835_fb_validate_config(BCM2835FBState *s, BCM2835FBConfig *config)
+ {
++    uint32_t pitch;
++
+     /*
+      * Validate the config, and clip any bogus values into range,
+      * as the hardware does. Note that fb_update_display() relies on
+@@ -244,6 +246,20 @@ void bcm2835_fb_validate_config(BCM2835FBConfig *config)
+         config->yres_virtual = config->yres;
+     }
+ 
++    /*
++     * The framebuffer lies in the VideoCore memory, and the guest writes
++     * all of it: keep no more lines than fit there, so that it does not
++     * reach into memory the guest has for itself. A line too long to fit
++     * on its own, at a depth no hardware has, is still kept.
++     */
++    pitch = bcm2835_fb_get_pitch(config);
++    if (pitch) {
++        uint32_t lines = MAX((s->vcram_size - BCM2835_FB_OFFSET) / pitch, 1);
++
++        config->yres = MIN(config->yres, lines);
++        config->yres_virtual = MIN(config->yres_virtual, lines);
++    }
++
+     if (fb_use_offsets(config)) {
+         /* Clip the offsets so the viewport is within the physical screen */
+         config->xoffset = MIN(config->xoffset,
+@@ -286,7 +302,7 @@ static void bcm2835_fb_mbox_push(BCM2835FBState *s, uint32_t value)
+     newconf.pixo = s->config.pixo;
+     newconf.alpha = s->config.alpha;
+ 
+-    bcm2835_fb_validate_config(&newconf);
++    bcm2835_fb_validate_config(s, &newconf);
+ 
+     pitch = bcm2835_fb_get_pitch(&newconf);
+     size = bcm2835_fb_get_size(&newconf);
+@@ -419,6 +435,11 @@ static void bcm2835_fb_realize(DeviceState *dev, Error **errp)
+         error_setg(errp, "%s: required vcram-base property not set", __func__);
+         return;
+     }
++    if (s->vcram_size <= BCM2835_FB_OFFSET) {
++        error_setg(errp, "%s: vcram-size must exceed 0x%x", __func__,
++                   BCM2835_FB_OFFSET);
++        return;
++    }
+ 
+     obj = object_property_get_link(OBJECT(dev), "dma-mr", &error_abort);
+ 
+@@ -428,6 +449,7 @@ static void bcm2835_fb_realize(DeviceState *dev, Error **errp)
+     s->initial_config.xoffset = 0;
+     s->initial_config.yoffset = 0;
+     s->initial_config.base = s->vcram_base + BCM2835_FB_OFFSET;
++    bcm2835_fb_validate_config(s, &s->initial_config);
+ 
+     s->dma_mr = MEMORY_REGION(obj);
+     address_space_init(&s->dma_as, s->dma_mr, TYPE_BCM2835_FB "-memory");
+diff --git a/hw/misc/bcm2835_property.c b/hw/misc/bcm2835_property.c
+index 70f2ff3e..0983d10b 100644
+--- a/hw/misc/bcm2835_property.c
++++ b/hw/misc/bcm2835_property.c
+@@ -235,7 +235,7 @@ static size_t bcm2835_property_answer_tag(BCM2835PropertyState *s,
+     case RPI_FWREQ_FRAMEBUFFER_SET_PHYSICAL_WIDTH_HEIGHT:
+         fbconfig->xres = bcm2835_property_get32(s, value, bufsize, 0);
+         fbconfig->yres = bcm2835_property_get32(s, value, bufsize, 4);
+-        bcm2835_fb_validate_config(fbconfig);
++        bcm2835_fb_validate_config(s->fbdev, fbconfig);
+         *fbconfig_updated = true;
+         /* fall through */
+     case RPI_FWREQ_FRAMEBUFFER_GET_PHYSICAL_WIDTH_HEIGHT:
+@@ -248,7 +248,7 @@ static size_t bcm2835_property_answer_tag(BCM2835PropertyState *s,
+                                                        0);
+         fbconfig->yres_virtual = bcm2835_property_get32(s, value, bufsize,
+                                                        4);
+-        bcm2835_fb_validate_config(fbconfig);
++        bcm2835_fb_validate_config(s->fbdev, fbconfig);
+         *fbconfig_updated = true;
+         /* fall through */
+     case RPI_FWREQ_FRAMEBUFFER_GET_VIRTUAL_WIDTH_HEIGHT:
+@@ -261,7 +261,7 @@ static size_t bcm2835_property_answer_tag(BCM2835PropertyState *s,
+         break;
+     case RPI_FWREQ_FRAMEBUFFER_SET_DEPTH:
+         fbconfig->bpp = bcm2835_property_get32(s, value, bufsize, 0);
+-        bcm2835_fb_validate_config(fbconfig);
++        bcm2835_fb_validate_config(s->fbdev, fbconfig);
+         *fbconfig_updated = true;
+         /* fall through */
+     case RPI_FWREQ_FRAMEBUFFER_GET_DEPTH:
+@@ -273,7 +273,7 @@ static size_t bcm2835_property_answer_tag(BCM2835PropertyState *s,
+         break;
+     case RPI_FWREQ_FRAMEBUFFER_SET_PIXEL_ORDER:
+         fbconfig->pixo = bcm2835_property_get32(s, value, bufsize, 0);
+-        bcm2835_fb_validate_config(fbconfig);
++        bcm2835_fb_validate_config(s->fbdev, fbconfig);
+         *fbconfig_updated = true;
+         /* fall through */
+     case RPI_FWREQ_FRAMEBUFFER_GET_PIXEL_ORDER:
+@@ -285,7 +285,7 @@ static size_t bcm2835_property_answer_tag(BCM2835PropertyState *s,
+         break;
+     case RPI_FWREQ_FRAMEBUFFER_SET_ALPHA_MODE:
+         fbconfig->alpha = bcm2835_property_get32(s, value, bufsize, 0);
+-        bcm2835_fb_validate_config(fbconfig);
++        bcm2835_fb_validate_config(s->fbdev, fbconfig);
+         *fbconfig_updated = true;
+         /* fall through */
+     case RPI_FWREQ_FRAMEBUFFER_GET_ALPHA_MODE:
+@@ -303,7 +303,7 @@ static size_t bcm2835_property_answer_tag(BCM2835PropertyState *s,
+     case RPI_FWREQ_FRAMEBUFFER_SET_VIRTUAL_OFFSET:
+         fbconfig->xoffset = bcm2835_property_get32(s, value, bufsize, 0);
+         fbconfig->yoffset = bcm2835_property_get32(s, value, bufsize, 4);
+-        bcm2835_fb_validate_config(fbconfig);
++        bcm2835_fb_validate_config(s->fbdev, fbconfig);
+         *fbconfig_updated = true;
+         /* fall through */
+     case RPI_FWREQ_FRAMEBUFFER_GET_VIRTUAL_OFFSET:
+diff --git a/include/hw/display/bcm2835_fb.h b/include/hw/display/bcm2835_fb.h
+index f7ef076f..a44549f9 100644
+--- a/include/hw/display/bcm2835_fb.h
++++ b/include/hw/display/bcm2835_fb.h
+@@ -81,10 +81,12 @@ static inline uint32_t bcm2835_fb_get_size(BCM2835FBConfig *config)
+ 
+ /**
+  * bcm2835_fb_validate_config: check provided config
++ * @s: the framebuffer the configuration is for
++ * @config: the configuration to check
+  *
+  * Validates the configuration information provided by the guest and
+  * adjusts it if necessary.
+  */
+-void bcm2835_fb_validate_config(BCM2835FBConfig *config);
++void bcm2835_fb_validate_config(BCM2835FBState *s, BCM2835FBConfig *config);
+ 
+ #endif

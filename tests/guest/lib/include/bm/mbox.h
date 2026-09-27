@@ -38,6 +38,12 @@
 #define FW_TAG_SET_REBOOT_FLAGS 0x00038064u
 #define FW_TAG_RTC_REG          0x00030087u     /* Linux's rtc-rpi.c */
 #define FW_TAG_SET_RTC_REG      0x00038087u
+#define FW_TAG_FB_ALLOCATE      0x00040001u
+#define FW_TAG_FB_PITCH         0x00040008u
+#define FW_TAG_FB_DISPLAYS      0x00040013u
+#define FW_TAG_FB_SET_PHYSICAL  0x00048003u
+#define FW_TAG_FB_SET_VIRTUAL   0x00048004u
+#define FW_TAG_FB_SET_DEPTH     0x00048005u
 
 /*
  * Send a property request: @buf is the whole message (size, code, tags,

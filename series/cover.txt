@@ -6,15 +6,15 @@ and UARTA (a 16550), the system timer, the watchdog and reset status
 block, the RNG200, the Broadcom level 2 interrupt controllers, the SoC's
 two GPIO blocks with their pin controllers, the HDMI ports' DDC I2C
 controllers, the two SD hosts, and the VideoCore mailbox with the
-firmware property channel, which answers for the Pi 5's clocks, power
-domains, reboot flags and real-time clock as its firmware does. On the
-board, system_powerdown presses the power button on a GPIO line, the
-activity LED's changes are trace events, a monitor's EDID answers on
-HDMI0's DDC bus, and -drive if=sd puts a card in the SD card slot, whose
-card-detect switch drives a GPIO line. Every other block of the memory
-map is an unimplemented-device placeholder. The RP1 south bridge, behind
-PCIe, is not modelled yet, so there is no Ethernet, USB or 40-pin
-header.
+firmware's property and framebuffer channels, which answer for the
+Pi 5's clocks, power domains, reboot flags, real-time clock and
+framebuffer as its firmware does. On the board, system_powerdown presses
+the power button on a GPIO line, the activity LED's changes are trace
+events, a monitor's EDID answers on HDMI0's DDC bus, and -drive if=sd
+puts a card in the SD card slot, whose card-detect switch drives a GPIO
+line. Every other block of the memory map is an unimplemented-device
+placeholder. The RP1 south bridge, behind PCIe, is not modelled yet, so
+there is no Ethernet, USB or 40-pin header.
 
 Bare-metal code, the Pi's boot firmware and Linux run on it. The machine
 boots like the Raspberry Pi firmware does: the guest enters at EL2 with
@@ -40,18 +40,21 @@ The series is in four parts:
   The system timer now stops its comparators on reset and migrates them.
   The watchdog now counts down instead of resetting the machine as soon
   as it is armed, and the reset status survives the reset it reports.
-  The property channel no longer answers a buffer the firmware could
-  not read, answers a request cut short with the interface's error
-  code, keeps every tag within the value buffer it declares, and
-  answers the firmware and board identity tags Linux asks for and the
-  notification it sends before a reset or a power-off.
+  The property channel no longer answers a buffer the firmware could not
+  read, answers a request cut short with the interface's error code,
+  keeps every tag within the value buffer it declares, and answers the
+  firmware and board identity tags Linux asks for and the notification
+  it sends before a reset or a power-off. The framebuffer channel
+  answers again, where since the memory API began blocking re-entrant
+  I/O it answered 0 and then jammed the mailbox.
 
 - New models for the RNG200, for the Broadcom STB level 2 interrupt
   controller, GPIO controller, pin controller and I2C controller, for
   the BCM2712's SD host controller, and for the Pi 5's firmware property
   interface, a subclass of the BCM2835's; a 16550 change, an SDHCI
-  change, two property interface changes, three target/arm changes TF-A
-  needs, and four fixes for bugs found by the tests:
+  change, two property interface changes, a framebuffer change, three
+  target/arm changes TF-A needs, and four fixes for bugs found by the
+  tests:
   - a property for the depth of the 16550's FIFOs, as UARTA's hold 32
     bytes and Linux fills them;
   - an SDHCI output that follows the card in the slot, for boards whose
@@ -60,6 +63,9 @@ The series is in four parts:
     own, and a class method lets a subclass answer tags ahead of it, so
     that the Pi 5's firmware answers with its own values without
     changing the older boards' answers;
+  - the framebuffer stays within the VideoCore memory, of which the
+    BCM2712 has 4 MiB, where a guest could be told that it ran on into
+    its own RAM;
   - the Cortex-A76's IMPLEMENTATION DEFINED registers, without which
     TF-A stops in its reset handler;
   - a CPU property that sets MPIDR_EL1.MT, by which TF-A numbers the
@@ -84,12 +90,12 @@ Testing: the qtest covers every modelled device at register level, and
 the -bios handoff. A bare-metal test suite runs on 1 to 4 cores, at EL2
 and EL3, with and without a device tree, and on TF-A's PSCI. It covers
 per-core timers and SGIs, SPI routing, PSCI, the mailbox, the firmware's
-clocks, a tryboot and the real-time clock, the watchdog and system
-resets, the RNG, the level 2 interrupt controllers, GPIO interrupts, the
-UART and the SD card's master boot record. Out of tree, TF-A, U-Boot and
-the EDK2 port boot from an SD card, and Linux mounts its root file
-system from one. The suite lives out of tree, with the rest of the
-development history:
+clocks, a tryboot, the real-time clock and a framebuffer, the watchdog
+and system resets, the RNG, the level 2 interrupt controllers, GPIO
+interrupts, the UART and the SD card's master boot record. Out of tree,
+TF-A, U-Boot and the EDK2 port boot from an SD card, and Linux mounts
+its root file system from one. The suite lives out of tree, with the
+rest of the development history:
 https://github.com/hatter6822/rpi5_machine
 
 The new files are added to the existing Raspberry Pi entry in

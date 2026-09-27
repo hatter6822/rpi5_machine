@@ -32,7 +32,10 @@ Implemented devices
   ``0x0`` (as Linux passes them) and ``0xc000_0000`` (as code for older
   Pis does); requests elsewhere get no answer, as on hardware. The
   VideoCore keeps the top 4 MiB of that GiB, which the device tree memory
-  node leaves out
+  node leaves out. The firmware's framebuffer, the machine's display, lies
+  1 MiB into it: 640 x 480 pixels at 16 bits per pixel at boot, then the
+  size and depth a guest sets, of which it keeps only the lines that fit
+  in the 3 MiB left (all of 1024 x 768 at 32 bits per pixel)
 * RNG200 random number generator at ``0x10_7d20_8000``, fed by QEMU's
   random source (reproducible with ``-seed``)
 * The seven Broadcom level 2 interrupt controllers of the firmware's
@@ -327,7 +330,9 @@ firmware does before it starts the OS:
 * the node ``ethernet0`` names gets the board's Ethernet address in
   ``local-mac-address``;
 * nodes of devices that are not modelled yet get ``status = "disabled"``,
-  and CPU nodes of cores ``-smp`` leaves out ``status = "fail"``.
+  as does the firmware's framebuffer, whose Linux driver takes a channel
+  of the DMA controller, and CPU nodes of cores ``-smp`` leaves out
+  ``status = "fail"``.
 
 Every reset gives the next boot its own tree, as the firmware writes one
 for each boot: ``rsts``, ``partition``, ``count``, ``tryboot`` and the

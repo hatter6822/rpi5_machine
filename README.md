@@ -37,13 +37,13 @@ Pi OS booting from an SD card, is in progress.
 | SD hosts (SDIO1 with the SD card slot, SDIO2) with SDMA and ADMA2: `-drive if=sd` inserts a card, which the monitor can change and eject at run time, with the slot's card-detect line on GIO AON 5 | done |
 | System reset (PSCI, watchdog, monitor) and power-off | done |
 | Firmware boot contract: EL2 entry, PSCI over SMC (`secure=off`); guest-owned EL3 (`secure=on`) | done |
-| Firmware loaded with `-bios` (`secure=on`) the way the Pi's firmware loads it: TF-A's `rpi5` BL31 runs the bare-metal suite on its own PSCI and boots Linux, directly or through U-Boot; the EDK2 port reaches the UEFI shell | done |
+| Firmware loaded with `-bios` (`secure=on`) the way the Pi's firmware loads it: TF-A's `rpi5` BL31 runs the bare-metal suite on its own PSCI and boots Linux, directly or through U-Boot; the EDK2 port draws its boot menu on the firmware's framebuffer and reaches the UEFI shell | done |
 | Complete BCM2712 memory map, unmodelled blocks logged with `-d unimp` | done |
 | Built-in device tree when no `-dtb` is given, validated against the Linux bindings | done |
 | The firmware's device-tree changes, made anew for each boot: model and serial number, the command line it builds, `/chosen` with the boot's reset status, partition, count and tryboot, the power supply and seeds, the CMA pool and the bootloader configuration | done |
-| Bare-metal test suite (34 tests: interrupts, timers and SGIs on every core, PSCI, resets, mailbox, the firmware's clocks and real-time clock, a tryboot, RNG, UART, L2 interrupt controllers, GPIO interrupts, the SD card's master boot record, Secure/Non-secure GIC groups, the A76's MPIDR and IMPDEF registers) on 1–4 cores, EL2 and EL3 | done |
+| Bare-metal test suite (35 tests: interrupts, timers and SGIs on every core, PSCI, resets, mailbox, the firmware's clocks, real-time clock and framebuffer, a tryboot, RNG, UART, L2 interrupt controllers, GPIO interrupts, the SD card's master boot record, Secure/Non-secure GIC groups, the A76's MPIDR and IMPDEF registers) on 1–4 cores, EL2 and EL3 | done |
 | Linux: stock Raspberry Pi OS kernel mounts its root file system from an SD card, on the built-in device tree or `bcm2712-rpi-5-b.dtb`, started directly or by U-Boot from the card | smoke-tested |
-| VideoCore mailbox and firmware property channel: BCM283x tag set, board and firmware identity, and the Pi 5's own answers: its clocks (cpufreq), power domains, reboot flags (tryboot) and real-time clock (`hwclock`) | done; framebuffer tags next (WS2.3c) |
+| VideoCore mailbox and firmware property channel: BCM283x tag set, board and firmware identity, and the Pi 5's own answers: its clocks (cpufreq), power domains, reboot flags (tryboot) and real-time clock (`hwclock`); the framebuffer, the machine's display, within the VideoCore's 4 MiB | done; the SoC's temperature next (WS2.6) |
 | PCIe, RP1 (with the 40-pin header's GPIO), … | see [docs/PLAN.md](docs/PLAN.md) |
 
 ## Repository layout
