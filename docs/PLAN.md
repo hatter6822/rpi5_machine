@@ -59,7 +59,7 @@ commit (or a short series) with its own tests.
 
 ## 2. Current state
 
-Delivered so far: M1 (WS0.1–WS0.3, WS0.5, WS0.6, WS2.1, WS2.2, WS2.3a, WS2.4, WS2.5, WS3.2, WS3.6, WS9.2), M2 (WS1.2, WS1.5, WS3.1, WS3.3, WS3.4) and, of M3, WS2.3b–WS2.3d, WS4.1–WS4.6 and WS5.1:
+Delivered so far: M1 (WS0.1–WS0.3, WS0.5, WS0.6, WS2.1, WS2.2, WS2.3a, WS2.4, WS2.5, WS3.2, WS3.6, WS9.2), M2 (WS1.2, WS1.5, WS3.1, WS3.3, WS3.4) and, of M3, WS2.3b–WS2.3e, WS4.1–WS4.6 and WS5.1:
 
 | Area | State |
 | --- | --- |
@@ -619,6 +619,20 @@ qtests step it. On a Pi 5 the alarm powers a halted board back on,
 which QEMU leaves out: powering off ends QEMU, so the alarm only goes
 pending.
 
+*WS2.3e, nothing to model:* the Pi 5 has no firmware GPIO expander.
+Neither the firmware's `bcm2712-rpi-5-b.dtb` nor its downstream sources
+(`bcm2712-rpi-5-b.dts`, `bcm2712-rpi.dtsi`, `bcm2712.dtsi`) have the
+older Pis' `raspberrypi,firmware-gpio` node, the only one the expander's
+driver, `gpio-raspberrypi-exp`, binds to, and the lines the expander
+drove have moved to GPIO blocks the ARM owns: the activity LED to GIO
+AON 9 (WS4.6), the SD card's power and I/O voltage to GIO AON 4 and 3,
+the Wi-Fi and Bluetooth enables to GIO 28 and 29, and the power LED and
+the cameras' power enables (`cam0_reg`, `cam1_reg`) to RP1 GPIOs 44, 34
+and 46 (WS7). Linux asks for none of `GET/SET_GPIO_STATE` and
+`GET/SET_GPIO_CONFIG` on either tree, so they stay unanswered, logged as
+unimplemented like any tag the model lacks (`TODO(WS0.4)`: what the Pi
+5's firmware answers for them).
+
 **Depends:** WS2.2.
 `bcm2835-property` implements the tags the Pi 3/4 models need. Rather
 than growing one `switch` further, split the tag handlers into a table
@@ -632,7 +646,7 @@ sub-units. Tag numbers are in Linux
 | 2.3b (M) | `GET/SET_CLOCK_RATE`, `GET_MAX/MIN_CLOCK_RATE`, `GET/SET_CLOCK_STATE`, `GET/SET_POWER_STATE`, `GET/SET_DOMAIN_STATE`, `GET_TEMPERATURE`, `GET_MAX_TEMPERATURE`, `GET_THROTTLED`, `NOTIFY_REBOOT`, `GET/SET_REBOOT_FLAGS` | Linux `raspberrypi-clk`, `raspberrypi-power`, `firmware-reset`, `raspberrypi-cpufreq`, hwmon |
 | 2.3c (S) | `FRAMEBUFFER_*` (allocate, physical/virtual size, depth, pitch) | WS8.1 |
 | 2.3d (S) | `GET/SET_RTC_REG` (time, alarm, alarm enable, charger) | `rtc-rpi` on the Pi 5 |
-| 2.3e (S) | `GET/SET_GPIO_STATE`, `GET/SET_GPIO_CONFIG` (firmware GPIO expander: activity LED, camera and display power) | `gpio-raspberrypi-exp`, `leds-gpio` |
+| 2.3e (S) | `GET/SET_GPIO_STATE`, `GET/SET_GPIO_CONFIG` (firmware GPIO expander: activity LED, camera and display power) | `gpio-raspberrypi-exp`, `leds-gpio` on the older Pis; none on the Pi 5 (above) |
 
 Design points: clock rates are a table of `{id, rate, min, max, enabled}`
 seeded from real firmware values (`vcgencmd measure_clock` on hardware or
