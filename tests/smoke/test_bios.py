@@ -77,8 +77,8 @@ class BiosOptionsTest(unittest.TestCase):
                                    "-bios", str(GUEST))
 
     def test_dtb_overlap(self):
-        """dtb-address on the armstub, in the BSS an Image declares, or on
-        the initrd"""
+        """dtb-address on the armstub (0 is an address, not the default),
+        in the BSS an Image declares, or on the initrd"""
         with tempfile.TemporaryDirectory() as tmp:
             image = Path(tmp) / "Image"
             header = bytearray(64)
@@ -87,7 +87,8 @@ class BiosOptionsTest(unittest.TestCase):
             image.write_bytes(header)
             initrd = Path(tmp) / "initrd"
             initrd.write_bytes(bytes(1 << 20))
-            for addr, what in ((0x100, "armstub at 0x0-"),
+            for addr, what in ((0, "armstub at 0x0-"),
+                               (0x100, "armstub at 0x0-"),
                                (0x400000, "kernel at 0x200000-0x11fffff"),
                                (0x8080000, "initrd at 0x8000000-0x80fffff")):
                 with self.subTest(addr=hex(addr)):

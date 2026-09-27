@@ -52,6 +52,8 @@ struct Raspi5bMachineState {
     uint32_t board_rev;
     uint64_t serial;
     uint64_t dtb_addr;
+    /* Whether dtb-address was given at all: 0 is an address like any other */
+    bool dtb_addr_set;
     /* The size of the image -bios loaded, which the built-in tree reserves */
     uint64_t armstub_size;
     bool secure;
@@ -804,7 +806,7 @@ static void raspi5b_boot_armstub(Raspi5bMachineState *s,
         int dtb_size;
 
         /* As for -kernel: the kernel maps the tree's 2 MiB block early */
-        dtb = s->dtb_addr ? s->dtb_addr : QEMU_ALIGN_UP(next, 2 * MiB);
+        dtb = s->dtb_addr_set ? s->dtb_addr : QEMU_ALIGN_UP(next, 2 * MiB);
         s->binfo.dtb_start = dtb;
         dtb_size = arm_load_dtb(dtb, &s->binfo, 0, as, machine, cpu);
         if (dtb_size < 0) {
@@ -852,11 +854,12 @@ static void raspi5b_machine_init(MachineState *machine)
                      "use -M raspi5b,secure=on");
         exit(EXIT_FAILURE);
     }
-    if (s->dtb_addr && !machine->firmware) {
+    if (s->dtb_addr_set && !machine->firmware) {
         error_report("dtb-address places the device tree for -bios only");
         exit(EXIT_FAILURE);
     }
-    if (s->dtb_addr % 8 || s->dtb_addr >= BCM2712_VC_RAM_BASE) {
+    if (s->dtb_addr_set &&
+        (s->dtb_addr % 8 || s->dtb_addr >= BCM2712_VC_RAM_BASE)) {
         error_report("dtb-address must be a multiple of 8 below 0x%x",
                      BCM2712_VC_RAM_BASE);
         exit(EXIT_FAILURE);
@@ -930,7 +933,11 @@ static void raspi5b_get_dtb_addr(Object *obj, Visitor *v, const char *name,
 static void raspi5b_set_dtb_addr(Object *obj, Visitor *v, const char *name,
                                  void *opaque, Error **errp)
 {
-    visit_type_uint64(v, name, &RASPI5B_MACHINE(obj)->dtb_addr, errp);
+    Raspi5bMachineState *s = RASPI5B_MACHINE(obj);
+
+    if (visit_type_uint64(v, name, &s->dtb_addr, errp)) {
+        s->dtb_addr_set = true;
+    }
 }
 
 static bool raspi5b_get_builtin_dtb(Object *obj, Error **errp)
