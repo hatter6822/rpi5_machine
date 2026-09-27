@@ -17,9 +17,9 @@ raspi5b: PSCI SYSTEM_OFF
 
 ## Status
 
-Milestones M1 (bare-metal and microkernel bring-up) and M2 (the Pi's own
-boot chain: TF-A, U-Boot and UEFI run unmodified) are done; M3, Raspberry
-Pi OS booting from an SD card, is in progress.
+Milestones M1 (bare-metal and microkernel bring-up), M2 (the Pi's own
+boot chain: TF-A, U-Boot and UEFI run unmodified) and M3 (Raspberry Pi
+OS Lite boots from an SD card to its login prompt) are done.
 
 | Area | State |
 | --- | --- |
@@ -44,7 +44,7 @@ Pi OS booting from an SD card, is in progress.
 | The firmware's device-tree changes, made anew for each boot: model and serial number, the command line it builds, `/chosen` with the boot's reset status, partition, count and tryboot, the power supply and seeds, the CMA pool and the bootloader configuration | done |
 | Bare-metal test suite (36 tests: interrupts, timers and SGIs on every core, PSCI, resets, mailbox, the firmware's clocks, real-time clock and framebuffer, a tryboot, RNG, the SoC's temperature, UART, L2 interrupt controllers, GPIO interrupts, the SD card's master boot record, Secure/Non-secure GIC groups, the A76's MPIDR and IMPDEF registers) on 1–4 cores, EL2 and EL3 | done |
 | Linux: stock Raspberry Pi OS kernel mounts its root file system from an SD card, on the built-in device tree or `bcm2712-rpi-5-b.dtb`, started directly or by U-Boot from the card | smoke-tested |
-| SD card images booted as a Pi 5's firmware boots them (`scripts/rpi5-boot`): `config.txt` with its filters, the kernel, device tree, overlays and parameters (the blob the firmware's `dtmerge` makes), initramfs and command line it names, the card read again at each reboot with what the reboot left (tryboot, the boot count, the partition asked for) | smoke-tested with Raspberry Pi OS's kernel, overlays and boot files; a complete Raspberry Pi OS Lite image not yet |
+| SD card images booted as a Pi 5's firmware boots them (`scripts/rpi5-boot`): `config.txt` with its filters, the kernel, device tree, overlays and parameters (the blob the firmware's `dtmerge` makes), initramfs and command line it names, the card read again at each reboot with what the reboot left (tryboot, the boot count, the partition asked for) | done: Raspberry Pi OS Lite (2026-09-15, trixie) boots to its login prompt, and `reboot` and `poweroff` work (by hand); smoke-tested in CI with Raspberry Pi OS's kernel, overlays and boot files |
 | VideoCore mailbox and firmware property channel: BCM283x tag set, board and firmware identity, and the Pi 5's own answers: its clocks (cpufreq), power domains, reboot flags (tryboot), real-time clock (`hwclock`) and the SoC's temperature (`vcgencmd measure_temp`); the framebuffer, the machine's display, within the VideoCore's 4 MiB | done |
 | System DMA controller | deferred: no modelled device uses it yet ([docs/PLAN.md](docs/PLAN.md), WS5.2) |
 | PCIe, RP1 (with the 40-pin header's GPIO), … | see [docs/PLAN.md](docs/PLAN.md) |
@@ -139,7 +139,7 @@ mtools, evaluates `config.txt` for a Pi 5, applies the overlays and
 parameters it names to the device tree as the firmware does, and runs QEMU
 with the card in the SD slot and the kernel, tree, initramfs and command
 line it chose. When the guest reboots, it reads the card again and starts
-QEMU again, as Raspberry Pi OS's first boot needs, with what the reboot
+QEMU again, as the Pi reads its card at every boot, with what the reboot
 left: the tryboot flag (`reboot "0 tryboot"`, for updates through
 `tryboot.txt` or `autoboot.txt`'s A/B partitions), the boot count, and
 the partition the watchdog's reset status asks for.
@@ -148,6 +148,19 @@ the partition the watchdog's reset status asks for.
 $ xz -dk raspios-lite.img.xz
 $ truncate -s 8G raspios-lite.img
 $ scripts/rpi5-boot raspios-lite.img -- -m 8G
+```
+
+Raspberry Pi OS Lite comes without a user. To log in on the serial
+console, give the card one before its first boot, as Raspberry Pi's
+headless setup does: a `userconf.txt` on the boot partition, holding the
+name, a colon and the password's hash, which mtools writes at the
+partition's offset (`START` below is its first sector, as `fdisk -l`
+shows it). The first boot grows the root file system to the card and
+trims it, which takes a few minutes.
+
+```
+$ echo "pi:$(openssl passwd -6)" > userconf.txt
+$ MTOOLS_SKIP_CHECK=1 mcopy -i raspios-lite.img@@$((START * 512)) userconf.txt ::
 ```
 
 The image is the card, which the guest writes to; QEMU's SD card needs a

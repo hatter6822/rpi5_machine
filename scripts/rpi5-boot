@@ -14,15 +14,15 @@ tree as the firmware's dtoverlay code does (the blob matches dtmerge's),
 turns the command line's serial0 into the UART it names, and runs QEMU
 with the card in the SD slot and the kernel, tree, initramfs and command
 line it chose. When the guest reboots, rpi5-boot reads the card again
-for the next boot, as the bootloader does: Raspberry Pi OS rewrites
-cmdline.txt on its first boot and then reboots. The next boot is the
-one the reset starts: before it ends QEMU, rpi5-boot reads what the
-reset leaves, which the next QEMU starts with and autoboot.txt and
-config.txt test: the firmware's tryboot flag (reboot "0 tryboot"), the
-boot count, and the partition the OS asked for in the watchdog's reset
-status (Linux passes reboot N's partition to PSCI's SYSTEM_RESET2,
-which QEMU lacks). It stops when the guest powers off or QEMU ends
-otherwise.
+for the next boot, as the bootloader does: Raspberry Pi OS before
+trixie rewrites cmdline.txt on its first boot and then reboots. The
+next boot is the one the reset starts: before it ends QEMU, rpi5-boot
+reads what the reset leaves, which the next QEMU starts with and
+autoboot.txt and config.txt test: the firmware's tryboot flag (reboot
+"0 tryboot"), the boot count, and the partition the OS asked for in the
+watchdog's reset status (Linux passes reboot N's partition to PSCI's
+SYSTEM_RESET2, which QEMU lacks). It stops when the guest powers off or
+QEMU ends otherwise.
 
 Reading the image needs mtools. The image is the card, which the guest
 writes to: a raw image, decompressed (xz -d), whose size QEMU's SD card
