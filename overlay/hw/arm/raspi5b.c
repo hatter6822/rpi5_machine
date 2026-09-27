@@ -673,19 +673,20 @@ static hwaddr raspi5b_load_kernel(const char *filename, AddressSpace *as,
 }
 
 /*
- * The device tree goes wherever dtb-address says, as with the firmware's
- * device_tree_address=: refuse a place where it would overlap @what, which
- * lies from @start to @end, rather than let one overwrite the other, or
- * the kernel clear the tree with its BSS
+ * -bios lays out what it loads as the firmware does, but the armstub's
+ * size, a kernel's addresses and dtb-address (device_tree_address=) can
+ * still make two of them meet: refuse that, rather than load one over the
+ * other or let a kernel clear the device tree with its BSS. @a lies from
+ * @a_start to @a_end, @b from @b_start to @b_end.
  */
-static void raspi5b_check_dtb_place(hwaddr dtb, hwaddr dtb_size,
-                                    const char *what, hwaddr start,
-                                    hwaddr end)
+static void raspi5b_check_overlap(const char *a, hwaddr a_start, hwaddr a_end,
+                                  const char *b, hwaddr b_start, hwaddr b_end)
 {
-    if (end > start && ranges_overlap(dtb, dtb_size, start, end - start)) {
-        error_report("the device tree at 0x%" HWADDR_PRIx "-0x%" HWADDR_PRIx
+    if (a_end > a_start && b_end > b_start &&
+        ranges_overlap(a_start, a_end - a_start, b_start, b_end - b_start)) {
+        error_report("the %s at 0x%" HWADDR_PRIx "-0x%" HWADDR_PRIx
                      " overlaps the %s at 0x%" HWADDR_PRIx "-0x%" HWADDR_PRIx,
-                     dtb, dtb + dtb_size - 1, what, start, end - 1);
+                     a, a_start, a_end - 1, b, b_start, b_end - 1);
         exit(EXIT_FAILURE);
     }
 }
@@ -705,7 +706,7 @@ static void raspi5b_boot_armstub(Raspi5bMachineState *s,
                                                machine->firmware);
     g_autofree uint8_t *stub = NULL;
     hwaddr kernel = RASPI5B_KERNEL_ADDR, next = RASPI5B_INITRD_ADDR;
-    hwaddr kernel_start = 0, kernel_end = 0, dtb = 0;
+    hwaddr kernel_start = 0, kernel_end = 0, dtb = 0, stub_end;
     gsize size;
 
     if (!filename ||
@@ -713,10 +714,13 @@ static void raspi5b_boot_armstub(Raspi5bMachineState *s,
         error_report("could not load the armstub '%s'", machine->firmware);
         exit(EXIT_FAILURE);
     }
+    stub_end = BCM2712_RAM_BASE + size;
 
     if (machine->kernel_filename) {
         kernel = raspi5b_load_kernel(machine->kernel_filename, as,
                                      &kernel_start, &kernel_end);
+        raspi5b_check_overlap("kernel", kernel_start, kernel_end,
+                              "armstub", BCM2712_RAM_BASE, stub_end);
         next = MAX(next, kernel_end);
     }
     if (machine->initrd_filename) {
@@ -734,6 +738,8 @@ static void raspi5b_boot_armstub(Raspi5bMachineState *s,
         s->binfo.initrd_start = next;
         s->binfo.initrd_size = initrd_size;
         next += initrd_size;
+        raspi5b_check_overlap("initrd", s->binfo.initrd_start, next,
+                              "armstub", BCM2712_RAM_BASE, stub_end);
     }
     if (s->binfo.dtb_filename || s->binfo.get_dtb) {
         int dtb_size;
@@ -745,18 +751,18 @@ static void raspi5b_boot_armstub(Raspi5bMachineState *s,
         if (dtb_size < 0) {
             exit(EXIT_FAILURE);
         }
-        raspi5b_check_dtb_place(dtb, dtb_size, "armstub", BCM2712_RAM_BASE,
-                                BCM2712_RAM_BASE + size);
-        raspi5b_check_dtb_place(dtb, dtb_size, "kernel", kernel_start,
-                                kernel_end);
-        raspi5b_check_dtb_place(dtb, dtb_size, "initrd",
-                                s->binfo.initrd_start,
-                                s->binfo.initrd_start + s->binfo.initrd_size);
+        raspi5b_check_overlap("device tree", dtb, dtb + dtb_size,
+                              "armstub", BCM2712_RAM_BASE, stub_end);
+        raspi5b_check_overlap("device tree", dtb, dtb + dtb_size,
+                              "kernel", kernel_start, kernel_end);
+        raspi5b_check_overlap("device tree", dtb, dtb + dtb_size,
+                              "initrd", s->binfo.initrd_start,
+                              s->binfo.initrd_start + s->binfo.initrd_size);
         next = MAX(next, dtb + dtb_size);
     }
-    if (next > BCM2712_VC_RAM_BASE || kernel > UINT32_MAX) {
-        error_report("the kernel, initrd and device tree must fit below "
-                     "0x%x, where the VideoCore's memory starts",
+    if (MAX(next, stub_end) > BCM2712_VC_RAM_BASE || kernel > UINT32_MAX) {
+        error_report("the armstub, kernel, initrd and device tree must fit "
+                     "below 0x%x, where the VideoCore's memory starts",
                      BCM2712_VC_RAM_BASE);
         exit(EXIT_FAILURE);
     }

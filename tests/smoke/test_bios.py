@@ -77,6 +77,26 @@ class BiosOptionsTest(unittest.TestCase):
                                              "-initrd", str(initrd))
                     self.assertIn(f" overlaps the {what}", err)
 
+    def test_armstub_overlap(self):
+        """An armstub that reaches the kernel's address, whether the kernel
+        is an Image or an ELF (the guest, linked there)"""
+        with tempfile.TemporaryDirectory() as tmp:
+            stub = Path(tmp) / "armstub"
+            stub.write_bytes(bytes(3 << 20))
+            image = Path(tmp) / "Image"
+            header = bytearray(64)
+            header[16:24] = (1 << 20).to_bytes(8, "little")    # image_size
+            header[56:60] = b"ARM\x64"
+            image.write_bytes(header)
+            for kernel, where in ((image, "0x200000-0x2fffff"),
+                                  (GUEST, "0x200000-")):
+                with self.subTest(kernel=kernel.name):
+                    err = self.assertRefused(f"the kernel at {where}",
+                                             "-M", "raspi5b,secure=on",
+                                             "-bios", str(stub),
+                                             "-kernel", str(kernel))
+                    self.assertIn(" overlaps the armstub at 0x0-0x2fffff", err)
+
     def test_kernel_too_large(self):
         """An Image whose declared size, BSS included, reaches the
         VideoCore's memory"""
@@ -86,8 +106,8 @@ class BiosOptionsTest(unittest.TestCase):
             header[16:24] = (1 << 30).to_bytes(8, "little")    # image_size
             header[56:60] = b"ARM\x64"
             image.write_bytes(header)
-            self.assertRefused("the kernel, initrd and device tree must fit "
-                               f"below {VC_RAM_BASE:#x}",
+            self.assertRefused("the armstub, kernel, initrd and device tree "
+                               f"must fit below {VC_RAM_BASE:#x}",
                                "-M", "raspi5b,secure=on",
                                "-bios", str(GUEST), "-kernel", str(image))
 
