@@ -214,6 +214,103 @@ TEST(mbox_clocks, "mbox/clocks")
     ASSERT_EQ(limit, 85000);                    /* 85 degrees C */
 }
 
+/* The real-time clock's registers, as Linux's rtc-rpi driver numbers them */
+enum {
+    RTC_TIME,                   /* seconds since 1970, UTC */
+    RTC_ALARM,
+    RTC_ALARM_PENDING,          /* write 1 to clear */
+    RTC_ALARM_ENABLE,
+    RTC_CHARGE,                 /* the battery's charging voltage, uV */
+    RTC_CHARGE_MIN,
+    RTC_CHARGE_MAX,
+    RTC_BATTERY,                /* the battery's voltage, uV */
+};
+
+/* The system timer's counter, 1 MHz: BCM2835 ARM Peripherals, 12.1 */
+#define ST_CLO                  0x04
+
+/* Read real-time clock register @reg, or write @value to it first */
+static bool rtc_reg(uint32_t reg, bool write, uint32_t *value)
+{
+    uint32_t val[2] = { reg, write ? *value : 0 };
+
+    if (mbox_tag(write ? FW_TAG_SET_RTC_REG : FW_TAG_RTC_REG, val, 2) != 8 ||
+        val[0] != reg) {
+        return false;
+    }
+    *value = val[1];
+    return true;
+}
+
+/*
+ * The real-time clock as Linux's rtc-rpi driver, and through it hwclock,
+ * use it: it counts seconds, takes a new time and an alarm, and reports
+ * the range of the backup battery's charger (TODO(WS0.4): check the range
+ * on hardware). The test puts back what it changes, as on hardware the
+ * time is the board's and an enabled alarm powers it on, and leaves the
+ * charger alone, which would harm a battery that is not rechargeable.
+ */
+TEST(mbox_rtc, "mbox/rtc")
+{
+    uint32_t time, next, set, value, alarm, enabled, charge, min, max, bat;
+    uint32_t start, us;
+
+    /*
+     * A second of the system timer's, within 10%: the error is how late
+     * each of the two polls sees the second change
+     */
+    ASSERT_MSG(rtc_reg(RTC_TIME, false, &time), "no real-time clock");
+    ASSERT(wait_until(rtc_reg(RTC_TIME, false, &next) && next != time,
+                      1500000));
+    start = mmio_read32(bm_plat.systimer + ST_CLO);
+    ASSERT(wait_until(rtc_reg(RTC_TIME, false, &time) && time != next,
+                      1500000));
+    us = mmio_read32(bm_plat.systimer + ST_CLO) - start;
+    bm_test_note("time %u, a second in %u us", time, us);
+    ASSERT_EQ(time, next + 1);
+    ASSERT_GE(us, 900000);
+    ASSERT_LE(us, 1100000);
+
+    /* hwclock -w, a million seconds on, then back */
+    set = value = time + 1000000;
+    ASSERT(rtc_reg(RTC_TIME, true, &value));
+    ASSERT_LE(value - set, 1);
+    ASSERT(rtc_reg(RTC_TIME, false, &value));
+    ASSERT_LE(value - set, 1);
+    value -= 1000000;
+    ASSERT(rtc_reg(RTC_TIME, true, &value));
+
+    /* An alarm an hour on, enabled and not; clearing it, as rtc-rpi does */
+    ASSERT(rtc_reg(RTC_ALARM, false, &alarm));
+    ASSERT(rtc_reg(RTC_ALARM_ENABLE, false, &enabled));
+    bm_test_note("alarm %u, enabled %u", alarm, enabled);
+    value = time + 3600;
+    ASSERT(rtc_reg(RTC_ALARM, true, &value));
+    ASSERT_EQ(value, time + 3600);
+    value = !enabled;
+    ASSERT(rtc_reg(RTC_ALARM_ENABLE, true, &value));
+    ASSERT_EQ(value, !enabled);
+    value = 1;
+    ASSERT(rtc_reg(RTC_ALARM_PENDING, true, &value));
+    ASSERT_EQ(value, 0);
+    value = enabled;
+    ASSERT(rtc_reg(RTC_ALARM_ENABLE, true, &value));
+    ASSERT_EQ(value, enabled);
+    value = alarm;
+    ASSERT(rtc_reg(RTC_ALARM, true, &value));
+    ASSERT_EQ(value, alarm);
+
+    ASSERT(rtc_reg(RTC_CHARGE, false, &charge));
+    ASSERT(rtc_reg(RTC_CHARGE_MIN, false, &min));
+    ASSERT(rtc_reg(RTC_CHARGE_MAX, false, &max));
+    ASSERT(rtc_reg(RTC_BATTERY, false, &bat));
+    bm_test_note("charger %u uV (%u-%u uV), battery %u uV", charge, min, max,
+                 bat);
+    ASSERT_EQ(min, 1300000);
+    ASSERT_EQ(max, 4400000);
+    ASSERT(charge == 0 || (charge >= min && charge <= max));
+}
+
 /*
  * The reboot flags a boot leaves are for the next boot only: the
  * bootloader takes them, and the firmware reports a tryboot in the device

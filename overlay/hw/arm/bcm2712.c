@@ -1033,6 +1033,7 @@ void bcm2712_fdt_populate(BCM2712State *s, void *fdt)
     const char *fw_clocks = BCM2712_FDT_SOC_PATH "/firmware/clocks";
     const char *fw_reset = BCM2712_FDT_SOC_PATH "/firmware/reset";
     const char *power = BCM2712_FDT_SOC_PATH "/power";
+    const char *rtc = BCM2712_FDT_SOC_PATH "/rpi_rtc";
     uint32_t spi, fw;
 
     /* libfdt adds each subnode first: create them in reverse order */
@@ -1136,9 +1137,15 @@ void bcm2712_fdt_populate(BCM2712State *s, void *fdt)
      * The firmware interface, behind the mailbox, as in the firmware's
      * tree: Linux passes it buffers by their "soc" bus address. Its clocks
      * and reset controller, and beside it the power domains it switches,
-     * as mainline's tree has them.
+     * as mainline's tree has them; then its real-time clock, which only
+     * the firmware's tree has, with the battery's charger off.
      */
     fw = qemu_fdt_alloc_phandle(fdt);
+    qemu_fdt_add_subnode(fdt, rtc);
+    qemu_fdt_setprop_string(fdt, rtc, "compatible", "raspberrypi,rpi-rtc");
+    qemu_fdt_setprop_cell(fdt, rtc, "firmware", fw);
+    qemu_fdt_setprop_cell(fdt, rtc, "trickle-charge-microvolt", 0);
+
     qemu_fdt_add_subnode(fdt, power);
     qemu_fdt_setprop_string(fdt, power, "compatible",
                             "raspberrypi,bcm2835-power");

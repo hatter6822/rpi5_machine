@@ -254,7 +254,6 @@ static const char *const raspi5b_unmodelled_compatibles[] = {
     /* Clients of the VideoCore firmware (mailbox) or of RP1's */
     "brcm,bcm2708-fb",
     "raspberrypi,rpi-otp",
-    "raspberrypi,rpi-rtc",
     "raspberrypi,rp1-firmware",
     /*
      * Behind modelled devices: the Bluetooth radio on UARTA, the Wi-Fi

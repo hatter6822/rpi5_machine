@@ -23,6 +23,12 @@
  *   the bootloader for a tryboot. They outlive the reset, for the board
  *   to report the tryboot in the device tree of the boot it starts.
  * - the temperature limit, 85 degrees C, config.txt's temp_limit.
+ * - the real-time clock, which the firmware keeps in the power management
+ *   IC and Linux's rtc-rpi driver reads and sets through GET/SET_RTC_REG:
+ *   the time, which starts as QEMU's RTC (-rtc) and runs on through a
+ *   reset, an alarm, and the backup battery's charger. The alarm powers a
+ *   Pi 5 that is off back on; QEMU has no such state, and only reports
+ *   the alarm pending.
  *
  * A request for a clock or device that does not exist gets a rate of 0,
  * or state bit 1 set, as the firmware answers; one for a power domain
@@ -31,9 +37,15 @@
 
 #include "qemu/osdep.h"
 #include "qemu/bitops.h"
+#include "qemu/cutils.h"
+#include "qemu/log.h"
+#include "qemu/timer.h"
 #include "hw/misc/bcm2712_property.h"
 #include "hw/arm/raspberrypi-fw-defs.h"
 #include "migration/vmstate.h"
+#include "qapi/qapi-events-misc.h"
+#include "system/rtc.h"
+#include "system/system.h"
 #include "trace.h"
 
 /*
@@ -79,6 +91,26 @@ static const struct {
 /* GET_MAX_TEMPERATURE, in thousandths of a degree C */
 #define TEMP_LIMIT              85000
 
+/* The real-time clock's registers, as Linux's rtc-rpi driver numbers them */
+enum {
+    RTC_TIME,                   /* seconds since 1970, UTC */
+    RTC_ALARM,                  /* the time the alarm goes off */
+    RTC_ALARM_PENDING,          /* bit 0: it went off; write 1 to clear */
+    RTC_ALARM_ENABLE,           /* bit 0 */
+    RTC_BBAT_CHG_VOLTS,         /* the battery's charging voltage; 0: off */
+    RTC_BBAT_CHG_VOLTS_MIN,
+    RTC_BBAT_CHG_VOLTS_MAX,
+    RTC_BBAT_VOLTS,             /* the battery's voltage */
+};
+
+/*
+ * The charging voltages the Raspberry Pi documentation gives for the
+ * battery, in microvolts. No battery is fitted: it reads 0 V.
+ * TODO(WS0.4): read the registers on hardware without a battery.
+ */
+#define RTC_CHARGE_MIN_UV       1300000
+#define RTC_CHARGE_MAX_UV       4400000
+
 /* The index of clock @id in bcm2712_property_clocks, or -1 */
 static int bcm2712_property_clock(uint32_t id)
 {
@@ -106,6 +138,116 @@ static uint32_t bcm2712_property_device_state(BCM2712PropertyState *s,
         return STATE_NO_DEVICE;
     }
     return extract32(s->devices_on, device, 1) ? STATE_ON : 0;
+}
+
+static uint32_t bcm2712_property_rtc_time(BCM2712PropertyState *s)
+{
+    return s->rtc_offset +
+           qemu_clock_get_ns(rtc_clock) / NANOSECONDS_PER_SECOND;
+}
+
+static void bcm2712_property_rtc_alarm(void *opaque)
+{
+    BCM2712PropertyState *s = opaque;
+
+    s->rtc_alarm_pending = true;
+    trace_bcm2712_property_rtc_alarm(s->rtc_alarm);
+}
+
+/*
+ * An enabled alarm goes off as the time reaches it. The time counts
+ * modulo 2^32, as its register does, so an alarm that the time has passed
+ * is some 136 years away.
+ */
+static void bcm2712_property_rtc_schedule(BCM2712PropertyState *s)
+{
+    int64_t now = qemu_clock_get_ns(rtc_clock) / NANOSECONDS_PER_SECOND;
+    uint32_t ticks = s->rtc_alarm - (uint32_t)(s->rtc_offset + now);
+
+    if (!s->rtc_alarm_enabled) {
+        timer_del(s->rtc_timer);
+    } else if (ticks == 0) {
+        timer_del(s->rtc_timer);
+        bcm2712_property_rtc_alarm(s);
+    } else {
+        /* At the start of the alarm's second */
+        timer_mod(s->rtc_timer, (now + ticks) * NANOSECONDS_PER_SECOND);
+    }
+}
+
+static void bcm2712_property_rtc_set_time(BCM2712PropertyState *s,
+                                          uint32_t value)
+{
+    g_autofree char *qom_path = object_get_canonical_path(OBJECT(s));
+    time_t t = value;
+    struct tm tm;
+
+    s->rtc_offset += value - bcm2712_property_rtc_time(s);
+    gmtime_r(&t, &tm);
+    qapi_event_send_rtc_change(qemu_timedate_diff(&tm), qom_path);
+    bcm2712_property_rtc_schedule(s);
+}
+
+/* Access real-time clock register @reg: write @value if @write, then read */
+static uint32_t bcm2712_property_rtc(BCM2712PropertyState *s, uint32_t reg,
+                                     bool write, uint32_t value)
+{
+    if (write) {
+        trace_bcm2712_property_rtc(reg, value);
+    }
+
+    switch (reg) {
+    case RTC_TIME:
+        if (write) {
+            bcm2712_property_rtc_set_time(s, value);
+        }
+        return bcm2712_property_rtc_time(s);
+
+    case RTC_ALARM:
+        if (write) {
+            s->rtc_alarm = value;
+            bcm2712_property_rtc_schedule(s);
+        }
+        return s->rtc_alarm;
+
+    case RTC_ALARM_PENDING:
+        if (write && (value & 1)) {
+            s->rtc_alarm_pending = false;
+        }
+        return s->rtc_alarm_pending;
+
+    case RTC_ALARM_ENABLE:
+        if (write) {
+            s->rtc_alarm_enabled = value & 1;
+            bcm2712_property_rtc_schedule(s);
+        }
+        return s->rtc_alarm_enabled;
+
+    case RTC_BBAT_CHG_VOLTS:
+        /* TODO(WS0.4): what the firmware does with a voltage out of range */
+        if (write) {
+            s->rtc_charge_uv = value ? MIN(MAX(value, RTC_CHARGE_MIN_UV),
+                                           RTC_CHARGE_MAX_UV) : 0;
+        }
+        return s->rtc_charge_uv;
+
+    case RTC_BBAT_CHG_VOLTS_MIN:
+    case RTC_BBAT_CHG_VOLTS_MAX:
+    case RTC_BBAT_VOLTS:
+        if (write) {
+            qemu_log_mask(LOG_GUEST_ERROR,
+                          "%s: real-time clock register %" PRIu32
+                          " is read-only\n", __func__, reg);
+        }
+        return reg == RTC_BBAT_CHG_VOLTS_MIN ? RTC_CHARGE_MIN_UV :
+               reg == RTC_BBAT_CHG_VOLTS_MAX ? RTC_CHARGE_MAX_UV : 0;
+
+    default:
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "%s: no real-time clock register %" PRIu32 "\n",
+                      __func__, reg);
+        return 0;
+    }
 }
 
 static bool bcm2712_property_answer_tag(BCM2835PropertyState *ps,
@@ -196,6 +338,12 @@ static bool bcm2712_property_answer_tag(BCM2835PropertyState *ps,
         answer = TEMP_LIMIT;
         break;
 
+    case RPI_FWREQ_GET_RTC_REG:
+    case RPI_FWREQ_SET_RTC_REG:
+        answer = bcm2712_property_rtc(s, id, tag == RPI_FWREQ_SET_RTC_REG,
+                                      arg);
+        break;
+
     case RPI_FWREQ_SET_REBOOT_FLAGS:
         s->reboot_flags = id;
         trace_bcm2712_property_reboot_flags(s->reboot_flags);
@@ -228,10 +376,17 @@ static void bcm2712_property_reset_enter(Object *obj, ResetType type)
     s->devices_on = 0;
 }
 
+static int bcm2712_property_post_load(void *opaque, int version_id)
+{
+    bcm2712_property_rtc_schedule(opaque);
+    return 0;
+}
+
 static const VMStateDescription vmstate_bcm2712_property = {
     .name = TYPE_BCM2712_PROPERTY,
     .version_id = 1,
     .minimum_version_id = 1,
+    .post_load = bcm2712_property_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_STRUCT(parent_obj, BCM2712PropertyState, 0,
                        vmstate_bcm2835_property, BCM2835PropertyState),
@@ -241,9 +396,33 @@ static const VMStateDescription vmstate_bcm2712_property = {
         VMSTATE_UINT32(domains_on, BCM2712PropertyState),
         VMSTATE_UINT32(devices_on, BCM2712PropertyState),
         VMSTATE_UINT32(reboot_flags, BCM2712PropertyState),
+        VMSTATE_UINT32(rtc_offset, BCM2712PropertyState),
+        VMSTATE_UINT32(rtc_alarm, BCM2712PropertyState),
+        VMSTATE_BOOL(rtc_alarm_enabled, BCM2712PropertyState),
+        VMSTATE_BOOL(rtc_alarm_pending, BCM2712PropertyState),
+        VMSTATE_UINT32(rtc_charge_uv, BCM2712PropertyState),
         VMSTATE_END_OF_LIST()
     }
 };
+
+/* The real-time clock starts as QEMU's RTC, and a reset leaves it be */
+static void bcm2712_property_init(Object *obj)
+{
+    BCM2712PropertyState *s = BCM2712_PROPERTY(obj);
+    struct tm tm;
+
+    qemu_get_timedate(&tm, 0);
+    s->rtc_offset = mktimegm(&tm) -
+                    qemu_clock_get_ns(rtc_clock) / NANOSECONDS_PER_SECOND;
+    s->rtc_timer = timer_new_ns(rtc_clock, bcm2712_property_rtc_alarm, s);
+}
+
+static void bcm2712_property_finalize(Object *obj)
+{
+    BCM2712PropertyState *s = BCM2712_PROPERTY(obj);
+
+    timer_free(s->rtc_timer);
+}
 
 static void bcm2712_property_class_init(ObjectClass *klass, const void *data)
 {
@@ -259,10 +438,12 @@ static void bcm2712_property_class_init(ObjectClass *klass, const void *data)
 
 static const TypeInfo bcm2712_property_types[] = {
     {
-        .name           = TYPE_BCM2712_PROPERTY,
-        .parent         = TYPE_BCM2835_PROPERTY,
-        .instance_size  = sizeof(BCM2712PropertyState),
-        .class_init     = bcm2712_property_class_init,
+        .name = TYPE_BCM2712_PROPERTY,
+        .parent = TYPE_BCM2835_PROPERTY,
+        .instance_size = sizeof(BCM2712PropertyState),
+        .instance_init = bcm2712_property_init,
+        .instance_finalize = bcm2712_property_finalize,
+        .class_init = bcm2712_property_class_init,
     },
 };
 

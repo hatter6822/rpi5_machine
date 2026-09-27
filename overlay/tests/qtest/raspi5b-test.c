@@ -83,6 +83,8 @@
 #define FW_TAG_NOTIFY_REBOOT    0x00030048
 #define FW_TAG_REBOOT_FLAGS     0x00030064
 #define FW_TAG_SET_REBOOT_FLAGS 0x00038064
+#define FW_TAG_RTC_REG          0x00030087      /* Linux's rtc-rpi.c */
+#define FW_TAG_SET_RTC_REG      0x00038087
 #define FW_TAG_RESPONSE         BIT(31)
 
 /* The state word of the clock and power device tags */
@@ -97,6 +99,20 @@
 /* Linux's raspberrypi-power binding numbers the domains from 0 */
 #define FW_DOMAIN_ARM           23
 #define FW_DOMAINS              23
+
+/* The real-time clock's registers, Linux's rtc-rpi.c */
+#define FW_RTC_TIME             0
+#define FW_RTC_ALARM            1
+#define FW_RTC_ALARM_PENDING    2
+#define FW_RTC_ALARM_ENABLE     3
+#define FW_RTC_CHARGE           4               /* microvolts */
+#define FW_RTC_CHARGE_MIN       5
+#define FW_RTC_CHARGE_MAX       6
+#define FW_RTC_BATTERY          7
+
+/* A start for the real-time clock, -rtc base= */
+#define RTC_BASE                "2026-01-02T03:04:05"
+#define RTC_BASE_TIME           1767323045u
 
 /* The alias of the first GiB of RAM that code for older Pis uses */
 #define VC_BUS_RAM              0xc0000000u
@@ -1183,6 +1199,159 @@ static void test_mbox_reboot_flags(void)
     check_reboot_flags("-machine raspi5b,builtin-dtb=off");
 }
 
+static uint32_t fw_rtc(QTestState *qts, uint32_t reg)
+{
+    return fw_request(qts, FW_TAG_RTC_REG, reg, 0);
+}
+
+/* Returns the register's value after the write */
+static uint32_t fw_rtc_set(QTestState *qts, uint32_t reg, uint32_t value)
+{
+    return fw_request(qts, FW_TAG_SET_RTC_REG, reg, value);
+}
+
+static void clock_step_s(QTestState *qts, int64_t s)
+{
+    qtest_clock_step(qts, s * NANOSECONDS_PER_SECOND);
+}
+
+/*
+ * The real-time clock starts at QEMU's RTC and counts seconds on
+ * rtc_clock. Setting it, as Linux's rtc-rpi driver does for "hwclock -w",
+ * tells the monitor how far the guest moved it; a reset leaves it
+ * running.
+ */
+static void test_mbox_rtc_time(void)
+{
+    QTestState *qts = qtest_init("-machine raspi5b -rtc base=" RTC_BASE
+                                 ",clock=vm");
+    const uint32_t time = 2000000000;   /* 2033-05-18T03:33:20Z */
+    QDict *event, *data;
+
+    g_assert_cmpuint(fw_rtc(qts, FW_RTC_TIME), ==, RTC_BASE_TIME);
+    clock_step_s(qts, 10);
+    g_assert_cmpuint(fw_rtc(qts, FW_RTC_TIME), ==, RTC_BASE_TIME + 10);
+
+    /* The event's offset is from the base as it runs on the host clock */
+    g_assert_cmpuint(fw_rtc_set(qts, FW_RTC_TIME, time), ==, time);
+    event = qtest_qmp_eventwait_ref(qts, "RTC_CHANGE");
+    data = qdict_get_qdict(event, "data");
+    g_assert_cmpint(qdict_get_int(data, "offset"), <=,
+                    (int64_t)time - RTC_BASE_TIME);
+    g_assert_cmpint(qdict_get_int(data, "offset"), >,
+                    (int64_t)time - RTC_BASE_TIME - 600);
+    g_assert_cmpstr(qdict_get_str(data, "qom-path"), ==,
+                    "/machine/soc/property");
+    qobject_unref(event);
+
+    clock_step_s(qts, 1);
+    g_assert_cmpuint(fw_rtc(qts, FW_RTC_TIME), ==, time + 1);
+
+    qtest_system_reset(qts);
+    g_assert_cmpuint(fw_rtc(qts, FW_RTC_TIME), ==, time + 1);
+    clock_step_s(qts, 2);
+    g_assert_cmpuint(fw_rtc(qts, FW_RTC_TIME), ==, time + 3);
+
+    qtest_quit(qts);
+}
+
+/*
+ * The alarm goes off, once, when the time reaches it while it is enabled,
+ * and stays pending until cleared, through a reset too. An alarm the time
+ * has passed, by counting or by being set past it, is not reached until
+ * the time wraps.
+ */
+static void test_mbox_rtc_alarm(void)
+{
+    QTestState *qts = qtest_init("-machine raspi5b -rtc base=" RTC_BASE
+                                 ",clock=vm");
+    const uint32_t now = RTC_BASE_TIME;
+
+    g_assert_cmpuint(fw_rtc(qts, FW_RTC_ALARM), ==, 0);
+    g_assert_cmpuint(fw_rtc(qts, FW_RTC_ALARM_ENABLE), ==, 0);
+    g_assert_cmpuint(fw_rtc(qts, FW_RTC_ALARM_PENDING), ==, 0);
+
+    /* Linux's rpi_rtc_set_alarm(): the time, then the enable */
+    g_assert_cmpuint(fw_rtc_set(qts, FW_RTC_ALARM, now + 10), ==, now + 10);
+    g_assert_cmpuint(fw_rtc_set(qts, FW_RTC_ALARM_ENABLE, 1), ==, 1);
+    clock_step_s(qts, 9);
+    g_assert_cmpuint(fw_rtc(qts, FW_RTC_ALARM_PENDING), ==, 0);
+    clock_step_s(qts, 1);
+    g_assert_cmpuint(fw_rtc(qts, FW_RTC_ALARM_PENDING), ==, 1);
+
+    /* Write 1 to clear */
+    g_assert_cmpuint(fw_rtc_set(qts, FW_RTC_ALARM_PENDING, 0), ==, 1);
+    qtest_system_reset(qts);
+    g_assert_cmpuint(fw_rtc(qts, FW_RTC_ALARM_PENDING), ==, 1);
+    g_assert_cmpuint(fw_rtc(qts, FW_RTC_ALARM_ENABLE), ==, 1);
+    g_assert_cmpuint(fw_rtc(qts, FW_RTC_ALARM), ==, now + 10);
+    g_assert_cmpuint(fw_rtc_set(qts, FW_RTC_ALARM_PENDING, 1), ==, 0);
+    clock_step_s(qts, 100);
+    g_assert_cmpuint(fw_rtc(qts, FW_RTC_ALARM_PENDING), ==, 0);
+
+    /* Disabled, it does not go off */
+    fw_rtc_set(qts, FW_RTC_ALARM_ENABLE, 0);
+    fw_rtc_set(qts, FW_RTC_ALARM, now + 120);
+    clock_step_s(qts, 20);
+    g_assert_cmpuint(fw_rtc(qts, FW_RTC_ALARM_PENDING), ==, 0);
+
+    /* Passed, nor when enabled */
+    fw_rtc_set(qts, FW_RTC_ALARM_ENABLE, 1);
+    clock_step_s(qts, 60);
+    g_assert_cmpuint(fw_rtc(qts, FW_RTC_ALARM_PENDING), ==, 0);
+
+    /* Nor when the time is set past it; set back, it is reached */
+    fw_rtc_set(qts, FW_RTC_ALARM, now + 300);
+    fw_rtc_set(qts, FW_RTC_TIME, now + 400);
+    clock_step_s(qts, 60);
+    g_assert_cmpuint(fw_rtc(qts, FW_RTC_ALARM_PENDING), ==, 0);
+    fw_rtc_set(qts, FW_RTC_TIME, now + 298);
+    clock_step_s(qts, 1);
+    g_assert_cmpuint(fw_rtc(qts, FW_RTC_ALARM_PENDING), ==, 0);
+    clock_step_s(qts, 1);
+    g_assert_cmpuint(fw_rtc(qts, FW_RTC_ALARM_PENDING), ==, 1);
+
+    /* One set to the time now goes off at once */
+    fw_rtc_set(qts, FW_RTC_ALARM_PENDING, 1);
+    fw_rtc_set(qts, FW_RTC_ALARM, fw_rtc(qts, FW_RTC_TIME));
+    g_assert_cmpuint(fw_rtc(qts, FW_RTC_ALARM_PENDING), ==, 1);
+
+    qtest_quit(qts);
+}
+
+/*
+ * The backup battery's charger: off until set, within the range the
+ * Raspberry Pi documentation gives, which rtc-rpi reports in sysfs. No
+ * battery is fitted. A register that does not exist reads 0, and the
+ * range and battery voltage stay as they are when written.
+ */
+static void test_mbox_rtc_battery(void)
+{
+    QTestState *qts = qtest_init("-machine raspi5b");
+
+    g_assert_cmpuint(fw_rtc(qts, FW_RTC_CHARGE), ==, 0);
+    g_assert_cmpuint(fw_rtc(qts, FW_RTC_CHARGE_MIN), ==, 1300000);
+    g_assert_cmpuint(fw_rtc(qts, FW_RTC_CHARGE_MAX), ==, 4400000);
+    g_assert_cmpuint(fw_rtc(qts, FW_RTC_BATTERY), ==, 0);
+
+    /* dtparam=rtc_bbat_vchg=3000000 */
+    g_assert_cmpuint(fw_rtc_set(qts, FW_RTC_CHARGE, 3000000), ==, 3000000);
+    g_assert_cmpuint(fw_rtc_set(qts, FW_RTC_CHARGE, 5000000), ==, 4400000);
+    g_assert_cmpuint(fw_rtc_set(qts, FW_RTC_CHARGE, 1000000), ==, 1300000);
+    qtest_system_reset(qts);
+    g_assert_cmpuint(fw_rtc(qts, FW_RTC_CHARGE), ==, 1300000);
+    g_assert_cmpuint(fw_rtc_set(qts, FW_RTC_CHARGE, 0), ==, 0);
+
+    g_assert_cmpuint(fw_rtc_set(qts, FW_RTC_CHARGE_MIN, 1), ==, 1300000);
+    g_assert_cmpuint(fw_rtc_set(qts, FW_RTC_CHARGE_MAX, 1), ==, 4400000);
+    g_assert_cmpuint(fw_rtc_set(qts, FW_RTC_BATTERY, 1), ==, 0);
+    g_assert_cmpuint(fw_rtc(qts, 8), ==, 0);
+    g_assert_cmpuint(fw_rtc_set(qts, 8, 1), ==, 0);
+    g_assert_cmpuint(fw_rtc(qts, 8), ==, 0);
+
+    qtest_quit(qts);
+}
+
 /* What a guest sets through the firmware survives migration */
 static void test_mbox_firmware_migrate(void)
 {
@@ -1190,7 +1359,9 @@ static void test_mbox_firmware_migrate(void)
                                             g_get_tmp_dir(), getpid());
     g_autofree char *out = g_strdup_printf("exec:cat > %s", file);
     g_autofree char *in = g_strdup_printf("exec:cat %s", file);
-    const char *args = "-machine raspi5b -m 1G";
+    /* The qtest accelerator's clock starts at 0 on both sides */
+    const char *args = "-machine raspi5b -m 1G -rtc clock=vm";
+    const uint32_t time = 2000000000;
     QTestState *src, *dst;
     uint32_t val[1] = { 1 };
 
@@ -1200,6 +1371,10 @@ static void test_mbox_firmware_migrate(void)
     fw_request(src, FW_TAG_SET_DOMAIN_STATE, 5, 1);
     fw_request(src, FW_TAG_SET_POWER_STATE, FW_DEV_USB, FW_STATE_ON);
     mbox_call(src, FW_TAG_SET_REBOOT_FLAGS, sizeof(val), val);
+    fw_rtc_set(src, FW_RTC_TIME, time);
+    fw_rtc_set(src, FW_RTC_ALARM, time + 10);
+    fw_rtc_set(src, FW_RTC_ALARM_ENABLE, 1);
+    fw_rtc_set(src, FW_RTC_CHARGE, 3000000);
     qtest_qmp_assert_success(src, "{ 'execute': 'migrate',"
                              "  'arguments': { 'uri': %s } }", out);
     wait_for_migration(src);
@@ -1220,6 +1395,16 @@ static void test_mbox_firmware_migrate(void)
     g_assert_cmphex(fw_request(dst, FW_TAG_POWER_STATE, FW_DEV_USB, 0), ==,
                     FW_STATE_ON);
     g_assert_cmphex(fw_reboot_flags(dst), ==, 1);
+    g_assert_cmpuint(fw_rtc(dst, FW_RTC_TIME), ==, time);
+    g_assert_cmpuint(fw_rtc(dst, FW_RTC_ALARM), ==, time + 10);
+    g_assert_cmpuint(fw_rtc(dst, FW_RTC_ALARM_ENABLE), ==, 1);
+    g_assert_cmpuint(fw_rtc(dst, FW_RTC_CHARGE), ==, 3000000);
+
+    /* The alarm is still set to go off */
+    clock_step_s(dst, 9);
+    g_assert_cmpuint(fw_rtc(dst, FW_RTC_ALARM_PENDING), ==, 0);
+    clock_step_s(dst, 1);
+    g_assert_cmpuint(fw_rtc(dst, FW_RTC_ALARM_PENDING), ==, 1);
 
     qtest_system_reset(dst);
     g_assert_cmphex(fw_reboot_flags(dst), ==, 0);
@@ -4159,6 +4344,9 @@ int main(int argc, char **argv)
     qtest_add_func("/raspi5b/mbox/power", test_mbox_power);
     qtest_add_func("/raspi5b/mbox/temperature", test_mbox_temperature);
     qtest_add_func("/raspi5b/mbox/reboot-flags", test_mbox_reboot_flags);
+    qtest_add_func("/raspi5b/mbox/rtc-time", test_mbox_rtc_time);
+    qtest_add_func("/raspi5b/mbox/rtc-alarm", test_mbox_rtc_alarm);
+    qtest_add_func("/raspi5b/mbox/rtc-battery", test_mbox_rtc_battery);
     qtest_add_func("/raspi5b/mbox/firmware-migrate",
                    test_mbox_firmware_migrate);
     qtest_add_func("/raspi5b/rng/stopped", test_rng_stopped);

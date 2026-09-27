@@ -36,6 +36,8 @@
 #define FW_TAG_NOTIFY_REBOOT    0x00030048u
 #define FW_TAG_REBOOT_FLAGS     0x00030064u
 #define FW_TAG_SET_REBOOT_FLAGS 0x00038064u
+#define FW_TAG_RTC_REG          0x00030087u     /* Linux's rtc-rpi.c */
+#define FW_TAG_SET_RTC_REG      0x00038087u
 
 /*
  * Send a property request: @buf is the whole message (size, code, tags,

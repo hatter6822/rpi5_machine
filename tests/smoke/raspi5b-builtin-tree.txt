@@ -186,6 +186,10 @@
     #power-domain-cells = <0x1>
     firmware = <0x8016>
     compatible = "raspberrypi,bcm2835-power"
+/soc@107c000000/rpi_rtc
+    trickle-charge-microvolt = <0x0>
+    firmware = <0x8016>
+    compatible = "raspberrypi,rpi-rtc"
 /soc@107c000000/mmc@fff000
     cd-gpios = <0x8011 0x5 0x1>
     sd-uhs-sdr104

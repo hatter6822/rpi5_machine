@@ -95,7 +95,6 @@ with ``-d unimp``.
 Missing devices
 ---------------
 
-* The firmware's real-time clock, behind its property interface
 * PCIe root complexes and the RP1 south bridge
 * The Bluetooth radio on UARTA and the Wi-Fi radio on SDIO2
 * The power LED, which RP1 drives
@@ -210,7 +209,16 @@ the older Pis' firmware does not, the channel answers as the Pi 5's:
 * reboot flags: a guest sets them before a reset, as Linux does for
   ``reboot "0 tryboot"``, and the next boot takes them: its device tree
   reports the tryboot, as described below. The reboot notification that
-  follows has nothing to answer.
+  follows has nothing to answer;
+* the real-time clock, which Linux's ``rpi-rtc`` driver reads and sets,
+  for ``hwclock``, as do EDK2's ``date`` and ``time``: its time starts as
+  QEMU's RTC (``-rtc``), runs on through a reset, and a guest setting it
+  raises the ``RTC_CHANGE`` event. Its alarm goes off when the time
+  reaches it, if enabled, and stays pending until cleared; on a Pi 5 it
+  powers the board back on after a halt, which QEMU leaves out, as its
+  board is never off. The charger of a backup battery keeps the voltage a
+  guest sets within its range, 1.3 to 4.4 V, or off; no battery is
+  fitted, and it reads 0 V.
 
 Every answer stays within the value buffer its tag declares: a buffer too
 small for it gets as much as fits, and the tag's response length says how
@@ -228,10 +236,11 @@ reset the machine the same way: every device returns to its reset state,
 RAM is kept, the images given with ``-bios``, ``-kernel`` and ``-dtb`` are
 loaded again and the boot starts over as from power-on, except that the PM
 block's reset status register (``RSTS``) keeps its value and records a
-watchdog reset, and the reboot flags a guest set in the firmware reach
-the boot the reset starts. PSCI ``SYSTEM_OFF`` and Linux's halt request
-through the watchdog (boot partition 63 in ``RSTS``) power the machine
-off, and QEMU exits with status 0.
+watchdog reset, the reboot flags a guest set in the firmware reach the
+boot the reset starts, and the firmware's real-time clock runs on. PSCI
+``SYSTEM_OFF`` and Linux's halt request through the watchdog (boot
+partition 63 in ``RSTS``) power the machine off, and QEMU exits with
+status 0.
 
 The monitor's ``system_powerdown`` presses the board's power button for
 200 ms, as a user would; a press carries on through a reset. Linux's
@@ -266,8 +275,9 @@ Device tree
 
 Without ``-dtb``, the machine generates a device tree describing what it
 models, derived from its memory map: the CPUs with PSCI, the generic timer,
-the PMU, the GIC, the system timer, the mailbox and the firmware interface,
-the PM block, the RNG, the level 2 interrupt controllers, the GPIO blocks
+the PMU, the GIC, the system timer, the mailbox and the firmware interface
+with its clocks, reset controller, power domains and real-time clock, the
+PM block, the RNG, the level 2 interrupt controllers, the GPIO blocks
 and their pin controllers, the HDMI ports' DDC I2C controllers, the power
 button with the state of its pin (GPIO, pulled up), the activity LED,
 UART10 (``serial10``, the ``stdout-path``) and UARTA, the SD hosts (the

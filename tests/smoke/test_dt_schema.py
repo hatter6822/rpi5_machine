@@ -46,10 +46,11 @@ KNOWN = (
     re.compile(r"power: (max_current|power_reset|usb_max_current_enable|"
                r"usb_over_current_detected): .* is not of type"),
     # The firmware and power nodes as in Linux's own
-    # bcm2712-rpi-5-b-ovl-rp1.dts, where the bindings do not allow for them
-    # yet: on the "soc" bus, without an address
-    re.compile(r"soc@107c000000 \(simple-bus\): (firmware|power): 'ranges' "
-               r"is a required property"),
+    # bcm2712-rpi-5-b-ovl-rp1.dts, and the RTC as in the firmware's tree,
+    # where the bindings do not allow for them yet: on the "soc" bus,
+    # without an address
+    re.compile(r"soc@107c000000 \(simple-bus\): (firmware|power|rpi_rtc): "
+               r"'ranges' is a required property"),
     re.compile(r"firmware \(raspberrypi,bcm2835-firmware\): "
                r"'#address-cells', '#size-cells', 'dma-ranges' do not match"),
 )
