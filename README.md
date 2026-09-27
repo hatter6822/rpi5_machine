@@ -17,7 +17,9 @@ raspi5b: PSCI SYSTEM_OFF
 
 ## Status
 
-The first milestone targets bare-metal and microkernel bring-up.
+Milestones M1 (bare-metal and microkernel bring-up) and M2 (the Pi's own
+boot chain: TF-A, U-Boot and UEFI run unmodified) are done; M3, Raspberry
+Pi OS booting from an SD card, is next.
 
 | Area | State |
 | --- | --- |
@@ -32,6 +34,7 @@ The first milestone targets bare-metal and microkernel bring-up.
 | Firmware loaded with `-bios` (`secure=on`) the way the Pi's firmware loads it: TF-A's `rpi5` BL31 runs the bare-metal suite on its own PSCI and boots Linux, directly or through U-Boot; the EDK2 port reaches the UEFI shell | done |
 | Complete BCM2712 memory map, unmodelled blocks logged with `-d unimp` | done |
 | Built-in device tree when no `-dtb` is given, validated against the Linux bindings | done |
+| The firmware's device-tree changes, made anew for each boot: model and serial number, the command line it builds, `/chosen` with the boot's reset status, partition and count, the power supply and seeds, the CMA pool and the bootloader configuration | done |
 | Bare-metal test suite (28 tests: interrupts, timers and SGIs on every core, PSCI, resets, mailbox, RNG, UART, Secure/Non-secure GIC groups, the A76's MPIDR and IMPDEF registers) on 1–4 cores, EL2 and EL3 | done |
 | Linux: stock Raspberry Pi OS kernel boots to the root-fs mount, on the built-in device tree or `bcm2712-rpi-5-b.dtb` | smoke-tested |
 | VideoCore mailbox and firmware property channel: BCM283x tag set, board and firmware identity | done; Pi 5 clock, power, RTC and GPIO tags planned (WS2.3b) |

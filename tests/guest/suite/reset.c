@@ -11,6 +11,7 @@
  * the reset left is recorded, as one hash per block.
  */
 
+#include <bm/fdt.h>
 #include <bm/gic.h>
 #include <bm/io.h>
 #include <bm/pm.h>
@@ -189,11 +190,16 @@ static void spin(unsigned core)
  * Reset three times through PSCI and once through the watchdog, dirtying
  * every block before each, and check that each reset leaves the same
  * state as the boot the test started in had (which came from power-on or
- * from the watchdog reset of pm/watchdog-reset).
+ * from the watchdog reset of pm/watchdog-reset), and that the firmware
+ * counts every boot in the device tree and gives each a new KASLR seed.
  *
  * Scratch, saved on the first run: [0] the boot count, [1] EL, cores and
- * DT address, [2..] the hashes of the state the boot started with.
+ * DT address, [2] the firmware's boot count (FW_NONE without one), [4..]
+ * the hashes of the state the boot started with; and on every run, [3]
+ * the KASLR seed of that boot.
  */
+#define FW_NONE UINT64_MAX
+
 TEST(reset_system, "reset/system-reset")
 {
     uint64_t *saved = bm_test_scratch();
@@ -202,22 +208,34 @@ TEST(reset_system, "reset/system-reset")
     uint64_t boot = (uint64_t)current_el() << 56 |
                     (uint64_t)bm_plat.num_cpus << 48 |
                     (bm_plat.has_dtb ? bm_plat.dtb | BIT64(47) : 0);
+    int fw = fdt_path_offset("/chosen/bootloader");
+    uint32_t count;
+    uint64_t seed;
 
-    _Static_assert(2 + NUM_BLOCKS <= BM_TEST_SCRATCH_WORDS, "scratch");
+    _Static_assert(4 + NUM_BLOCKS <= BM_TEST_SCRATCH_WORDS, "scratch");
 
     if (resets == 0) {
         saved[0] = bm_boot_count();
         saved[1] = boot;
+        saved[2] = fdt_prop_u32(fw, "count", &count) ? count : FW_NONE;
         for (int b = 0; b < NUM_BLOCKS; b++) {
-            saved[2 + b] = early[b];
+            saved[4 + b] = early[b];
         }
     } else {
         ASSERT_EQ(bm_boot_count(), saved[0] + resets);
         ASSERT_EQ(boot, saved[1]);
         for (int b = 0; b < NUM_BLOCKS; b++) {
-            ASSERT_MSG(early[b] == saved[2 + b],
+            ASSERT_MSG(early[b] == saved[4 + b],
                        "%s differs after reset %u from when this boot "
                        "started", block_names[b], resets);
+        }
+        if (saved[2] != FW_NONE) {
+            ASSERT(fdt_prop_u32(fw, "count", &count));
+            ASSERT_EQ(count, (saved[2] + resets) & 0xff);
+            ASSERT(fdt_prop_u64(fdt_path_offset("/chosen"), "kaslr-seed",
+                                &seed));
+            ASSERT_MSG(seed != saved[3], "the KASLR seed of reset %u is "
+                       "the last boot's", resets);
         }
         if (psci) {
             /* Secondaries are off again until the image starts them */
@@ -229,6 +247,10 @@ TEST(reset_system, "reset/system-reset")
                            state);      /* 1 is OFF */
             }
         }
+    }
+    if (saved[2] != FW_NONE) {
+        ASSERT(fdt_prop_u64(fdt_path_offset("/chosen"), "kaslr-seed",
+                            &saved[3]));
     }
     if (resets == PSCI_RESETS + 1) {
         bm_test_note("reset/system-reset: %u resets, %s", resets,

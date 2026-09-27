@@ -14,9 +14,13 @@ PSCI over SMC, or owns EL3 with secure=on. With secure=on, -bios loads
 firmware such as TF-A's BL31 as the Pi's firmware loads its armstub,
 and hands it the kernel and device tree the same way. Without -dtb the
 machine generates a device tree, which validates against the kernel's
-bindings. The stock Raspberry Pi OS kernel boots to the root file
-system mount, on that tree or on the firmware's bcm2712-rpi-5-b.dtb,
-directly or started by TF-A.
+bindings. Either tree gets the changes the firmware makes before it
+starts the OS, anew for each boot: the model and serial number, the
+command line it builds, what /chosen reports about the boot and the
+power supply, and seeds for KASLR and the RNG. The stock Raspberry Pi
+OS kernel boots to the root file system mount, on that tree or on the
+firmware's bcm2712-rpi-5-b.dtb, directly, started by TF-A, or through
+U-Boot.
 
 The series is in four parts:
 

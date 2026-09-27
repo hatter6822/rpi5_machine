@@ -162,15 +162,73 @@ the PM block, the RNG, UART10 (``serial10``, the ``stdout-path``), the fixed
 clocks, and a CMA pool in the first GiB, where the VideoCore can reach
 Linux's buffers. Node names and properties follow Linux's ``bcm2712.dtsi``
 and the firmware's tree, and the result validates against the Linux
-bindings. ``-machine raspi5b,builtin-dtb=off`` gives the guest no device
+bindings, but for what the firmware adds for the OS, which no binding
+describes. ``-machine raspi5b,builtin-dtb=off`` gives the guest no device
 tree at all, like an empty ``device_tree=`` line in the firmware's
 ``config.txt``.
 
-When a device tree is supplied with ``-dtb`` (for example
-``bcm2712-rpi-5-b.dtb``), QEMU sets the memory node, marks nodes of devices
-that are not modelled yet as ``status = "disabled"`` and publishes the board
-revision in ``/system/linux,revision``, as the VideoCore firmware does. The
-generated tree gets the same memory node and ``/system`` property.
+Whichever tree the guest gets, generated or given with ``-dtb`` (for
+example ``bcm2712-rpi-5-b.dtb``), the machine changes it as the VideoCore
+firmware does before it starts the OS:
+
+* the root's ``model`` names the board's revision ("Raspberry Pi 5 Model
+  B Rev 1.0"); ``serial-number``, ``/chosen/rpi-serial64`` and
+  ``/system/linux,serial`` give the serial number, and
+  ``/system/linux,revision`` the board revision code;
+* ``/chosen/bootargs`` is the tree's own ``bootargs``, then what the
+  firmware adds for the board (``smsc95xx.macaddr=`` with the board's
+  Ethernet address, ``vc_mem.mem_base=`` and ``vc_mem.mem_size=`` for the
+  VideoCore's memory), then ``-append`` in the place of ``cmdline.txt``,
+  two spaces apart, as the firmware joins them;
+* ``/chosen`` gets ``kaslr-seed`` and ``rng-seed`` from QEMU's random
+  source (reproducible with ``-seed``), ``os_prefix`` and
+  ``overlay_prefix`` at their defaults, and the RAM size in
+  ``rpi-sdram-size-gbit``;
+* ``/chosen/bootloader`` describes the boot: ``boot-mode`` 3, RPIBOOT, in
+  which the host supplies the boot files, as QEMU does; ``rsts``, the PM
+  block's reset status as the boot found it; ``partition``, the
+  partition asked for there (0 at power-on), which files the host
+  supplies come from; ``count``, the boots since power-on, in 8 bits;
+  and 0 for ``tryboot``, ``arg1`` and ``capabilities``;
+* ``/chosen/power`` reports a 5 A bench supply (``max_current``), which
+  turns the USB ports' high current limit on;
+* the memory node leaves out the VideoCore's memory, and a
+  ``/reserved-memory/linux,cma`` pool sized in one cell gets the two of
+  its parent, without which Linux warns that the firmware is out of date;
+* a ``raspberrypi,bootloader-config`` node (``nvram@0``, alias
+  ``blconfig``, in the firmware's tree) is enabled and points at a copy of
+  the bootloader configuration in the VideoCore's memory: a Pi 5's
+  default, for that supply;
+* the node ``ethernet0`` names gets the board's Ethernet address in
+  ``local-mac-address``;
+* nodes of devices that are not modelled yet get ``status = "disabled"``,
+  and CPU nodes of cores ``-smp`` leaves out ``status = "fail"``.
+
+Every reset gives the next boot its own tree, as the firmware writes one
+for each boot: ``rsts``, ``partition``, ``count`` and the seeds are the
+new boot's. The count moves with the machine in migration.
+
+Compared with the tree the firmware gives a Pi 5, the machine's lacks:
+
+* the bootloader's build (``version``, ``build-timestamp``,
+  ``update-timestamp`` in ``/chosen/bootloader``), since none stands behind
+  the model; ``rpi-eeprom-update`` then finds nothing to update;
+* USB-PD details in ``/chosen/power`` (``usbpd_power_data_objects``,
+  ``rpi_power_supply``), as for a bench supply;
+* the NUMA arguments the firmware adds to the command line
+  (``numa=fake=``, ``system_heap.max_order=``,
+  ``iommu_dma_numa_policy=``), which follow how the SDRAM's banks are
+  mapped; nor does ``console=serial0`` in ``-append`` become the UART
+  that the ``serial0`` alias names;
+* ``rpi-duid``, ``rpi-machine-id``, ``rpi-boardrev-ext`` and
+  ``rpi-min-boot-ver``, which come from the board's QR code, its OTP and
+  a hash the firmware does not publish;
+* anything ``config.txt`` would change: no overlays and no ``dtparam``, as
+  with an empty ``config.txt``.
+
+``arg1`` and ``tryboot`` stay 0, as the property interface does not
+model the requests that set them, and its command line tag answers with
+``-append`` alone.
 
 Examples
 --------

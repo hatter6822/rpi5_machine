@@ -111,8 +111,9 @@ We follow upstream QEMU conventions so the code can be submitted unchanged:
 | Register-level device tests | `overlay/tests/qtest/*-test.c` | `make check-qtest` |
 | Bare-metal guests and test suite over UART ([format](../tests/guest/README.md)) | `tests/guest/`, `tests/smoke/` | `make check-smoke` |
 | Both, on a QEMU whose only board is `raspi5b` | `tests/configs/raspi5b-only.mak` | `make check-minimal` |
+| The device tree the guest gets: each firmware change, the built-in tree against a checked-in dump (`raspi5b-builtin-tree.txt`), and what each boot gets across resets and migration | `tests/smoke/test_dtb.py` | `make check-smoke` |
 | Built-in device tree against the Linux bindings (dt-schema) | `tests/smoke/test_dt_schema.py` | `make check-dt` |
-| Real firmware with `-bios`: TF-A's `rpi5` BL31 running the bare-metal guests; Linux through TF-A and through U-Boot; the EDK2 port to its shell. Pinned and built or fetched by `scripts/firmware` | `tests/smoke/test_firmware.py` | `make check-firmware` |
+| Real firmware with `-bios`: TF-A's `rpi5` BL31 running the bare-metal guests; Linux through TF-A and through U-Boot; the EDK2 port to its shell; the changes to the firmware's own tree (`raspi5b-firmware-fixups.txt`). Pinned and built or fetched by `scripts/firmware` | `tests/smoke/test_firmware.py` | `make check-firmware` |
 | Linux / firmware boots, upstream | `overlay/tests/functional/aarch64/` (planned, WS9.3) | QEMU functional test runner |
 
 Each new device lands with a qtest for its registers and reset values. The
@@ -144,7 +145,9 @@ shows how to boot each of them.
   (`bcm2712.mbox`, `bcm2712.soc`, ...).
 * `-s -S` and `gdb-multiarch` for guest debugging; `-trace 'bcm2712*'` once
   trace points exist.
-* `-machine dumpdtb=out.dtb` shows the device tree after QEMU's fix-ups.
+* `-machine dumpdtb=out.dtb` shows the device tree after QEMU's fix-ups;
+  `python3 tests/smoke/fdt.py out.dtb` prints it, and
+  `python3 tests/smoke/fdt.py in.dtb out.dtb` what they changed.
 
 ## Upstreaming
 

@@ -26,11 +26,24 @@ CONFIGS = (
     ("raspi5b,secure=on", "-smp", "4", "-m", "4G", "-bios", str(GUEST)),
 )
 
+# What the firmware adds to /chosen for the OS (see "Firmware parameters"
+# in the Raspberry Pi documentation), which no binding describes
+CHOSEN = r"(bootloader|os_prefix|overlay_prefix|power|rpi-sdram-size-gbit|" \
+         r"rpi-serial64)"
+
 # Messages that are expected, each with the reason. Anything else fails.
 KNOWN = (
-    # The firmware publishes the board revision here and the Raspberry Pi
-    # kernel reads it; no binding describes /system
-    re.compile(r"system: linux,revision: .* is not of type"),
+    # The firmware publishes the board revision and serial number here and
+    # the Raspberry Pi kernel reads them; no binding describes /system
+    re.compile(r"system: linux,(revision|serial): .* is not of type"),
+    # The firmware's /chosen properties and nodes
+    re.compile(rf"chosen: '{CHOSEN}'(, '{CHOSEN}')* do not match any of "
+               r"the regexes"),
+    re.compile(rf"chosen: {CHOSEN}: .* is not of type"),
+    re.compile(r"bootloader: (arg1|boot-mode|capabilities|count|partition|"
+               r"rsts|tryboot): .* is not of type"),
+    re.compile(r"power: (max_current|power_reset|usb_max_current_enable|"
+               r"usb_over_current_detected): .* is not of type"),
     # The firmware node as in Linux's own bcm2712-rpi-5-b-ovl-rp1.dts, whose
     # binding does not allow for it yet
     re.compile(r"soc@107c000000 \(simple-bus\): firmware: 'ranges' is a "

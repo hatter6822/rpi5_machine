@@ -19,6 +19,7 @@
 #include "qemu/bswap.h"
 #include "qemu/datadir.h"
 #include "qemu/error-report.h"
+#include "qemu/guest-random.h"
 #include "qemu/host-utils.h"
 #include "qemu/units.h"
 #include "qapi/error.h"
@@ -30,6 +31,7 @@
 #include "hw/core/loader.h"
 #include "hw/core/qdev-properties.h"
 #include "hw/core/registerfields.h"
+#include "migration/vmstate.h"
 #include "system/address-spaces.h"
 #include "system/device_tree.h"
 #include "system/reset.h"
@@ -51,6 +53,11 @@ struct Raspi5bMachineState {
     uint64_t dtb_addr;
     bool secure;
     bool builtin_dtb;
+    /*
+     * The firmware's boot count: boots since power-on, in 8 bits, which it
+     * keeps in a register a reset leaves alone
+     */
+    uint8_t boot_count;
 };
 
 /* An obviously made-up serial number, overridden with "serial=" */
@@ -86,6 +93,37 @@ struct Raspi5bMachineState {
 #define RASPI5B_IMAGE_TEXT_OFFSET       8
 #define RASPI5B_IMAGE_SIZE              16
 #define RASPI5B_IMAGE_MAGIC             56
+
+/*
+ * The bootloader configuration the firmware copies into its own memory
+ * for the OS, which finds it through /reserved-memory/nvram@0 (alias
+ * blconfig): a Pi 5's default, rated for the bench supply the machine
+ * reports in /chosen/power, which the firmware takes from
+ * PSU_MAX_CURRENT (in mA) without USB-PD negotiation.
+ */
+#define RASPI5B_PSU_MAX_CURRENT         5000
+static const char raspi5b_blconfig[] =
+    "[all]\n"
+    "BOOT_UART=1\n"
+    "POWER_OFF_ON_HALT=0\n"
+    "BOOT_ORDER=0xf461\n"
+    "PSU_MAX_CURRENT=" stringify(RASPI5B_PSU_MAX_CURRENT) "\n";
+
+/* Where the copy goes: VideoCore memory the model leaves unused */
+#define RASPI5B_BLCONFIG_ADDR           (BCM2712_VC_RAM_BASE + 512 * KiB)
+
+/*
+ * /chosen/bootloader/boot-mode, as BOOT_ORDER numbers them: RPIBOOT, in
+ * which the host supplies the boot files, as QEMU's -kernel, -dtb and
+ * -initrd do
+ */
+#define RASPI5B_BOOT_MODE_RPIBOOT       3
+
+/* PM_RSTS carries the partition the OS asked for in bits 0, 2, .. 10 */
+#define RASPI5B_RSTS_PARTITION_BITS     6
+
+/* Size of the rng-seed the machine gives, as QEMU's virt machine does */
+#define RASPI5B_RNG_SEED_SIZE           32
 
 /*
  * "New-style" board revision code, see
@@ -230,8 +268,8 @@ static void raspi5b_fdt_memory(void *fdt, uint64_t ram_size)
 
 /*
  * Room left in the built-in tree for what arm_load_dtb() and
- * raspi5b_modify_dtb() add: memory, PSCI, /chosen with -append, /system.
- * load_device_tree() leaves the same for a -dtb blob.
+ * raspi5b_modify_dtb() add: memory, PSCI, /chosen with the command line,
+ * /system. load_device_tree() leaves at least as much for a -dtb blob.
  */
 #define RASPI5B_FDT_SLACK       10000
 
@@ -289,14 +327,228 @@ static void *raspi5b_get_dtb(const struct arm_boot_info *info, int *size)
     return g_realloc(fdt, *size);
 }
 
+/* The partition the OS asked the next boot for, which PM_RSTS carries */
+static uint32_t raspi5b_rsts_partition(uint32_t rsts)
+{
+    uint32_t partition = 0;
+
+    for (int i = 0; i < RASPI5B_RSTS_PARTITION_BITS; i++) {
+        partition = deposit32(partition, i, 1, extract32(rsts, 2 * i, 1));
+    }
+    return partition;
+}
+
+/*
+ * What the firmware reports about the boot it is making, which it writes
+ * afresh each time: the reset status it found, the partition it boots
+ * from, which for files QEMU supplies is the one the OS asked for (0 on
+ * power-on), and the boot's number since power-on
+ */
+static void raspi5b_boot_values(const Raspi5bMachineState *s,
+                                uint32_t *rsts, uint32_t *partition,
+                                uint8_t *count)
+{
+    *rsts = s->soc.pm.rsts;
+    *partition = raspi5b_rsts_partition(*rsts);
+    *count = s->boot_count + 1;
+}
+
+/*
+ * The board's identity as the firmware writes it: the model name with
+ * the revision of the board revision code, and the serial number, which
+ * the Raspberry Pi kernel reads from /system as it reads the revision
+ */
+static void raspi5b_fdt_identity(const Raspi5bMachineState *s, void *fdt)
+{
+    g_autofree char *model = g_strdup_printf("Raspberry Pi 5 Model B Rev 1.%u",
+        FIELD_EX32(s->board_rev, REV_CODE, REVISION));
+    g_autofree char *serial = g_strdup_printf("%016" PRIx64, s->serial);
+
+    qemu_fdt_setprop_string(fdt, "/", "model", model);
+    qemu_fdt_setprop_string(fdt, "/", "serial-number", serial);
+    qemu_fdt_add_path(fdt, "/system");
+    qemu_fdt_setprop_cell(fdt, "/system", "linux,revision", s->board_rev);
+    qemu_fdt_setprop_u64(fdt, "/system", "linux,serial", s->serial);
+    qemu_fdt_setprop_string(fdt, "/chosen", "rpi-serial64", serial);
+}
+
+/*
+ * The tree's own bootargs, which arm_load_dtb() has replaced with -append
+ * if there is one: none for the built-in tree
+ */
+static char *raspi5b_dtb_bootargs(const char *filename)
+{
+    g_autofree void *fdt = NULL;
+    const char *args;
+    int size, len;
+
+    fdt = filename ? load_device_tree(filename, &size) : NULL;
+    if (!fdt) {
+        return NULL;
+    }
+    args = fdt_getprop(fdt, fdt_path_offset(fdt, "/chosen"), "bootargs",
+                       &len);
+    if (!args || len < 2 || args[len - 1]) {
+        return NULL;
+    }
+    return g_strdup(args);
+}
+
+/*
+ * The kernel command line as the firmware builds it: the tree's bootargs,
+ * the arguments the firmware adds for the board (the Ethernet address it
+ * reports, and where the VideoCore's memory lies), then cmdline.txt,
+ * whose part -append plays, each part set off by two spaces as the
+ * firmware sets them. It adds no NUMA arguments, which follow how the
+ * SDRAM's banks are mapped (see docs/system/arm/raspi5b.rst).
+ */
+static void raspi5b_fdt_bootargs(const Raspi5bMachineState *s, void *fdt,
+                                 const char *dtb_filename)
+{
+    g_autofree char *base = raspi5b_dtb_bootargs(dtb_filename);
+    const char *append = MACHINE(s)->kernel_cmdline;
+    const uint8_t *mac = s->soc.property.macaddr.a;
+    g_autoptr(GString) args = g_string_new(base);
+
+    if (args->len) {
+        g_string_append(args, "  ");
+    }
+    g_string_append_printf(args,
+        "smsc95xx.macaddr=%02X:%02X:%02X:%02X:%02X:%02X "
+        "vc_mem.mem_base=0x%x vc_mem.mem_size=0x%x",
+        mac[0], mac[1], mac[2], mac[3], mac[4], mac[5],
+        BCM2712_VC_RAM_BASE, (unsigned)BCM2712_VC_RAM_WINDOW);
+    if (append && *append) {
+        g_string_append_printf(args, "  %s", append);
+    }
+    qemu_fdt_setprop_string(fdt, "/chosen", "bootargs", args->str);
+}
+
+/*
+ * /chosen as the firmware fills it in, beyond bootargs: entropy for the
+ * kernel, the boot the bootloader made, the power supply, and the
+ * config.txt prefixes, at their defaults
+ */
+static void raspi5b_fdt_chosen(const Raspi5bMachineState *s, void *fdt,
+                               uint64_t ram_size)
+{
+    uint8_t rng_seed[RASPI5B_RNG_SEED_SIZE];
+    uint64_t kaslr_seed;
+    uint32_t rsts, partition;
+    uint8_t count;
+
+    qemu_guest_getrandom_nofail(&kaslr_seed, sizeof(kaslr_seed));
+    qemu_guest_getrandom_nofail(rng_seed, sizeof(rng_seed));
+    qemu_fdt_setprop_u64(fdt, "/chosen", "kaslr-seed", kaslr_seed);
+    qemu_fdt_setprop(fdt, "/chosen", "rng-seed", rng_seed, sizeof(rng_seed));
+
+    raspi5b_boot_values(s, &rsts, &partition, &count);
+    qemu_fdt_add_path(fdt, "/chosen/bootloader");
+    qemu_fdt_setprop_cell(fdt, "/chosen/bootloader", "boot-mode",
+                          RASPI5B_BOOT_MODE_RPIBOOT);
+    qemu_fdt_setprop_cell(fdt, "/chosen/bootloader", "partition", partition);
+    qemu_fdt_setprop_cell(fdt, "/chosen/bootloader", "rsts", rsts);
+    qemu_fdt_setprop_cell(fdt, "/chosen/bootloader", "tryboot", 0);
+    /* None of USB, network, NVMe, HTTP or ramdisk boot */
+    qemu_fdt_setprop_cell(fdt, "/chosen/bootloader", "capabilities", 0);
+    qemu_fdt_setprop_cell(fdt, "/chosen/bootloader", "arg1", 0);
+    qemu_fdt_setprop_cell(fdt, "/chosen/bootloader", "count", count);
+
+    qemu_fdt_add_path(fdt, "/chosen/power");
+    qemu_fdt_setprop_cell(fdt, "/chosen/power", "max_current",
+                          RASPI5B_PSU_MAX_CURRENT);
+    /* Enabled for a supply that claims 5 A */
+    qemu_fdt_setprop_cell(fdt, "/chosen/power", "usb_max_current_enable",
+                          RASPI5B_PSU_MAX_CURRENT >= 5000);
+    qemu_fdt_setprop_cell(fdt, "/chosen/power", "usb_over_current_detected",
+                          0);
+    qemu_fdt_setprop_cell(fdt, "/chosen/power", "power_reset", 0);
+
+    qemu_fdt_setprop_string(fdt, "/chosen", "os_prefix", "");
+    qemu_fdt_setprop_string(fdt, "/chosen", "overlay_prefix", "overlays/");
+    qemu_fdt_setprop_cell(fdt, "/chosen", "rpi-sdram-size-gbit",
+                          ram_size / (GiB / 8));
+}
+
+/*
+ * A CMA pool sized in one cell, as the firmware's tree has it, gets the
+ * parent's two, as the firmware writes it: Linux warns that the firmware
+ * is out of date otherwise
+ */
+static void raspi5b_fdt_cma(void *fdt)
+{
+    const char *path = "/reserved-memory/linux,cma";
+    int node = fdt_path_offset(fdt, path);
+    const fdt32_t *size;
+    int len, cells;
+
+    if (node < 0) {
+        return;
+    }
+    size = fdt_getprop(fdt, node, "size", &len);
+    cells = fdt_size_cells(fdt, fdt_parent_offset(fdt, node));
+    if (size && len == sizeof(*size) && cells == 2) {
+        qemu_fdt_setprop_u64(fdt, path, "size", fdt32_to_cpu(*size));
+    }
+}
+
+/*
+ * Point the tree's bootloader-config node at the copy of the configuration
+ * and enable it, as the firmware does once it has made the copy
+ */
+static void raspi5b_fdt_blconfig(void *fdt)
+{
+    g_auto(GStrv) paths = qemu_fdt_node_path(fdt, NULL,
+                                             "raspberrypi,bootloader-config",
+                                             &error_fatal);
+    size_t size = sizeof(raspi5b_blconfig) - 1;
+
+    if (!paths[0]) {
+        return;
+    }
+    rom_add_blob_fixed("blconfig", raspi5b_blconfig, size,
+                       RASPI5B_BLCONFIG_ADDR);
+    for (char **path = paths; *path; path++) {
+        int parent = fdt_parent_offset(fdt, fdt_path_offset(fdt, *path));
+
+        qemu_fdt_setprop_sized_cells(fdt, *path, "reg",
+                                     fdt_address_cells(fdt, parent),
+                                     RASPI5B_BLCONFIG_ADDR,
+                                     fdt_size_cells(fdt, parent), size);
+        qemu_fdt_setprop_string(fdt, *path, "status", "okay");
+    }
+}
+
+/* The board's Ethernet address, which the command line carries too */
+static void raspi5b_fdt_mac(const Raspi5bMachineState *s, void *fdt)
+{
+    const char *path = fdt_get_alias(fdt, "ethernet0");
+
+    if (path && fdt_path_offset(fdt, path) >= 0) {
+        g_autofree char *node = g_strdup(path);
+
+        qemu_fdt_setprop(fdt, node, "local-mac-address",
+                         s->soc.property.macaddr.a,
+                         sizeof(s->soc.property.macaddr.a));
+    }
+}
+
+/*
+ * What the firmware changes in the tree before it starts the OS, for any
+ * tree: the built-in one (see raspi5b_get_dtb()) or a -dtb blob. The rest
+ * of the model's own changes follow: RAM, CPUs and unmodelled devices.
+ */
 static void raspi5b_modify_dtb(const struct arm_boot_info *info, void *fdt)
 {
     const Raspi5bMachineState *s =
         container_of(info, Raspi5bMachineState, binfo);
 
-    /* The VideoCore firmware publishes the board revision here */
-    qemu_fdt_add_path(fdt, "/system");
-    qemu_fdt_setprop_cell(fdt, "/system", "linux,revision", s->board_rev);
+    raspi5b_fdt_identity(s, fdt);
+    raspi5b_fdt_bootargs(s, fdt, info->dtb_filename);
+    raspi5b_fdt_chosen(s, fdt, info->ram_size);
+    raspi5b_fdt_cma(fdt);
+    raspi5b_fdt_blconfig(fdt);
+    raspi5b_fdt_mac(s, fdt);
 
     raspi5b_fdt_memory(fdt, info->ram_size);
     raspi5b_fdt_fail_absent_cpus(fdt, s->parent_obj.smp.cpus);
@@ -312,6 +564,52 @@ static void raspi5b_modify_dtb(const struct arm_boot_info *info, void *fdt)
         }
     }
 }
+
+/*
+ * QEMU copies the same tree back into memory at every reset, where the
+ * firmware writes a new one for each boot: bring the values that change
+ * from boot to boot up to date first, including a new KASLR seed (QEMU
+ * renews rng-seed itself). Registered before the ROMs' own reset, so the
+ * boot the reset starts sees them.
+ */
+static void raspi5b_fdt_boot(void *opaque)
+{
+    Raspi5bMachineState *s = opaque;
+    AddressSpace *as = arm_boot_address_space(&s->soc.cpu[0], &s->binfo);
+    void *fdt = rom_ptr_for_as(as, s->binfo.dtb_start,
+                               sizeof(struct fdt_header));
+    int node;
+    uint64_t kaslr_seed;
+    uint32_t rsts, partition;
+    uint8_t count;
+
+    if (!fdt || fdt_check_header(fdt) ||
+        !rom_ptr_for_as(as, s->binfo.dtb_start, fdt_totalsize(fdt))) {
+        return;
+    }
+    raspi5b_boot_values(s, &rsts, &partition, &count);
+    s->boot_count = count;
+    node = fdt_path_offset(fdt, "/chosen/bootloader");
+    if (node >= 0) {
+        fdt_setprop_inplace_u32(fdt, node, "rsts", rsts);
+        fdt_setprop_inplace_u32(fdt, node, "partition", partition);
+        fdt_setprop_inplace_u32(fdt, node, "count", count);
+    }
+    qemu_guest_getrandom_nofail(&kaslr_seed, sizeof(kaslr_seed));
+    fdt_setprop_inplace_u64(fdt, fdt_path_offset(fdt, "/chosen"),
+                            "kaslr-seed", kaslr_seed);
+}
+
+/* The boot count outlives resets, so it moves with the machine */
+static const VMStateDescription vmstate_raspi5b = {
+    .name = "raspi5b",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT8(boot_count, Raspi5bMachineState),
+        VMSTATE_END_OF_LIST()
+    },
+};
 
 static void raspi5b_cpu_reset(void *opaque)
 {
@@ -420,6 +718,7 @@ static void raspi5b_boot_armstub(Raspi5bMachineState *s,
 
         /* As for -kernel: the kernel maps the tree's 2 MiB block early */
         dtb = s->dtb_addr ? s->dtb_addr : QEMU_ALIGN_UP(next, 2 * MiB);
+        s->binfo.dtb_start = dtb;
         dtb_size = arm_load_dtb(dtb, &s->binfo, 0, as, machine, cpu);
         if (dtb_size < 0) {
             exit(EXIT_FAILURE);
@@ -486,7 +785,7 @@ static void raspi5b_machine_init(MachineState *machine)
                              &error_abort);
     qdev_prop_set_uint32(soc, "board-rev", s->board_rev);
     qdev_prop_set_uint64(soc, "board-serial", s->serial);
-    /* The firmware passes on the command line it gives the kernel */
+    /* The command line tag answers with -append: cmdline.txt's part */
     qdev_prop_set_string(soc, "command-line", machine->kernel_cmdline);
     qdev_realize(soc, NULL, &error_fatal);
 
@@ -504,6 +803,11 @@ static void raspi5b_machine_init(MachineState *machine)
     } else {
         arm_load_kernel(&s->soc.cpu[0], machine, &s->binfo);
     }
+    /* arm_load_dtb() has left the tree here if it loaded one */
+    if (machine->fdt) {
+        qemu_register_reset_nosnapshotload(raspi5b_fdt_boot, s);
+    }
+    vmstate_register(NULL, 0, &vmstate_raspi5b, s);
 }
 
 static bool raspi5b_get_secure(Object *obj, Error **errp)

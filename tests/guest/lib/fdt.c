@@ -48,6 +48,30 @@ uint32_t fdt_cell(const void *prop, unsigned index)
     return be32((const uint32_t *)prop + index);
 }
 
+bool fdt_prop_u32(int node, const char *name, uint32_t *val)
+{
+    uint32_t len;
+    const void *prop = fdt_getprop(node, name, &len);
+
+    if (!prop || len != 4) {
+        return false;
+    }
+    *val = fdt_cell(prop, 0);
+    return true;
+}
+
+bool fdt_prop_u64(int node, const char *name, uint64_t *val)
+{
+    uint32_t len;
+    const void *prop = fdt_getprop(node, name, &len);
+
+    if (!prop || len != 8) {
+        return false;
+    }
+    *val = (uint64_t)fdt_cell(prop, 0) << 32 | fdt_cell(prop, 1);
+    return true;
+}
+
 static uint32_t hdr(const void *blob, unsigned field)
 {
     return fdt_cell(blob, field);

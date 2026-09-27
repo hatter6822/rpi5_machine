@@ -59,16 +59,16 @@ commit (or a short series) with its own tests.
 
 ## 2. Current state
 
-Delivered so far: M1 (WS0.1–WS0.3, WS0.5, WS0.6, WS2.1, WS2.2, WS2.3a, WS2.4, WS2.5, WS3.2, WS3.6, WS9.2) and, towards M2, WS1.5, WS1.2, WS3.3 and WS3.4:
+Delivered so far: M1 (WS0.1–WS0.3, WS0.5, WS0.6, WS2.1, WS2.2, WS2.3a, WS2.4, WS2.5, WS3.2, WS3.6, WS9.2) and M2 (WS1.2, WS1.5, WS3.1, WS3.3, WS3.4):
 
 | Area | State |
 | --- | --- |
 | Repository | pinned QEMU v11.1.1 submodule, overlay + patch series (patches may share files, like an upstream series) managed by `scripts/qemu-tree`, which also exports the upstream series (WS0.5: a commit per patch and a cover letter, checked with `git am`, checkpatch and a build of every commit), CI with ccache |
 | Kconfig (WS0.6) | every BCM283x device model has its own symbol, so `bcm2712` can select just the models it reuses; a `raspi5b`-only build is tested (`make check-minimal`) |
 | SoC (`bcm2712`) | 1–4 Cortex-A76 (`MPIDR.Aff1` = core with `MPIDR.MT` set (WS1.2), CNTFRQ 54 MHz, optional EL3, the IMPDEF registers firmware writes (WS1.5), warm reset through `RMR_EL3` (WS3.3)), GIC-400 with 288 SPIs, 5 priority bits and all timer/maintenance PPIs, UART10 (PL011), system timer (WS2.1), watchdog and reset status (WS2.4), RNG200 (WS2.5), VideoCore mailbox with the BCM283x property and framebuffer channels (WS2.2) and every identity tag answered (WS2.3a), complete memory map with T0 placeholders and two catch-all windows |
-| Board (`raspi5b`) | 1/2/4/8/16 GiB RAM, board revision code, serial number (`serial=`), PSCI over SMC with EL2 entry (default) or guest-owned EL3 (`secure=on`), firmware such as TF-A's BL31 loaded with `-bios` and handed the kernel, initrd and device tree as the Pi's firmware does (WS3.3), system reset and power-off through PSCI, the watchdog and the monitor (WS3.6), a built-in device tree when no `-dtb` is given (WS3.2; `builtin-dtb=off` passes none), DTB fix-ups for unmodelled devices, `/system/linux,revision` |
-| Tests | qtest (UART IDs, GIC geometry, priority bits and security, RAM, placeholders, system timer, watchdog, mailbox, identity tags, RNG), the built-in tree validated against the Linux v6.18 bindings (`make check-dt`), bare-metal smoke guest (EL, MPIDR, CNTFRQ, PSCI CPU_ON on all cores, SYSTEM_OFF, EL3 mode), and the bare-metal suite (WS9.2, 28 tests: GIC and the Secure/Non-secure group split, each core's MPIDR, every timer on every core, SGIs between all core pairs, SPI routing, PSCI, the system timer, the mailbox and identity tags, the RNG, UART receive and loopback, a watchdog reset and four system resets checked against the boot state, an ID-register dump, the A76's IMPDEF registers; 1–4 cores, with the built-in tree, a `-dtb` one and none, EL2 and EL3), the `-bios` handoff (qtest), and real firmware (`make check-firmware`, all pinned: the smoke guest and the suite on TF-A's `rpi5` BL31, Linux on TF-A and through U-Boot, the EDK2 port to its shell) |
-| Linux and firmware | the stock Raspberry Pi OS kernel (6.18) boots on 4 CPUs to the root-fs mount, without warnings, with the firmware's `bcm2712-rpi-5-b.dtb` and on the built-in tree (1, 2 and 8 GiB), directly, on TF-A's BL31 or through U-Boot on it (WS3.4); the EDK2 port reaches the UEFI shell |
+| Board (`raspi5b`) | 1/2/4/8/16 GiB RAM, board revision code, serial number (`serial=`), PSCI over SMC with EL2 entry (default) or guest-owned EL3 (`secure=on`), firmware such as TF-A's BL31 loaded with `-bios` and handed the kernel, initrd and device tree as the Pi's firmware does (WS3.3), system reset and power-off through PSCI, the watchdog and the monitor (WS3.6), a built-in device tree when no `-dtb` is given (WS3.2; `builtin-dtb=off` passes none), and in whichever tree the guest gets the firmware's changes, made anew for each boot (WS3.1): model, serial number, the command line it builds, `/chosen` with the boot's reset status, partition and count, a 5 A supply and seeds, the CMA size, the bootloader configuration, the Ethernet address, unmodelled devices disabled |
+| Tests | qtest (UART IDs, GIC geometry, priority bits and security, RAM, placeholders, system timer, watchdog, mailbox, identity tags, RNG), the built-in tree validated against the Linux v6.18 bindings (`make check-dt`), the device-tree fix-ups (each one, the built-in tree against a checked-in dump, the values of each boot across resets and migration), bare-metal smoke guest (EL, MPIDR, CNTFRQ, PSCI CPU_ON on all cores, SYSTEM_OFF, EL3 mode), and the bare-metal suite (WS9.2, 28 tests: GIC and the Secure/Non-secure group split, each core's MPIDR, every timer on every core, SGIs between all core pairs, SPI routing, PSCI, the system timer, the mailbox and identity tags, the RNG, UART receive and loopback, a watchdog reset and four system resets checked against the boot state, an ID-register dump, the A76's IMPDEF registers; 1–4 cores, with the built-in tree, a `-dtb` one and none, EL2 and EL3), the `-bios` handoff (qtest), and real firmware (`make check-firmware`, all pinned: the smoke guest and the suite on TF-A's `rpi5` BL31, Linux on TF-A and through U-Boot, the EDK2 port to its shell, and the changes to the firmware's tree against a checked-in list) |
+| Linux and firmware | the stock Raspberry Pi OS kernel (6.18) boots on 4 CPUs to the root-fs mount, without warnings ("firmware out-of-date" included) and with KASLR, with the firmware's `bcm2712-rpi-5-b.dtb` and on the built-in tree (1, 2 and 8 GiB), directly, on TF-A's BL31 or through U-Boot on it (WS3.4); the EDK2 port reaches the UEFI shell |
 
 Known provisional values, each marked in the code: 288 SPIs
 (`TODO(WS1.3)`), the VideoCore memory size and DMA channel mask
@@ -87,7 +87,7 @@ and turns provisional values into verified ones. H never gates a milestone.
 | --- | --- | --- | --- |
 | **M0** Skeleton | machine boots bare-metal payloads | WS0.1–0.3 | done: `make check` |
 | **M1** Bare-metal platform | everything a microkernel needs: timers, IPIs, mailbox/property, watchdog reset, RNG, a device tree | WS0.5, WS0.6, WS2.1, WS2.2, WS2.3a, WS2.4, WS2.5, WS3.2, WS3.6, WS9.2 | done: the bare-metal suite (WS9.2) passes on 1–4 cores with and without `-dtb`; PSCI `SYSTEM_RESET` and the watchdog reboot the guest four times |
-| **M2** Firmware-faithful boot | real TF-A, U-Boot and UEFI run unmodified | WS1.2, WS1.5, WS3.1, WS3.3, WS3.4 | upstream TF-A `rpi5` BL31 (`secure=on`) → U-Boot → Linux to the root-fs mount; EDK2 to the UEFI shell |
+| **M2** Firmware-faithful boot | real TF-A, U-Boot and UEFI run unmodified | WS1.2, WS1.5, WS3.1, WS3.3, WS3.4 | done: upstream TF-A `rpi5` BL31 (`secure=on`) → U-Boot → Linux to the root-fs mount; EDK2 to the UEFI shell (`make check-firmware`) |
 | **M3** Linux on SD card | Raspberry Pi OS boots to a login prompt | WS2.3b–e, WS2.6, WS4.1–4.6, WS5.1, WS5.2, WS3.5 | unmodified Raspberry Pi OS Lite image boots from `-drive if=sd` with `scripts/rpi5-boot`; `reboot` and `poweroff` work |
 | **M4** PCIe | PCIe root complexes and MSI | WS6.1–6.5 | NVMe root and virtio-net on the external PCIe1 port under Linux |
 | **M5** RP1 | 40-pin header, Ethernet, USB | WS7.1–7.12 | Linux networking over RP1 Ethernet, USB keyboard and mass storage, GPIO/I²C/SPI/UART qtests; bare-metal RP1 UART0 at `0x1f_0003_0000` |
@@ -110,6 +110,7 @@ graph LR
   WS9.2 --> M1((M1))
   WS1.5[WS1.5 IMPDEF sysregs] --> WS3.3[WS3.3 armstub/BL31 loader] --> WS3.4[WS3.4 TF-A/U-Boot/UEFI]
   WS1.2[WS1.2 MPIDR.MT] --> WS3.4
+  WS3.1 & WS3.4 --> M2((M2))
   WS4.1[WS4.1 L2 intc] --> WS4.2[WS4.2 brcmstb GPIO] & WS4.4[WS4.4 BSC I2C]
   WS4.2 --> WS4.6[WS4.6 board wiring] & WS5.1[WS5.1 SDHCI]
   WS5.1 --> WS3.5[WS3.5 SD boot helper] --> M3((M3))
@@ -634,7 +635,60 @@ conversion the Linux driver expects (`temp_mC = 410040 - raw * 487`).
 
 ### WS3: Boot flow and firmware compatibility
 
-#### WS3.1 Device-tree fix-ups at parity with the firmware (M)
+#### WS3.1 Device-tree fix-ups at parity with the firmware (done)
+*Delivered:* whichever tree the guest gets (the built-in one, a `-dtb`
+blob, and so the one TF-A, U-Boot or EDK2 passes on), the machine
+changes as the firmware does, from the firmware documentation ("Firmware
+parameters", the `boot_count` and `boot_arg1` variables), the
+bootloader's release notes and published dumps of booted Pis: the model
+with the board's revision ("Raspberry Pi 5 Model B Rev 1.0"),
+`serial-number`, `/chosen/rpi-serial64` and `/system/linux,serial`; the
+command line the firmware builds, the tree's own `bootargs` (which on a
+Pi 5 carry the plan's `coherent_pool` and `numa_policy`; `snd_bcm2835.*`
+is older Pis'), then `smsc95xx.macaddr=` and `vc_mem.*`, then `-append`
+for `cmdline.txt`, two spaces apart; `kaslr-seed` and `rng-seed`;
+`/chosen/bootloader` (boot-mode 3, RPIBOOT, as the host supplies the
+files; `rsts`, as dumps and the `config.txt` documentation name what
+the property list calls `pm_rsts`; the `partition` asked for there; the
+8-bit boot `count`); `/chosen/power` for a 5 A bench supply;
+`os_prefix`, `overlay_prefix`,
+`rpi-sdram-size-gbit`; the `linux,cma` size in two cells, which ends
+Linux's "firmware out-of-date?" warning; `nvram@0` enabled on a copy of
+the bootloader configuration in VideoCore memory; and `local-mac-address`
+for `ethernet0`. QEMU loads the same tree at every reset, where the
+firmware writes one per boot, so a reset handler updates the reset
+status, partition, count and KASLR seed in QEMU's copy first (QEMU
+renews `rng-seed` itself); the count migrates, in a `raspi5b` section.
+Trees that already have `/chosen/bootloader` or `/chosen/power`, such as
+one dumped from a booted Pi, are updated rather than refused. What the
+firmware writes that the machine does not, listed in the machine
+documentation: the bootloader's version and timestamps, USB-PD data,
+the NUMA arguments (`numa=fake=` and the rest follow the SDRAM's bank
+mapping; the 1 GiB split this plan expected in the memory node is most
+likely those fake NUMA nodes, the node itself keeping the two ranges
+around the VideoCore's memory from M1), `console=serial0` substitution,
+the identifiers from manufacturing data (`rpi-duid`, `rpi-machine-id`,
+`rpi-boardrev-ext`, `rpi-min-boot-ver`), and anything from
+`config.txt`; `arg1` and `tryboot` stay 0, the property requests that
+set them not being modelled. Steps that did not apply: `user-data`
+appears in neither the firmware's documentation nor its release notes;
+`/emmc2bus` is BCM2711's; and the firmware disables nodes only for
+variants without the hardware (a CM5 without wireless) or through
+`config.txt`. No real boot has been dumped yet (WS0.4), so the
+comparison with hardware is against those sources.
+Tests: `tests/smoke/fdt.py` prints a tree, or what one changes in
+another, the same way whatever `dtc` is installed; `test_dtb.py` checks
+each change on minimal trees, the built-in tree against a checked-in
+dump, and over QMP the values of each boot through resets, the count's
+8-bit wrap and migration; `test_firmware.py` checks the changes to the
+firmware's `bcm2712-rpi-5-b.dtb` against a checked-in list, and that
+Linux, directly on TF-A and through U-Boot, reports the model, gets the
+composed command line, enables KASLR and warns about nothing; the
+bare-metal suite checks the count and reset status after its watchdog
+and system resets, the partition after the watchdog one, and a new KASLR
+seed at every boot; `make check-dt` allows the firmware's `/chosen`
+properties, which no binding describes.
+
 **Depends:** WS2.3a.
 Reproduce what the VideoCore firmware adds or edits before jumping to the
 kernel, so that Linux and downstream tools see the same tree as on

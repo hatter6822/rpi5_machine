@@ -16,7 +16,9 @@ import time
 import unittest
 from pathlib import Path
 
-from test_hello import GUEST, QEMU, boot
+import fdt
+from test_dtb import FIRMWARE_ARGS
+from test_hello import GUEST, QEMU, TIMEOUT, boot
 from test_suite import DT_MODES, DTS, SUITE, SuiteChecks, run_suite
 
 FIRMWARE = Path(os.environ.get("FIRMWARE", "/nonexistent"))
@@ -47,6 +49,20 @@ BOOT_TIMEOUT = 180
 
 # F1 on a VT100 terminal, which EDK2 reads as its shell's hotkey
 F1 = "\x1bOP"
+
+# What the machine changes in the firmware's tree, checked in
+FIXUPS = Path(__file__).with_name("raspi5b-firmware-fixups.txt")
+
+
+def command_line(dtb):
+    """The kernel's command line as the firmware builds it: the tree's
+    bootargs, its own arguments, then cmdline.txt's, which -append plays,
+    two spaces apart"""
+    parts = [FIRMWARE_ARGS, CMDLINE]
+    if dtb:
+        bootargs = fdt.load(dtb)["/chosen"]["bootargs"]
+        parts.insert(0, bootargs.rstrip(b"\0").decode())
+    return "  ".join(parts)
 
 
 def converse(args, script, timeout=BOOT_TIMEOUT):
@@ -160,12 +176,32 @@ class BootTest(unittest.TestCase):
     system's first need for storage, on the built-in device tree and on
     the one the firmware ships"""
 
-    def assertLinuxBooted(self, out):
+    def assertLinuxBooted(self, out, dtb):
+        self.assertIn("Machine model: Raspberry Pi 5 Model B Rev 1.0", out)
         self.assertIn("psci: PSCIv1.1 detected in firmware.", out)
         self.assertIn("smp: Brought up 1 node, 4 CPUs", out)
-        self.assertIn(f"Kernel command line: {CMDLINE}", out)
+        self.assertIn(f"Kernel command line: {command_line(dtb)}", out)
+        self.assertIn("KASLR enabled", out)
         for line in out.splitlines():
-            self.assertNotRegex(line, r"WARNING|Oops|BUG:|Call trace")
+            self.assertNotRegex(line, r"WARNING|Oops|BUG:|Call trace|"
+                                      r"firmware out-of-date")
+
+    def test_device_tree(self):
+        """The firmware's own tree, booted as the firmware boots it, gets
+        the changes checked in"""
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tmp)
+        out = tmp / "fixed.dtb"
+        subprocess.run([str(QEMU), "-M", f"raspi5b,secure=on,dumpdtb={out}",
+                        "-display", "none", "-bios", str(BL31),
+                        "-kernel", str(KERNEL), "-dtb", str(FIRMWARE_DTB),
+                        "-append", CMDLINE],
+                       stdin=subprocess.DEVNULL, capture_output=True,
+                       check=True, timeout=TIMEOUT)
+        expected = [line for line in FIXUPS.read_text().splitlines()
+                    if not line.startswith("#")]
+        self.assertEqual(fdt.diff(fdt.load(FIRMWARE_DTB), fdt.load(out)),
+                         expected)
 
     def test_linux(self):
         """The firmware's own chain: TF-A enters the kernel at EL2"""
@@ -179,7 +215,7 @@ class BootTest(unittest.TestCase):
                 self.assertTrue(reached, out)
                 self.assertIn(TFA_BANNER, out)
                 self.assertIn("CPU: All CPU(s) started at EL2", out)
-                self.assertLinuxBooted(out)
+                self.assertLinuxBooted(out, dtb)
 
     def test_u_boot_linux(self):
         """TF-A enters U-Boot, which boots the kernel with booti"""
@@ -202,7 +238,7 @@ class BootTest(unittest.TestCase):
                 self.assertIn("U-Boot 2026.07", out)
                 self.assertIn("RPI 5 Model B (0xb04170)", out)
                 self.assertIn("Starting kernel ...", out)
-                self.assertLinuxBooted(out)
+                self.assertLinuxBooted(out, dtb)
 
     def test_edk2_shell(self):
         """The EDK2 release as its config.txt boots it: its image as the

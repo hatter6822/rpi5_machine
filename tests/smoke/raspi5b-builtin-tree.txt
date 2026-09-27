@@ -1,0 +1,164 @@
+# The built-in device tree as the guest gets it, fix-ups included, from
+# the default machine (2 GiB, 4 cores) with
+#   -kernel tests/guest/build/hello.elf -append console=ttyAMA10,115200
+# as tests/smoke/fdt.py prints it, the seeds as RANDOM. test_dtb.py
+# compares the machine's tree with it. After a change to the tree, check
+# the difference is the one intended, and write the lines below from
+#   build/qemu-system-aarch64 -M raspi5b,dumpdtb=builtin.dtb \
+#       -kernel tests/guest/build/hello.elf -append console=ttyAMA10,115200
+#   python3 tests/smoke/fdt.py builtin.dtb
+/
+    serial-number = "0123456789abcdef"
+    interrupt-parent = <0x8007>
+    #size-cells = <0x2>
+    #address-cells = <0x2>
+    model = "Raspberry Pi 5 Model B Rev 1.0"
+    compatible = "raspberrypi,5-model-b", "brcm,bcm2712"
+/system
+    linux,serial = <0x1234567 0x89abcdef>
+    linux,revision = <0xb04170>
+/psci
+    migrate = <0xc4000005>
+    cpu_on = <0xc4000003>
+    cpu_off = <0x84000002>
+    cpu_suspend = <0xc4000001>
+    method = "smc"
+    compatible = "arm,psci-1.0", "arm,psci-0.2", "arm,psci"
+/memory@0
+    reg = <0x0 0x0 0x0 0x3fc00000 0x0 0x40000000 0x0 0x40000000>
+    device_type = "memory"
+/chosen
+    rpi-sdram-size-gbit = <0x10>
+    overlay_prefix = "overlays/"
+    os_prefix = ""
+    rng-seed = RANDOM
+    kaslr-seed = RANDOM
+    rpi-serial64 = "0123456789abcdef"
+    bootargs = "smsc95xx.macaddr=52:54:00:12:34:57 vc_mem.mem_base=0x3fc00000 vc_mem.mem_size=0x40000000  console=ttyAMA10,115200"
+    stdout-path = "serial10:115200n8"
+/chosen/power
+    power_reset = <0x0>
+    usb_over_current_detected = <0x0>
+    usb_max_current_enable = <0x1>
+    max_current = <0x1388>
+/chosen/bootloader
+    count = <0x1>
+    arg1 = <0x0>
+    capabilities = <0x0>
+    tryboot = <0x0>
+    rsts = <0x1000>
+    partition = <0x0>
+    boot-mode = <0x3>
+/aliases
+    console = "/soc@107c000000/serial@7d001000"
+    serial10 = "/soc@107c000000/serial@7d001000"
+/reserved-memory
+    ranges
+    #size-cells = <0x2>
+    #address-cells = <0x2>
+/reserved-memory/linux,cma
+    alloc-ranges = <0x0 0x0 0x0 0x40000000>
+    linux,cma-default
+    reusable
+    size = <0x0 0x4000000>
+    compatible = "shared-dma-pool"
+/arm-pmu
+    interrupt-affinity = <0x8006 0x8005 0x8004 0x8003>
+    interrupts = <0x0 0x10 0x4 0x0 0x11 0x4 0x0 0x12 0x4 0x0 0x13 0x4>
+    compatible = "arm,cortex-a76-pmu"
+/timer
+    interrupts = <0x1 0xd 0xf08 0x1 0xe 0xf08 0x1 0xb 0xf08 0x1 0xa 0xf08>
+    compatible = "arm,armv8-timer"
+/cpus
+    #size-cells = <0x0>
+    #address-cells = <0x1>
+/cpus/cpu@0
+    phandle = <0x8006>
+    enable-method = "psci"
+    reg = <0x0>
+    compatible = "arm,cortex-a76"
+    device_type = "cpu"
+/cpus/cpu@100
+    phandle = <0x8005>
+    enable-method = "psci"
+    reg = <0x100>
+    compatible = "arm,cortex-a76"
+    device_type = "cpu"
+/cpus/cpu@200
+    phandle = <0x8004>
+    enable-method = "psci"
+    reg = <0x200>
+    compatible = "arm,cortex-a76"
+    device_type = "cpu"
+/cpus/cpu@300
+    phandle = <0x8003>
+    enable-method = "psci"
+    reg = <0x300>
+    compatible = "arm,cortex-a76"
+    device_type = "cpu"
+/clocks
+/clocks/clk-osc
+    phandle = <0x8002>
+    clock-output-names = "osc"
+    clock-frequency = <0x337f980>
+    #clock-cells = <0x0>
+    compatible = "fixed-clock"
+/clocks/clk-vpu
+    phandle = <0x8001>
+    clock-output-names = "vpu-clock"
+    clock-frequency = <0x2cb41780>
+    #clock-cells = <0x0>
+    compatible = "fixed-clock"
+/clocks/clk-uart
+    phandle = <0x8000>
+    clock-output-names = "uart-clock"
+    clock-frequency = <0x8ca000>
+    #clock-cells = <0x0>
+    compatible = "fixed-clock"
+/soc@107c000000
+    ranges = <0x0 0x10 0x0 0x80000000>
+    #size-cells = <0x1>
+    #address-cells = <0x1>
+    compatible = "simple-bus"
+/soc@107c000000/firmware
+    mboxes = <0x8008>
+    dma-ranges
+    #size-cells = <0x1>
+    #address-cells = <0x1>
+    compatible = "raspberrypi,bcm2835-firmware", "simple-mfd"
+/soc@107c000000/timer@7c003000
+    clock-frequency = <0xf4240>
+    interrupts = <0x0 0x40 0x4 0x0 0x41 0x4 0x0 0x42 0x4 0x0 0x43 0x4>
+    reg = <0x7c003000 0x1000>
+    compatible = "brcm,bcm2835-system-timer"
+/soc@107c000000/mailbox@7c013880
+    phandle = <0x8008>
+    #mbox-cells = <0x0>
+    interrupts = <0x0 0x21 0x4>
+    reg = <0x7c013880 0x40>
+    compatible = "brcm,bcm2835-mbox"
+/soc@107c000000/serial@7d001000
+    arm,primecell-periphid = <0x141011>
+    clock-names = "uartclk", "apb_pclk"
+    clocks = <0x8000 0x8001>
+    interrupts = <0x0 0x79 0x4>
+    reg = <0x7d001000 0x200>
+    compatible = "arm,pl011", "arm,primecell"
+/soc@107c000000/watchdog@7d200000
+    system-power-controller
+    #reset-cells = <0x1>
+    #power-domain-cells = <0x1>
+    reg-names = "pm"
+    reg = <0x7d200000 0x604>
+    compatible = "brcm,bcm2712-pm"
+/soc@107c000000/rng@7d208000
+    reg = <0x7d208000 0x28>
+    compatible = "brcm,bcm2711-rng200"
+/soc@107c000000/interrupt-controller@7fff9000
+    phandle = <0x8007>
+    interrupts = <0x1 0x9 0xf04>
+    #address-cells = <0x0>
+    #interrupt-cells = <0x3>
+    interrupt-controller
+    reg = <0x7fff9000 0x1000 0x7fffa000 0x2000 0x7fffc000 0x2000 0x7fffe000 0x2000>
+    compatible = "arm,gic-400"
