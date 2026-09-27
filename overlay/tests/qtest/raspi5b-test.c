@@ -1830,6 +1830,490 @@ static void test_pinctrl_migrate(void)
 }
 
 /*
+ * brcmstb BSC I2C controllers (Linux i2c-brcmstb.c), the DDC buses of
+ * the HDMI ports. The board puts a monitor's EDID at 0x50 on HDMI0's;
+ * nothing answers on HDMI1's.
+ */
+#define BSC_CHIP_ADDRESS        0x00
+#define BSC_DATA_IN(n)          (0x04 + 4 * (n))
+#define BSC_CNT_REG             0x24
+#define BSC_CTL_REG             0x28
+#define BSC_IIC_ENABLE          0x2c
+#define BSC_DATA_OUT(n)         (0x30 + 4 * (n))
+#define BSC_CTLHI_REG           0x50
+#define BSC_SCL_PARAM           0x54
+#define BSC_SIZE                0x58
+#define BSC_NUM_DATA_REGS       8
+#define BSC_CTL_DTF_READ        1
+#define BSC_CTL_DTF_WR_RD       3
+#define BSC_CTL_INT_EN          BIT(6)
+#define BSC_IIC_EN_ENABLE       BIT(0)
+#define BSC_IIC_EN_INTRP        BIT(1)
+#define BSC_IIC_EN_NOACK        BIT(2)
+#define BSC_IIC_EN_NOSTOP       BIT(4)
+#define BSC_IIC_EN_NOSTART      BIT(5)
+#define BSC_IIC_EN_RESTART      BIT(6)
+#define BSC_CTLHI_IGNORE_ACK    BIT(1)
+#define BSC_CTLHI_DATAREG_SIZE  BIT(6)
+
+#define EDID_ADDR               0x50
+#define EDID_SIZE               128
+
+typedef struct Bsc {
+    uint64_t base;
+    int irq;                    /* input of bsc_irq */
+} Bsc;
+
+static const Bsc bscs[] = {
+    { 0x107d508200ULL, 1 },     /* HDMI0 */
+    { 0x107d508280ULL, 2 },     /* HDMI1 */
+};
+
+#define BSC_IRQ     (&l2_intcs[2])
+
+static uint32_t bsc_readl(QTestState *qts, const Bsc *bsc, uint32_t reg)
+{
+    return qtest_readl(qts, bsc->base + reg);
+}
+
+static void bsc_writel(QTestState *qts, const Bsc *bsc, uint32_t reg,
+                       uint32_t val)
+{
+    qtest_writel(qts, bsc->base + reg, val);
+}
+
+/* Byte @i of a transfer, in data registers of @regsz bytes */
+static uint32_t bsc_reg(int i, int regsz)
+{
+    return i / regsz;
+}
+
+static int bsc_shift(int i, int regsz)
+{
+    return 8 * (i % regsz);
+}
+
+/*
+ * One command, as brcmstb_i2c_xfer_bsc_data() issues it: the address,
+ * the count, the bytes to write, the direction with the interrupt
+ * enabled, then ENABLE with the start and stop @flags. Reads the bytes
+ * read into @buf and returns IIC_ENABLE as the command left it; the
+ * caller ends the command.
+ */
+static uint32_t bsc_command(QTestState *qts, const Bsc *bsc, uint8_t addr,
+                            bool read, uint8_t *buf, int count,
+                            uint32_t flags)
+{
+    int regsz = bsc_readl(qts, bsc, BSC_CTLHI_REG) & BSC_CTLHI_DATAREG_SIZE ?
+                4 : 1;
+    uint32_t status;
+
+    bsc_writel(qts, bsc, BSC_CHIP_ADDRESS, addr << 1 | read);
+    bsc_writel(qts, bsc, BSC_CNT_REG, count);
+    if (!read) {
+        uint32_t words[BSC_NUM_DATA_REGS] = { 0 };
+
+        for (int i = 0; i < count; i++) {
+            words[bsc_reg(i, regsz)] |= buf[i] << bsc_shift(i, regsz);
+        }
+        for (int r = 0; r < DIV_ROUND_UP(count, regsz); r++) {
+            bsc_writel(qts, bsc, BSC_DATA_IN(r), words[r]);
+        }
+    }
+    bsc_writel(qts, bsc, BSC_CTL_REG,
+               (read ? BSC_CTL_DTF_READ : 0) | BSC_CTL_INT_EN);
+    bsc_writel(qts, bsc, BSC_IIC_ENABLE, flags | BSC_IIC_EN_ENABLE);
+    status = bsc_readl(qts, bsc, BSC_IIC_ENABLE);
+    if (read) {
+        for (int i = 0; i < count; i++) {
+            buf[i] = bsc_readl(qts, bsc, BSC_DATA_OUT(bsc_reg(i, regsz))) >>
+                     bsc_shift(i, regsz);
+        }
+    }
+    return status;
+}
+
+/* End a command as brcmstb_send_i2c_cmd() does */
+static void bsc_end(QTestState *qts, const Bsc *bsc)
+{
+    bsc_writel(qts, bsc, BSC_CTL_REG,
+               bsc_readl(qts, bsc, BSC_CTL_REG) & ~BSC_CTL_INT_EN);
+    bsc_writel(qts, bsc, BSC_CNT_REG, 0);
+    bsc_writel(qts, bsc, BSC_IIC_ENABLE, 0);
+}
+
+/* A command that completes without a NACK, and its end */
+static void bsc_command_ok(QTestState *qts, const Bsc *bsc, uint8_t addr,
+                           bool read, uint8_t *buf, int count,
+                           uint32_t flags)
+{
+    g_assert_cmphex(bsc_command(qts, bsc, addr, read, buf, count, flags), ==,
+                    flags | BSC_IIC_EN_ENABLE | BSC_IIC_EN_INTRP);
+    bsc_end(qts, bsc);
+}
+
+/*
+ * Read @len bytes of the EDID from @offset, as brcmstb_i2c_xfer() does
+ * with the two messages of an EDID read: the offset, without a stop, then
+ * the bytes in chunks as large as the data registers hold, all but the
+ * last without a stop and all but the first without a start.
+ */
+static void bsc_edid_read(QTestState *qts, const Bsc *bsc, uint8_t offset,
+                          uint8_t *buf, int len)
+{
+    int regsz = bsc_readl(qts, bsc, BSC_CTLHI_REG) & BSC_CTLHI_DATAREG_SIZE ?
+                4 : 1;
+    int chunk = BSC_NUM_DATA_REGS * regsz;
+
+    bsc_command_ok(qts, bsc, EDID_ADDR, false, &offset, 1,
+                   BSC_IIC_EN_RESTART | BSC_IIC_EN_NOSTOP);
+    for (int done = 0; done < len; done += chunk) {
+        int n = MIN(len - done, chunk);
+        uint32_t flags = done ? BSC_IIC_EN_NOSTART : 0;
+
+        if (done + n < len) {
+            flags |= BSC_IIC_EN_NOSTOP;
+        }
+        bsc_command_ok(qts, bsc, EDID_ADDR, true, buf + done, n, flags);
+    }
+}
+
+/* The fixed header, and a checksum that makes the block sum to zero */
+static void check_edid(const uint8_t *edid)
+{
+    static const uint8_t header[] = {
+        0x00, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x00,
+    };
+    uint8_t sum = 0;
+
+    g_assert_cmpmem(edid, sizeof(header), header, sizeof(header));
+    for (int i = 0; i < EDID_SIZE; i++) {
+        sum += edid[i];
+    }
+    g_assert_cmpuint(sum, ==, 0);
+}
+
+/* TODO(WS0.4): every register reads as zero until checked on hardware */
+static void bsc_check_reset(QTestState *qts)
+{
+    for (int i = 0; i < ARRAY_SIZE(bscs); i++) {
+        for (uint32_t reg = 0; reg < BSC_SIZE; reg += 4) {
+            g_assert_cmphex(bsc_readl(qts, &bscs[i], reg), ==, 0);
+        }
+    }
+    g_assert_cmphex(l2_readl(qts, BSC_IRQ, L2_LEVEL_STATUS), ==, 0);
+}
+
+static void test_bsc_reset_values(void)
+{
+    QTestState *qts = qtest_init("-machine raspi5b");
+
+    bsc_check_reset(qts);
+    qtest_quit(qts);
+}
+
+/*
+ * The registers keep the fields Linux names; DATA_OUT ignores writes, and
+ * SCL_PARAM and the space after the block read as zero
+ */
+static void test_bsc_registers(void)
+{
+    static const struct {
+        uint32_t reg, mask;
+    } fields[] = {
+        { BSC_CHIP_ADDRESS, 0xff },
+        { BSC_CNT_REG, 0x3f },
+        { BSC_CTL_REG, 0xf3 },
+        { BSC_CTLHI_REG, 0xc3 },
+        { BSC_SCL_PARAM, 0 },
+    };
+    QTestState *qts = qtest_init("-machine raspi5b");
+
+    for (int i = 0; i < ARRAY_SIZE(bscs); i++) {
+        const Bsc *bsc = &bscs[i];
+
+        for (int f = 0; f < ARRAY_SIZE(fields); f++) {
+            bsc_writel(qts, bsc, fields[f].reg, UINT32_MAX);
+            g_assert_cmphex(bsc_readl(qts, bsc, fields[f].reg), ==,
+                            fields[f].mask);
+        }
+        for (int r = 0; r < BSC_NUM_DATA_REGS; r++) {
+            bsc_writel(qts, bsc, BSC_DATA_IN(r), 0x01020304u * (r + 1));
+            bsc_writel(qts, bsc, BSC_DATA_OUT(r), UINT32_MAX);
+        }
+        for (int r = 0; r < BSC_NUM_DATA_REGS; r++) {
+            g_assert_cmphex(bsc_readl(qts, bsc, BSC_DATA_IN(r)), ==,
+                            0x01020304u * (r + 1));
+            g_assert_cmphex(bsc_readl(qts, bsc, BSC_DATA_OUT(r)), ==, 0);
+        }
+        /* The flags without ENABLE start nothing */
+        bsc_writel(qts, bsc, BSC_IIC_ENABLE, UINT32_MAX & ~BSC_IIC_EN_ENABLE);
+        g_assert_cmphex(bsc_readl(qts, bsc, BSC_IIC_ENABLE), ==,
+                        BSC_IIC_EN_NOSTOP | BSC_IIC_EN_NOSTART |
+                        BSC_IIC_EN_RESTART);
+        bsc_writel(qts, bsc, BSC_SIZE, UINT32_MAX);
+        g_assert_cmphex(bsc_readl(qts, bsc, BSC_SIZE), ==, 0);
+    }
+    g_assert_cmphex(l2_readl(qts, BSC_IRQ, L2_LEVEL_STATUS), ==, 0);
+
+    qtest_quit(qts);
+}
+
+/*
+ * The EDID of HDMI0's monitor, read as Linux reads it, 32 bytes at a
+ * time; offsets wrap at the end of the block
+ */
+static void test_bsc_edid(void)
+{
+    QTestState *qts = qtest_init("-machine raspi5b");
+    const Bsc *bsc = &bscs[0];
+    uint8_t edid[EDID_SIZE], part[40];
+
+    bsc_writel(qts, bsc, BSC_CTLHI_REG, BSC_CTLHI_DATAREG_SIZE);
+    bsc_edid_read(qts, bsc, 0, edid, sizeof(edid));
+    check_edid(edid);
+
+    bsc_edid_read(qts, bsc, 0x7c, part, sizeof(part));
+    g_assert_cmpmem(part, 4, edid + 0x7c, 4);
+    g_assert_cmpmem(part + 4, sizeof(part) - 4, edid, sizeof(part) - 4);
+
+    /* Only setting ENABLE starts a transfer: writing it again does not */
+    bsc_command(qts, bsc, EDID_ADDR, true, part, 4, 0);
+    bsc_writel(qts, bsc, BSC_IIC_ENABLE, BSC_IIC_EN_ENABLE);
+    g_assert_cmphex(bsc_readl(qts, bsc, BSC_IIC_ENABLE), ==,
+                    BSC_IIC_EN_ENABLE | BSC_IIC_EN_INTRP);
+    g_assert_cmphex(bsc_readl(qts, bsc, BSC_DATA_OUT(0)), ==,
+                    (uint32_t)ldl_le_p(edid + 0x24));
+    bsc_end(qts, bsc);
+
+    /* Software cannot set the status bits */
+    g_assert_cmphex(bsc_command(qts, bsc, EDID_ADDR, true, part, 4,
+                                BSC_IIC_EN_NOACK), ==,
+                    BSC_IIC_EN_ENABLE | BSC_IIC_EN_INTRP);
+    bsc_end(qts, bsc);
+
+    qtest_quit(qts);
+}
+
+/* With 1-byte data registers, a transfer moves up to 8 bytes */
+static void test_bsc_byte_registers(void)
+{
+    QTestState *qts = qtest_init("-machine raspi5b");
+    const Bsc *bsc = &bscs[0];
+    uint8_t edid[EDID_SIZE], part[8];
+
+    bsc_writel(qts, bsc, BSC_CTLHI_REG, BSC_CTLHI_DATAREG_SIZE);
+    bsc_edid_read(qts, bsc, 0, edid, sizeof(edid));
+
+    bsc_writel(qts, bsc, BSC_CTLHI_REG, 0);
+    bsc_edid_read(qts, bsc, 0x10, part, sizeof(part));
+    g_assert_cmpmem(part, sizeof(part), edid + 0x10, sizeof(part));
+    for (int r = 0; r < BSC_NUM_DATA_REGS; r++) {
+        g_assert_cmphex(bsc_readl(qts, bsc, BSC_DATA_OUT(r)), ==,
+                        edid[0x10 + r]);
+    }
+
+    /* The count is bits 3:0: 0x10 reads nothing, but clears DATA_OUT */
+    bsc_command_ok(qts, bsc, EDID_ADDR, true, part, 0x10, 0);
+    for (int r = 0; r < BSC_NUM_DATA_REGS; r++) {
+        g_assert_cmphex(bsc_readl(qts, bsc, BSC_DATA_OUT(r)), ==, 0);
+    }
+
+    /* A count beyond the 8 registers reads 8 bytes */
+    part[0] = 0x20;
+    bsc_command_ok(qts, bsc, EDID_ADDR, false, part, 1, BSC_IIC_EN_NOSTOP);
+    bsc_writel(qts, bsc, BSC_CNT_REG, 0xf);
+    bsc_writel(qts, bsc, BSC_CHIP_ADDRESS, EDID_ADDR << 1 | 1);
+    bsc_writel(qts, bsc, BSC_CTL_REG, BSC_CTL_DTF_READ);
+    bsc_writel(qts, bsc, BSC_IIC_ENABLE, BSC_IIC_EN_ENABLE);
+    g_assert_cmphex(bsc_readl(qts, bsc, BSC_IIC_ENABLE), ==,
+                    BSC_IIC_EN_ENABLE | BSC_IIC_EN_INTRP);
+    for (int r = 0; r < BSC_NUM_DATA_REGS; r++) {
+        g_assert_cmphex(bsc_readl(qts, bsc, BSC_DATA_OUT(r)), ==,
+                        edid[0x20 + r]);
+    }
+    bsc_end(qts, bsc);
+
+    qtest_quit(qts);
+}
+
+/*
+ * Nothing answers at 0x51 on HDMI0, nor on HDMI1's bus at all: NOACK,
+ * until ENABLE is cleared. With IGNORE_ACK the transfer goes on, and a
+ * read sees the bus's pull-ups.
+ */
+static void test_bsc_nack(void)
+{
+    QTestState *qts = qtest_init("-machine raspi5b");
+    uint8_t buf[4] = { 0x12, 0x34, 0x56, 0x78 };
+    const uint32_t nack = BSC_IIC_EN_ENABLE | BSC_IIC_EN_INTRP |
+                          BSC_IIC_EN_NOACK;
+
+    bsc_writel(qts, &bscs[0], BSC_CTLHI_REG, BSC_CTLHI_DATAREG_SIZE);
+    g_assert_cmphex(bsc_command(qts, &bscs[0], EDID_ADDR + 1, true, buf,
+                                sizeof(buf), 0), ==, nack);
+    bsc_end(qts, &bscs[0]);
+    g_assert_cmphex(bsc_readl(qts, &bscs[0], BSC_IIC_ENABLE), ==, 0);
+    g_assert_cmphex(bsc_command(qts, &bscs[1], EDID_ADDR, false, buf,
+                                sizeof(buf), 0), ==, nack);
+    bsc_end(qts, &bscs[1]);
+
+    bsc_writel(qts, &bscs[1], BSC_CTLHI_REG,
+               BSC_CTLHI_DATAREG_SIZE | BSC_CTLHI_IGNORE_ACK);
+    g_assert_cmphex(bsc_command(qts, &bscs[1], EDID_ADDR, true, buf,
+                                sizeof(buf), 0), ==, nack);
+    g_assert_cmphex(bsc_readl(qts, &bscs[1], BSC_DATA_OUT(0)), ==,
+                    UINT32_MAX);
+    bsc_end(qts, &bscs[1]);
+
+    /* A byte with no transfer to go on with finds no target either */
+    bsc_writel(qts, &bscs[0], BSC_CTLHI_REG, BSC_CTLHI_DATAREG_SIZE);
+    g_assert_cmphex(bsc_command(qts, &bscs[0], EDID_ADDR, false, buf, 1,
+                                BSC_IIC_EN_NOSTART), ==,
+                    nack | BSC_IIC_EN_NOSTART);
+    bsc_end(qts, &bscs[0]);
+
+    /* The combined formats are not modelled: they fail at once */
+    bsc_writel(qts, &bscs[0], BSC_CNT_REG, 1);
+    bsc_writel(qts, &bscs[0], BSC_CHIP_ADDRESS, EDID_ADDR << 1);
+    bsc_writel(qts, &bscs[0], BSC_CTL_REG, BSC_CTL_DTF_WR_RD);
+    bsc_writel(qts, &bscs[0], BSC_IIC_ENABLE, BSC_IIC_EN_ENABLE);
+    g_assert_cmphex(bsc_readl(qts, &bscs[0], BSC_IIC_ENABLE), ==, nack);
+    bsc_end(qts, &bscs[0]);
+
+    /* HDMI0's bus still works after all that */
+    bsc_writel(qts, &bscs[0], BSC_CTL_REG, 0);
+    bsc_edid_read(qts, &bscs[0], 0, buf, sizeof(buf));
+    g_assert_cmphex(ldl_be_p(buf), ==, 0x00ffffff);
+
+    qtest_quit(qts);
+}
+
+/*
+ * The interrupt is INTRP && INT_EN: raised when a command completes,
+ * lowered by the handler clearing INT_EN, as Linux's does, or by the end
+ * of the command clearing INTRP
+ */
+static void test_bsc_interrupt(void)
+{
+    QTestState *qts = qtest_init("-machine raspi5b");
+    uint8_t offset = 0;
+
+    l2_writel(qts, BSC_IRQ, L2_LEVEL_MASK_CLEAR, BIT(1) | BIT(2));
+    for (int i = 0; i < ARRAY_SIZE(bscs); i++) {
+        const Bsc *bsc = &bscs[i];
+
+        bsc_command(qts, bsc, EDID_ADDR, false, &offset, 1, 0);
+        g_assert_cmphex(l2_readl(qts, BSC_IRQ, L2_LEVEL_STATUS), ==,
+                        BIT(bsc->irq));
+        g_assert_true(gic_spi_pending(qts, BSC_IRQ->spi));
+        bsc_writel(qts, bsc, BSC_CTL_REG, 0);
+        g_assert_cmphex(l2_readl(qts, BSC_IRQ, L2_LEVEL_STATUS), ==, 0);
+        bsc_writel(qts, bsc, BSC_CTL_REG, BSC_CTL_INT_EN);
+        g_assert_cmphex(l2_readl(qts, BSC_IRQ, L2_LEVEL_STATUS), ==,
+                        BIT(bsc->irq));
+        bsc_writel(qts, bsc, BSC_IIC_ENABLE, 0);
+        g_assert_cmphex(bsc_readl(qts, bsc, BSC_IIC_ENABLE), ==, 0);
+        g_assert_cmphex(l2_readl(qts, BSC_IRQ, L2_LEVEL_STATUS), ==, 0);
+        bsc_end(qts, bsc);
+    }
+
+    /* Without INT_EN a command completes all the same, for polling */
+    bsc_writel(qts, &bscs[0], BSC_CNT_REG, 1);
+    bsc_writel(qts, &bscs[0], BSC_CHIP_ADDRESS, EDID_ADDR << 1);
+    bsc_writel(qts, &bscs[0], BSC_IIC_ENABLE, BSC_IIC_EN_ENABLE);
+    g_assert_cmphex(bsc_readl(qts, &bscs[0], BSC_IIC_ENABLE), ==,
+                    BSC_IIC_EN_ENABLE | BSC_IIC_EN_INTRP);
+    g_assert_cmphex(l2_readl(qts, BSC_IRQ, L2_LEVEL_STATUS), ==, 0);
+
+    qtest_quit(qts);
+}
+
+/* A reset clears the registers and frees the bus a command held */
+static void test_bsc_reset(void)
+{
+    QTestState *qts = qtest_init("-machine raspi5b");
+    const Bsc *bsc = &bscs[0];
+    uint8_t offset = 0, buf[4];
+
+    l2_writel(qts, BSC_IRQ, L2_LEVEL_MASK_CLEAR, BIT(1));
+    bsc_writel(qts, bsc, BSC_CTLHI_REG, BSC_CTLHI_DATAREG_SIZE);
+    bsc_command(qts, bsc, EDID_ADDR, false, &offset, 1, BSC_IIC_EN_NOSTOP);
+    g_assert_true(gic_spi_pending(qts, BSC_IRQ->spi));
+    qtest_system_reset(qts);
+    l2_writel(qts, BSC_IRQ, L2_LEVEL_MASK_CLEAR, BIT(1));
+    bsc_check_reset(qts);
+    g_assert_false(gic_spi_pending(qts, BSC_IRQ->spi));
+
+    /* Going on without a start finds no target */
+    bsc_writel(qts, bsc, BSC_CTLHI_REG, BSC_CTLHI_DATAREG_SIZE);
+    bsc_command_ok(qts, bsc, EDID_ADDR, true, buf, sizeof(buf),
+                   BSC_IIC_EN_NOSTART);
+    g_assert_cmphex((uint32_t)ldl_le_p(buf), ==, UINT32_MAX);
+
+    qtest_quit(qts);
+}
+
+/*
+ * The registers survive a migration, and so does a read that holds the
+ * bus: it goes on where it stopped
+ */
+static void test_bsc_migrate(void)
+{
+    g_autofree char *file = g_strdup_printf("%s/raspi5b-bsc-%d.mig",
+                                            g_get_tmp_dir(), getpid());
+    g_autofree char *out = g_strdup_printf("exec:cat > %s", file);
+    g_autofree char *in = g_strdup_printf("exec:cat %s", file);
+    const char *args = "-machine raspi5b -m 1G";
+    const Bsc *bsc = &bscs[0];
+    uint8_t offset = 0x20, edid[EDID_SIZE], part[8];
+    QTestState *src, *dst;
+
+    src = qtest_init(args);
+    l2_writel(src, BSC_IRQ, L2_LEVEL_MASK_CLEAR, BIT(1));
+    bsc_writel(src, bsc, BSC_CTLHI_REG, BSC_CTLHI_DATAREG_SIZE);
+    bsc_edid_read(src, bsc, 0, edid, sizeof(edid));
+    bsc_command_ok(src, bsc, EDID_ADDR, false, &offset, 1,
+                   BSC_IIC_EN_RESTART | BSC_IIC_EN_NOSTOP);
+    bsc_command(src, bsc, EDID_ADDR, true, part, sizeof(part),
+                BSC_IIC_EN_NOSTOP);
+    g_assert_cmpmem(part, sizeof(part), edid + offset, sizeof(part));
+    qtest_qmp_assert_success(src, "{ 'execute': 'migrate',"
+                             "  'arguments': { 'uri': %s } }", out);
+    wait_for_migration(src);
+    qtest_quit(src);
+
+    dst = qtest_initf("%s -incoming defer", args);
+    qtest_qmp_assert_success(dst, "{ 'execute': 'migrate-incoming',"
+                             "  'arguments': { 'uri': %s } }", in);
+    wait_for_migration(dst);
+    g_assert_cmphex(bsc_readl(dst, bsc, BSC_CHIP_ADDRESS), ==,
+                    EDID_ADDR << 1 | 1);
+    g_assert_cmphex(bsc_readl(dst, bsc, BSC_DATA_IN(0)), ==, offset);
+    g_assert_cmphex(bsc_readl(dst, bsc, BSC_CNT_REG), ==, sizeof(part));
+    g_assert_cmphex(bsc_readl(dst, bsc, BSC_CTL_REG), ==,
+                    BSC_CTL_DTF_READ | BSC_CTL_INT_EN);
+    g_assert_cmphex(bsc_readl(dst, bsc, BSC_IIC_ENABLE), ==,
+                    BSC_IIC_EN_NOSTOP | BSC_IIC_EN_ENABLE | BSC_IIC_EN_INTRP);
+    g_assert_cmphex(bsc_readl(dst, bsc, BSC_CTLHI_REG), ==,
+                    BSC_CTLHI_DATAREG_SIZE);
+    for (int r = 0; r < BSC_NUM_DATA_REGS; r++) {
+        g_assert_cmphex(bsc_readl(dst, bsc, BSC_DATA_OUT(r)), ==,
+                        r < 2 ? (uint32_t)ldl_le_p(edid + offset + 4 * r) : 0);
+    }
+    g_assert_true(gic_spi_pending(dst, BSC_IRQ->spi));
+
+    bsc_end(dst, bsc);
+    bsc_command_ok(dst, bsc, EDID_ADDR, true, part, sizeof(part),
+                   BSC_IIC_EN_NOSTART);
+    g_assert_cmpmem(part, sizeof(part), edid + offset + sizeof(part),
+                    sizeof(part));
+
+    qtest_quit(dst);
+    unlink(file);
+}
+
+/*
  * The board: system_powerdown presses the power button, pulling GIO 20
  * low for 200 ms. Here with both edges enabled, as Linux gpio-keys has it.
  */
@@ -2202,6 +2686,14 @@ int main(int argc, char **argv)
     qtest_add_func("/raspi5b/pinctrl/read-back", test_pinctrl_read_back);
     qtest_add_func("/raspi5b/pinctrl/reset", test_pinctrl_reset);
     qtest_add_func("/raspi5b/pinctrl/migrate", test_pinctrl_migrate);
+    qtest_add_func("/raspi5b/bsc/reset-values", test_bsc_reset_values);
+    qtest_add_func("/raspi5b/bsc/registers", test_bsc_registers);
+    qtest_add_func("/raspi5b/bsc/edid", test_bsc_edid);
+    qtest_add_func("/raspi5b/bsc/byte-registers", test_bsc_byte_registers);
+    qtest_add_func("/raspi5b/bsc/nack", test_bsc_nack);
+    qtest_add_func("/raspi5b/bsc/interrupt", test_bsc_interrupt);
+    qtest_add_func("/raspi5b/bsc/reset", test_bsc_reset);
+    qtest_add_func("/raspi5b/bsc/migrate", test_bsc_migrate);
     qtest_add_func("/raspi5b/board/power-button", test_power_button);
     qtest_add_func("/raspi5b/board/power-button-reset",
                    test_power_button_reset);

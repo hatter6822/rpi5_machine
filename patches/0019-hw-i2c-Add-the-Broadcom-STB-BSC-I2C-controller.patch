@@ -1,0 +1,58 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: A7om <hatter6822@gmail.com>
+Date: Sat, 26 Sep 2026 00:00:00 +0000
+Subject: [PATCH] hw/i2c: Add the Broadcom STB BSC I2C controller
+
+Broadcom set-top-box SoCs, including the BCM2712 of the Raspberry Pi 5,
+have BSC (Broadcom serial control) I2C masters, which Linux drives with
+i2c-brcmstb.c. The BCM2712's HDMI ports read the EDID of their monitors
+through two of them.
+
+Software writes the target's address, a count and up to 32 bytes into
+the registers and sets ENABLE. The controller runs the transfer, with
+or without its start and stop conditions, and raises its interrupt when
+it is done. The model runs the transfer at once. It leaves out the
+combined formats, a write and a read joined by a repeated start, which
+Linux does not use, and the bus speed.
+---
+ hw/i2c/Kconfig      | 4 ++++
+ hw/i2c/meson.build  | 1 +
+ hw/i2c/trace-events | 6 ++++++
+ 3 files changed, 11 insertions(+)
+
+diff --git a/hw/i2c/Kconfig b/hw/i2c/Kconfig
+index 0766130..14de427 100644
+--- a/hw/i2c/Kconfig
++++ b/hw/i2c/Kconfig
+@@ -54,3 +54,7 @@ config PMBUS
+ config BCM2835_I2C
+     bool
+     select I2C
++
++config BRCMSTB_I2C
++    bool
++    select I2C
+diff --git a/hw/i2c/meson.build b/hw/i2c/meson.build
+index 88aea35..05edc58 100644
+--- a/hw/i2c/meson.build
++++ b/hw/i2c/meson.build
+@@ -19,4 +19,5 @@ i2c_ss.add(when: 'CONFIG_PPC4XX', if_true: files('ppc4xx_i2c.c'))
+ i2c_ss.add(when: 'CONFIG_PCA954X', if_true: files('i2c_mux_pca954x.c'))
+ i2c_ss.add(when: 'CONFIG_PMBUS', if_true: files('pmbus_device.c'))
+ i2c_ss.add(when: 'CONFIG_BCM2835_I2C', if_true: files('bcm2835_i2c.c'))
++i2c_ss.add(when: 'CONFIG_BRCMSTB_I2C', if_true: files('brcmstb_i2c.c'))
+ system_ss.add_all(when: 'CONFIG_I2C', if_true: i2c_ss)
+diff --git a/hw/i2c/trace-events b/hw/i2c/trace-events
+index 1ad0e95..0578409 100644
+--- a/hw/i2c/trace-events
++++ b/hw/i2c/trace-events
+@@ -61,3 +61,9 @@ pca954x_read_data(uint8_t value) "PCA954X read data: 0x%02x"
+ 
+ imx_i2c_read(const char *id, const char *reg, uint64_t ofs, uint64_t value) "%s:[%s (0x%" PRIx64 ")] -> 0x%02" PRIx64
+ imx_i2c_write(const char *id, const char *reg, uint64_t ofs, uint64_t value) "%s:[%s (0x%" PRIx64 ")] <- 0x%02" PRIx64
++
++# brcmstb_i2c.c
++brcmstb_i2c_read(const char *id, uint64_t offset, uint32_t value) "%s: offset 0x%02" PRIx64 " value 0x%08" PRIx32
++brcmstb_i2c_write(const char *id, uint64_t offset, uint64_t value) "%s: offset 0x%02" PRIx64 " value 0x%08" PRIx64
++brcmstb_i2c_transfer(const char *id, uint8_t address, bool read, unsigned int count, uint32_t enable) "%s: address 0x%02x read %d count %u IIC_ENABLE 0x%02" PRIx32
++brcmstb_i2c_done(const char *id, bool nack) "%s: nack %d"

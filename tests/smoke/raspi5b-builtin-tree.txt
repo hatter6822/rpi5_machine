@@ -170,6 +170,22 @@
 /soc@107c000000/rng@7d208000
     reg = <0x7d208000 0x28>
     compatible = "brcm,bcm2711-rng200"
+/soc@107c000000/i2c@7d508200
+    #size-cells = <0x0>
+    #address-cells = <0x1>
+    clock-frequency = <0x17cdc>
+    interrupts = <0x1>
+    interrupt-parent = <0x800c>
+    reg = <0x7d508200 0x58>
+    compatible = "brcm,brcmstb-i2c"
+/soc@107c000000/i2c@7d508280
+    #size-cells = <0x0>
+    #address-cells = <0x1>
+    clock-frequency = <0x17cdc>
+    interrupts = <0x2>
+    interrupt-parent = <0x800c>
+    reg = <0x7d508280 0x58>
+    compatible = "brcm,brcmstb-i2c"
 /soc@107c000000/pinctrl@7d504100
     phandle = <0x8012>
     reg = <0x7d504100 0x30>

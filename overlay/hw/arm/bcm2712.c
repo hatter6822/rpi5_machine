@@ -61,7 +61,8 @@ const MemMapEntry bcm2712_memmap[BCM2712_NUM_DEVICES] = {
     [BCM2712_RNG]           = { 0x107d208000, 0x28 },
     [BCM2712_CPU_L2_IRQ]    = { 0x107d503000, 0x18 },
     [BCM2712_PINCTRL]       = { 0x107d504100, 0x30 },
-    [BCM2712_BSC]           = { 0x107d508200, 0xd8 },
+    [BCM2712_DDC0]          = { 0x107d508200, 0x58 },
+    [BCM2712_DDC1]          = { 0x107d508280, 0x58 },
     [BCM2712_BSC_IRQ]       = { 0x107d508380, 0x10 },
     [BCM2712_MAIN_IRQ]      = { 0x107d508400, 0x10 },
     [BCM2712_GIO]           = { 0x107d508500, 0x40 },
@@ -102,7 +103,8 @@ static const char *const bcm2712_device_names[BCM2712_NUM_DEVICES] = {
     [BCM2712_RNG]           = "bcm2712.rng",
     [BCM2712_CPU_L2_IRQ]    = "bcm2712.cpu-l2-irq",
     [BCM2712_PINCTRL]       = "bcm2712.pinctrl",
-    [BCM2712_BSC]           = "bcm2712.bsc",
+    [BCM2712_DDC0]          = "bcm2712.ddc0",
+    [BCM2712_DDC1]          = "bcm2712.ddc1",
     [BCM2712_BSC_IRQ]       = "bcm2712.bsc-irq",
     [BCM2712_MAIN_IRQ]      = "bcm2712.main-irq",
     [BCM2712_GIO]           = "bcm2712.gio",
@@ -165,6 +167,15 @@ static const struct {
  */
 static const uint32_t bcm2712_gio_widths[] = { 32, 22 };
 static const uint32_t bcm2712_gio_aon_widths[] = { 17, 6 };
+
+/* The DDC I2C controllers, by HDMI port, and their bsc_irq inputs */
+static const struct {
+    BCM2712Device dev;
+    int irq;
+} bcm2712_ddcs[BCM2712_NUM_HDMI] = {
+    { BCM2712_DDC0, BCM2712_BSC_IRQ_DDC0 },
+    { BCM2712_DDC1, BCM2712_BSC_IRQ_DDC1 },
+};
 
 /* GIC-400 register frames, relative to bcm2712_memmap[BCM2712_GIC] */
 #define GIC400_DIST_OFS             0x1000
@@ -318,6 +329,11 @@ static void bcm2712_init(Object *obj)
     object_initialize_child(obj, "pinctrl", &s->pinctrl, TYPE_BRCMSTB_PINCTRL);
     object_initialize_child(obj, "pinctrl-aon", &s->pinctrl_aon,
                             TYPE_BRCMSTB_PINCTRL);
+    for (int i = 0; i < BCM2712_NUM_HDMI; i++) {
+        g_autofree char *name = g_strdup_printf("ddc%d", i);
+
+        object_initialize_child(obj, name, &s->ddc[i], TYPE_BRCMSTB_I2C);
+    }
     object_initialize_child(obj, "systimer", &s->systimer,
                             TYPE_BCM2835_SYSTIMER);
     object_initialize_child(obj, "pm", &s->pm, TYPE_BCM2835_POWERMGT);
@@ -420,6 +436,24 @@ static bool bcm2712_realize_pinctrl(BrcmstbPinctrlState *pinctrl,
         return false;
     }
     bcm2712_map(SYS_BUS_DEVICE(pinctrl), 0, dev);
+    return true;
+}
+
+/* The DDC I2C controllers, which interrupt through bsc_irq */
+static bool bcm2712_realize_ddcs(BCM2712State *s, Error **errp)
+{
+    DeviceState *bsc_irq = DEVICE(&s->l2_intc[BCM2712_L2_BSC_IRQ]);
+
+    for (int i = 0; i < BCM2712_NUM_HDMI; i++) {
+        SysBusDevice *sbd = SYS_BUS_DEVICE(&s->ddc[i]);
+
+        if (!sysbus_realize(sbd, errp)) {
+            return false;
+        }
+        bcm2712_map(sbd, 0, bcm2712_ddcs[i].dev);
+        sysbus_connect_irq(sbd, 0,
+                           qdev_get_gpio_in(bsc_irq, bcm2712_ddcs[i].irq));
+    }
     return true;
 }
 
@@ -568,6 +602,7 @@ static void bcm2712_realize(DeviceState *dev, Error **errp)
         !bcm2712_realize_gpios(s, errp) ||
         !bcm2712_realize_pinctrl(&s->pinctrl, BCM2712_PINCTRL, errp) ||
         !bcm2712_realize_pinctrl(&s->pinctrl_aon, BCM2712_PINCTRL_AON, errp) ||
+        !bcm2712_realize_ddcs(s, errp) ||
         !bcm2712_realize_systimer(s, errp) || !bcm2712_realize_pm(s, errp) ||
         !bcm2712_realize_rng(s, errp) || !bcm2712_realize_vc(s, errp)) {
         return;
@@ -617,6 +652,9 @@ static void bcm2712_realize(DeviceState *dev, Error **errp)
 #define BCM2712_FDT_SOC_PATH        "/soc@107c000000"
 #define BCM2712_FDT_SOC_BUS_BASE    0x1000000000ULL
 #define BCM2712_FDT_SOC_BUS_SIZE    0x80000000U
+
+/* The DDC buses' speed in bcm2712.dtsi, in Hz; the model has none */
+#define BCM2712_FDT_DDC_HZ          97500
 
 /* Fixed clocks of the firmware's tree, in Hz */
 #define BCM2712_FDT_CLK_OSC         54000000
@@ -833,6 +871,28 @@ static void bcm2712_fdt_pinctrls(void *fdt)
                           qemu_fdt_alloc_phandle(fdt));
 }
 
+/*
+ * The DDC I2C controllers, as bcm2712.dtsi has them, in reverse since
+ * libfdt adds each subnode first
+ */
+static void bcm2712_fdt_ddcs(void *fdt, const uint32_t *l2_phandles)
+{
+    static const char compat[] = "brcm,brcmstb-i2c";
+
+    for (int i = BCM2712_NUM_HDMI - 1; i >= 0; i--) {
+        g_autofree char *path = bcm2712_fdt_soc_node(fdt, "i2c",
+            bcm2712_ddcs[i].dev, compat, sizeof(compat));
+
+        qemu_fdt_setprop_cell(fdt, path, "interrupt-parent",
+                              l2_phandles[BCM2712_L2_BSC_IRQ]);
+        qemu_fdt_setprop_cell(fdt, path, "interrupts", bcm2712_ddcs[i].irq);
+        qemu_fdt_setprop_cell(fdt, path, "clock-frequency",
+                              BCM2712_FDT_DDC_HZ);
+        qemu_fdt_setprop_cell(fdt, path, "#address-cells", 1);
+        qemu_fdt_setprop_cell(fdt, path, "#size-cells", 0);
+    }
+}
+
 char *bcm2712_fdt_node_path(void *fdt, BCM2712Device dev)
 {
     g_autofree char *unit = g_strdup_printf("@%x",
@@ -893,6 +953,7 @@ void bcm2712_fdt_populate(BCM2712State *s, void *fdt)
     bcm2712_fdt_l2_intcs(fdt, l2_phandles);
     bcm2712_fdt_gpios(fdt, l2_phandles);
     bcm2712_fdt_pinctrls(fdt);
+    bcm2712_fdt_ddcs(fdt, l2_phandles);
 
     rng = bcm2712_fdt_soc_node(fdt, "rng", BCM2712_RNG,
                                "brcm,bcm2711-rng200",

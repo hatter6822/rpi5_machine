@@ -27,15 +27,15 @@ LED device, so its changes show as trace events.
 The stock Raspberry Pi OS kernel boots to the root file system mount on
 either device tree.
 ---
- hw/arm/Kconfig     | 7 +++++++
+ hw/arm/Kconfig     | 8 ++++++++
  hw/arm/meson.build | 1 +
- 2 files changed, 8 insertions(+)
+ 2 files changed, 9 insertions(+)
 
 diff --git a/hw/arm/Kconfig b/hw/arm/Kconfig
-index d4d500a..b8eb405 100644
+index eec70d9..64bd34b 100644
 --- a/hw/arm/Kconfig
 +++ b/hw/arm/Kconfig
-@@ -384,6 +384,13 @@ config RASPI
+@@ -384,6 +384,14 @@ config RASPI
      select BCM2836_CONTROL
      select BCM2838_GPIO
  
@@ -44,6 +44,7 @@ index d4d500a..b8eb405 100644
 +    default y
 +    depends on TCG && AARCH64
 +    select BCM2712
++    select DDC
 +    select LED
 +
  config BCM2712

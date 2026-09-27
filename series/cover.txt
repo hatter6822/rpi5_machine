@@ -4,10 +4,11 @@ This series adds raspi5b, a model of the Raspberry Pi 5 Model B and its
 Broadcom BCM2712 SoC: four Cortex-A76 cores, a GIC-400, UART10 (PL011),
 the system timer, the watchdog and reset status block, the RNG200, the
 Broadcom level 2 interrupt controllers, the SoC's two GPIO blocks with
-their pin controllers, and the VideoCore mailbox with the firmware
-property channel. On the board, system_powerdown presses the power
-button on a GPIO line, and the activity LED's changes are trace events.
-Every other block of the memory map is an unimplemented-device
+their pin controllers, the HDMI ports' DDC I2C controllers, and the
+VideoCore mailbox with the firmware property channel. On the board,
+system_powerdown presses the power button on a GPIO line, the activity
+LED's changes are trace events, and a monitor's EDID answers on HDMI0's
+DDC bus. Every other block of the memory map is an unimplemented-device
 placeholder. The RP1 south bridge, behind PCIe, is not modelled yet, so
 there is no Ethernet, USB or 40-pin header.
 
@@ -41,8 +42,9 @@ The series is in four parts:
   answers the firmware and board identity tags Linux asks for.
 
 - New models for the RNG200 and for the Broadcom STB level 2 interrupt
-  controller, GPIO controller and pin controller, three target/arm
-  changes TF-A needs, and two fixes for bugs found by the tests:
+  controller, GPIO controller, pin controller and I2C controller, three
+  target/arm changes TF-A needs, and three fixes for bugs found by the
+  tests:
   - the Cortex-A76's IMPLEMENTATION DEFINED registers, without which
     TF-A stops in its reset handler;
   - a CPU property that sets MPIDR_EL1.MT, by which TF-A numbers the
@@ -52,7 +54,9 @@ The series is in four parts:
   - with the Security Extensions, a Non-secure write to GICD_SGIR could
     raise Group 0 SGIs;
   - a generic timer whose offset exceeds the count, such as the virtual
-    timer with CNTVOFF_EL2 above CNTPCT, never fired.
+    timer with CNTVOFF_EL2 above CNTPCT, never fired;
+  - the DDC's EDID device dropped out of a transfer in progress when the
+    machine migrated, so the transfer's remaining bytes read as 0xff.
 
 - The SoC, the board, a qtest and the documentation.
 

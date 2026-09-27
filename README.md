@@ -31,6 +31,7 @@ Pi OS booting from an SD card, is in progress.
 | RNG200 random number generator | done |
 | Broadcom L2 interrupt controllers (7, both register layouts) | done |
 | BCM2712 GPIO blocks (GIO: 32 + 22 lines, AON: 17 + 6), edge and level interrupts, and their pin controllers, which keep the functions and pulls software selects | done |
+| The HDMI ports' DDC I2C controllers, with a monitor's EDID on HDMI0's bus | done |
 | The board's power button, which `system_powerdown` presses, and its ACT LED, whose changes are trace events | done |
 | System reset (PSCI, watchdog, monitor) and power-off | done |
 | Firmware boot contract: EL2 entry, PSCI over SMC (`secure=off`); guest-owned EL3 (`secure=on`) | done |

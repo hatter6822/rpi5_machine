@@ -49,6 +49,14 @@ Implemented devices
   and ``0x10_7d51_0700`` (8 registers, always-on). They keep the function
   and pull that software selects for each pin, so that Linux reads its
   settings back, but the settings have no effect on the lines
+* The DDC I2C controllers of the two HDMI ports, at ``0x10_7d50_8200``
+  and ``0x10_7d50_8280``, interrupting through their level 2 controller.
+  A transfer completes at once, whatever the bus speed; the combined
+  formats, a write and a read in one command, are not modelled, as Linux
+  does not use them. The board puts a monitor's EDID, QEMU's ``i2c-ddc``,
+  at address 0x50 on HDMI0's bus, ``i2c-bus.0``. HDMI1's, ``i2c-bus.1``,
+  is empty: ``-device i2c-ddc,bus=i2c-bus.1,address=0x50`` connects a
+  second monitor
 * On the board, the power button on GIO 20, which reads high until it is
   pressed (see below), and the green activity LED on GIO AON 9, a QEMU
   ``led`` device lit while its line is low, whose changes show as
@@ -190,8 +198,9 @@ Without ``-dtb``, the machine generates a device tree describing what it
 models, derived from its memory map: the CPUs with PSCI, the generic timer,
 the PMU, the GIC, the system timer, the mailbox and the firmware interface,
 the PM block, the RNG, the level 2 interrupt controllers, the GPIO blocks
-and their pin controllers, the power button with the state of its pin
-(GPIO, pulled up), the activity LED, UART10 (``serial10``, the
+and their pin controllers, the HDMI ports' DDC I2C controllers, the power
+button with the state of its pin (GPIO, pulled up), the activity LED,
+UART10 (``serial10``, the
 ``stdout-path``), the fixed clocks, and a CMA pool in the first GiB, where
 the VideoCore can reach Linux's buffers. Node names and properties follow
 Linux's ``bcm2712.dtsi`` and the firmware's tree, and the result validates

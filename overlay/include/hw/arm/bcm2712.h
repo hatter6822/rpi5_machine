@@ -14,6 +14,7 @@
 #include "hw/display/bcm2835_fb.h"
 #include "hw/gpio/brcmstb_gpio.h"
 #include "hw/gpio/brcmstb_pinctrl.h"
+#include "hw/i2c/brcmstb_i2c.h"
 #include "hw/intc/arm_gic.h"
 #include "hw/intc/brcmstb_l2_intc.h"
 #include "hw/misc/bcm2711_rng200.h"
@@ -103,7 +104,8 @@ typedef enum BCM2712Device {
     BCM2712_RNG,
     BCM2712_CPU_L2_IRQ,
     BCM2712_PINCTRL,
-    BCM2712_BSC,
+    BCM2712_DDC0,
+    BCM2712_DDC1,
     BCM2712_BSC_IRQ,
     BCM2712_MAIN_IRQ,
     BCM2712_GIO,
@@ -172,8 +174,13 @@ typedef enum BCM2712L2Intc {
 
 /* Inputs of the level 2 controllers, i.e. the N in "interrupts = <N>" */
 enum {
+    BCM2712_BSC_IRQ_DDC0        = 1,    /* of BCM2712_L2_BSC_IRQ */
+    BCM2712_BSC_IRQ_DDC1        = 2,    /* of BCM2712_L2_BSC_IRQ */
     BCM2712_MAIN_IRQ_GIO        = 0,    /* of BCM2712_L2_MAIN_IRQ */
 };
+
+/* The HDMI ports, each with the I2C bus that reads its monitor's EDID */
+#define BCM2712_NUM_HDMI            2
 
 struct BCM2712State {
     /*< private >*/
@@ -191,6 +198,7 @@ struct BCM2712State {
     BrcmstbGpioState gio_aon;   /* line n: always-on GPIO n */
     BrcmstbPinctrlState pinctrl;
     BrcmstbPinctrlState pinctrl_aon;
+    BrcmstbI2cState ddc[BCM2712_NUM_HDMI];  /* HDMI n's DDC bus */
     BCM2835SystemTimerState systimer;
     BCM2835PowerMgtState pm;
     BCM2711Rng200State rng;

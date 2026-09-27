@@ -33,6 +33,7 @@
 #include "hw/core/loader.h"
 #include "hw/core/qdev-properties.h"
 #include "hw/core/registerfields.h"
+#include "hw/display/i2c-ddc.h"
 #include "hw/misc/led.h"
 #include "migration/vmstate.h"
 #include "standard-headers/linux/input.h"
@@ -97,6 +98,9 @@ struct Raspi5bMachineState {
  */
 #define RASPI5B_PWR_BUTTON_DEBOUNCE_MS  50
 #define RASPI5B_PWR_BUTTON_PRESS_MS     200
+
+/* A monitor's EDID answers at this address on its HDMI port's DDC bus */
+#define RASPI5B_DDC_EDID_ADDR           0x50
 
 /* include/dt-bindings/gpio/gpio.h */
 #define RASPI5B_FDT_GPIO_ACTIVE_LOW     1
@@ -212,7 +216,6 @@ static const char *const raspi5b_unmodelled_compatibles[] = {
     "brcm,bcm2712-mip",
     "brcm,bcm2712-sdhci",
     "brcm,bcm7271-uart",
-    "brcm,brcmstb-i2c",
     "brcm,2712-v3d",
     "brcm,bcm2712-vc6",
     "brcm,bcm2712-hvs",
@@ -1042,6 +1045,9 @@ static void raspi5b_machine_init(MachineState *machine)
     qdev_prop_set_string(soc, "command-line", machine->kernel_cmdline);
     qdev_realize(soc, NULL, &error_fatal);
     raspi5b_wire_gpio(s);
+    /* A monitor on HDMI0 */
+    i2c_slave_create_simple(s->soc.ddc[0].bus, TYPE_I2CDDC,
+                            RASPI5B_DDC_EDID_ADDR);
 
     s->binfo = (struct arm_boot_info) {
         .ram_size = machine->ram_size,

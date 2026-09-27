@@ -26,15 +26,15 @@ from the same constants as the memory map, for boards that generate one.
 Addresses, interrupts and compatibles follow Linux's bcm2712.dtsi;
 values not documented publicly are marked for checking on hardware.
 ---
- hw/arm/Kconfig     | 17 +++++++++++++++++
+ hw/arm/Kconfig     | 18 ++++++++++++++++++
  hw/arm/meson.build |  1 +
- 2 files changed, 18 insertions(+)
+ 2 files changed, 19 insertions(+)
 
 diff --git a/hw/arm/Kconfig b/hw/arm/Kconfig
-index 16f83f0..d4d500a 100644
+index 16f83f0..eec70d9 100644
 --- a/hw/arm/Kconfig
 +++ b/hw/arm/Kconfig
-@@ -384,6 +384,23 @@ config RASPI
+@@ -384,6 +384,24 @@ config RASPI
      select BCM2836_CONTROL
      select BCM2838_GPIO
  
@@ -49,6 +49,7 @@ index 16f83f0..d4d500a 100644
 +    select BCM2835_PROPERTY
 +    select BCM2835_SYSTMR
 +    select BRCMSTB_GPIO
++    select BRCMSTB_I2C
 +    select BRCMSTB_L2_INTC
 +    select BRCMSTB_PINCTRL
 +    select DEVICE_TREE
