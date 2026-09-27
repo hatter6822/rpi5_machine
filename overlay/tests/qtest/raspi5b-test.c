@@ -3676,13 +3676,21 @@ static const Sdio sdios[] = {
 #define SD_READ_MULTIPLE_BLOCK  18
 #define SD_WRITE_SINGLE_BLOCK   24
 #define SD_WRITE_MULTIPLE_BLOCK 25
+#define SD_SET_WRITE_PROT       28
+#define SD_ERASE_WR_BLK_START   32
+#define SD_ERASE_WR_BLK_END     33
+#define SD_ERASE                38
 #define SD_APP_OP_COND          41              /* after SD_APP_CMD */
 #define SD_APP_CMD              55
 #define SD_IF_COND_CHECK        0x1aa           /* 2.7-3.6 V, check pattern */
 #define SD_OCR_VDD_32_34        (BIT(20) | BIT(21))
 #define SD_OCR_HCS              BIT(30)
 #define SD_OCR_BUSY             BIT(31)         /* set once powered up */
+#define SD_CSR_WP_ERASE_SKIP    BIT(15)         /* card status, in R1 */
 #define SD_BLOCK_SIZE           512
+
+/* What QEMU's standard capacity cards protect together (WPGROUP_SIZE) */
+#define SD_WP_GROUP_SIZE        (2 * MiB)
 
 /* A card image, of the power-of-two size QEMU's cards need */
 #define SD_IMAGE_SIZE           (1 * MiB)
@@ -3730,19 +3738,26 @@ static uint8_t sd_image_byte(uint64_t offset)
     return offset * 7 + offset / SD_BLOCK_SIZE;
 }
 
-static char *sd_image(void)
+/* An image of @size bytes, sparse but for its bytes from @from to @to */
+static char *sd_image_window(uint64_t size, uint64_t from, uint64_t to)
 {
-    g_autofree uint8_t *data = g_malloc(SD_IMAGE_SIZE);
+    g_autofree uint8_t *data = g_malloc(to - from);
     char *path;
     int fd = g_file_open_tmp("raspi5b-sd-XXXXXX", &path, NULL);
 
     g_assert_cmpint(fd, >=, 0);
-    for (uint64_t i = 0; i < SD_IMAGE_SIZE; i++) {
-        data[i] = sd_image_byte(i);
+    g_assert_cmpint(ftruncate(fd, size), ==, 0);
+    for (uint64_t i = from; i < to; i++) {
+        data[i - from] = sd_image_byte(i);
     }
-    g_assert_cmpint(write(fd, data, SD_IMAGE_SIZE), ==, SD_IMAGE_SIZE);
+    g_assert_cmpint(pwrite(fd, data, to - from, from), ==, to - from);
     close(fd);
     return path;
+}
+
+static char *sd_image(void)
+{
+    return sd_image_window(SD_IMAGE_SIZE, 0, SD_IMAGE_SIZE);
 }
 
 static void sd_image_read(const char *path, uint64_t offset, void *buf,
@@ -4071,6 +4086,106 @@ static void test_sdio_pio(void)
     g_assert_cmpmem(buf, sizeof(buf), out, sizeof(out));
     sd_read_pio(qts, 6, buf);
     sd_check_block(buf, 6);
+
+    qtest_quit(qts);
+    unlink(image);
+}
+
+/*
+ * Erase the blocks from the one at @start to the one at @end, both
+ * included, and return the card status the erase answers with. The card
+ * takes byte addresses under 2 GiB and block numbers above.
+ */
+static uint32_t sd_erase(QTestState *qts, uint32_t start, uint32_t end)
+{
+    const Sdio *sdio = SDIO1;
+
+    sdio_command(qts, sdio, SD_ERASE_WR_BLK_START, start, SDHCI_CMD_R1);
+    sdio_command(qts, sdio, SD_ERASE_WR_BLK_END, end, SDHCI_CMD_R1);
+    return sdio_command(qts, sdio, SD_ERASE, 0, SDHCI_CMD_R1B);
+}
+
+/* The image's bytes from @from to @to: zeroes if @erased, else its own */
+static void sd_check_image(const char *image, uint64_t from, uint64_t to,
+                           bool erased)
+{
+    g_autofree uint8_t *buf = g_malloc(to - from);
+
+    sd_image_read(image, from, buf, to - from);
+    for (uint64_t i = from; i < to; i++) {
+        g_assert_cmphex(buf[i - from], ==, erased ? 0 : sd_image_byte(i));
+    }
+}
+
+/*
+ * An erase zeroes the blocks it is given, as the card's SCR says erased
+ * blocks read, and the card reads them as zeroes. A standard capacity card
+ * erases each of its write protect groups apart, skips those that are
+ * protected, and says so in the card status.
+ */
+static void test_sdio_erase(void)
+{
+    const uint64_t size = 4 * SD_WP_GROUP_SIZE;
+    /* From the first group into the third, over the second */
+    const uint64_t start = SD_WP_GROUP_SIZE / 2 + 3 * SD_BLOCK_SIZE;
+    const uint64_t end = 2 * SD_WP_GROUP_SIZE + 5 * SD_BLOCK_SIZE;
+    g_autofree char *image = sd_image_window(size, 0, size);
+    QTestState *qts = qtest_initf("-machine raspi5b "
+                                  "-drive if=sd,file=%s,format=raw", image);
+    const uint8_t zeroes[SD_BLOCK_SIZE] = { 0 };
+    uint8_t buf[SD_BLOCK_SIZE];
+
+    sd_card_init(qts);
+    sdio_command(qts, SDIO1, SD_SET_WRITE_PROT, SD_WP_GROUP_SIZE,
+                 SDHCI_CMD_R1B);
+    g_assert_cmphex(sd_erase(qts, start, end) & SD_CSR_WP_ERASE_SKIP, ==,
+                    SD_CSR_WP_ERASE_SKIP);
+    sd_check_image(image, 0, start, false);
+    sd_check_image(image, start, SD_WP_GROUP_SIZE, true);
+    sd_check_image(image, SD_WP_GROUP_SIZE, 2 * SD_WP_GROUP_SIZE, false);
+    sd_check_image(image, 2 * SD_WP_GROUP_SIZE, end + SD_BLOCK_SIZE, true);
+    sd_check_image(image, end + SD_BLOCK_SIZE, size, false);
+    sd_read_pio(qts, start / SD_BLOCK_SIZE, buf);
+    g_assert_cmpmem(buf, sizeof(buf), zeroes, sizeof(zeroes));
+    sd_read_pio(qts, end / SD_BLOCK_SIZE, buf);
+    g_assert_cmpmem(buf, sizeof(buf), zeroes, sizeof(zeroes));
+    sd_read_pio(qts, end / SD_BLOCK_SIZE + 1, buf);
+    sd_check_block(buf, end / SD_BLOCK_SIZE + 1);
+
+    /* To the card's last block, with no protected group in the way */
+    g_assert_cmphex(sd_erase(qts, size - SD_WP_GROUP_SIZE / 2,
+                             size - SD_BLOCK_SIZE) &
+                    SD_CSR_WP_ERASE_SKIP, ==, 0);
+    sd_check_image(image, end + SD_BLOCK_SIZE, size - SD_WP_GROUP_SIZE / 2,
+                   false);
+    sd_check_image(image, size - SD_WP_GROUP_SIZE / 2, size, true);
+
+    qtest_quit(qts);
+    unlink(image);
+}
+
+/*
+ * A high capacity card, which takes block numbers and has no write
+ * protect groups, erases the blocks it is given too, past the first
+ * 2 GiB. Only the bytes around the erased blocks are in the sparse image.
+ */
+static void test_sdio_erase_high_capacity(void)
+{
+    const uint64_t size = 4 * GiB;
+    const uint64_t start = 3 * GiB + 3 * SD_BLOCK_SIZE;
+    const uint64_t end = 3 * GiB + 4 * MiB + 5 * SD_BLOCK_SIZE;
+    const uint64_t from = start - 1 * MiB, to = end + 1 * MiB;
+    g_autofree char *image = sd_image_window(size, from, to);
+    QTestState *qts = qtest_initf("-machine raspi5b "
+                                  "-drive if=sd,file=%s,format=raw", image);
+
+    sd_card_init(qts);
+    g_assert_cmphex(sd_erase(qts, start / SD_BLOCK_SIZE,
+                             end / SD_BLOCK_SIZE) &
+                    SD_CSR_WP_ERASE_SKIP, ==, 0);
+    sd_check_image(image, from, start, false);
+    sd_check_image(image, start, end + SD_BLOCK_SIZE, true);
+    sd_check_image(image, end + SD_BLOCK_SIZE, to, false);
 
     qtest_quit(qts);
     unlink(image);
@@ -4803,6 +4918,9 @@ int main(int argc, char **argv)
     qtest_add_func("/raspi5b/sdio/no-card", test_sdio_no_card);
     qtest_add_func("/raspi5b/sdio/card-detect", test_sdio_card_detect);
     qtest_add_func("/raspi5b/sdio/pio", test_sdio_pio);
+    qtest_add_func("/raspi5b/sdio/erase", test_sdio_erase);
+    qtest_add_func("/raspi5b/sdio/erase-high-capacity",
+                   test_sdio_erase_high_capacity);
     qtest_add_func("/raspi5b/sdio/adma2", test_sdio_adma2);
     qtest_add_func("/raspi5b/sdio/sdma", test_sdio_sdma);
     qtest_add_func("/raspi5b/sdio/reset", test_sdio_reset);

@@ -44,10 +44,10 @@ index 7ad5f52..b7b1bbc 100644
  system_ss.add(when: 'CONFIG_ALLWINNER_H3', if_true: files('allwinner-sdhost.c'))
  system_ss.add(when: 'CONFIG_NPCM7XX', if_true: files('npcm7xx_sdhci.c'))
 diff --git a/hw/sd/trace-events b/hw/sd/trace-events
-index c6811f3..69cea5d 100644
+index 14d4d0e..bacd16b 100644
 --- a/hw/sd/trace-events
 +++ b/hw/sd/trace-events
-@@ -72,6 +72,10 @@ pl181_fifo_pop(uint32_t data) "FIFO pop 0x%08" PRIx32
+@@ -73,6 +73,10 @@ pl181_fifo_pop(uint32_t data) "FIFO pop 0x%08" PRIx32
  pl181_fifo_transfer_complete(void) "FIFO transfer complete"
  pl181_data_engine_idle(void) "data engine idle"
  

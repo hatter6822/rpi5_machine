@@ -1499,7 +1499,14 @@ scrambled order. A card inserted into the empty slot, removed and
 inserted again at run time flips GIO AON 5, and Linux notices each
 change within a second. U-Boot and EDK2 read and write the card as well.
 Data moves at about 3 MB/s, as QEMU's cards read and write a 512-byte
-block at a time through the block layer. Each of 12 deliberate breakages
+block at a time through the block layer. Erases went a block at a
+time too, with the guest stopped until they ended, which the M3 exit
+test found when the first boot's `fstrim` took minutes (WS3.5): new
+upstream-first patch 0022 erases a range in one request that may
+unmap, to zeroes, which is what the card's SCR says erased blocks read
+as, and moves the patches after it up by one (0023–0036). qtests
+erase across a protected write protect group of a standard capacity
+card and past 2 GiB on a high capacity card. Each of 12 deliberate breakages
 of the model, its SoC and board wiring and patches 0021 to 0023 fails at
 least one of these tests.
 
