@@ -177,12 +177,20 @@ class BiosOptionsTest(unittest.TestCase):
 
     def test_past_videocore(self):
         """A device tree placed where it runs into the VideoCore's memory,
-        which everything -bios loads must stay below"""
-        self.assertRefused("the armstub, kernel, initrd and device tree "
-                           f"must fit below {VC_RAM_BASE:#x}",
-                           "-M", "raspi5b,secure=on,"
+        which everything -bios loads must stay below, and a kernel ending
+        in it, with an initrd that would have followed"""
+        message = ("the armstub, kernel, initrd and device tree must fit "
+                   f"below {VC_RAM_BASE:#x}")
+        self.assertRefused(message, "-M", "raspi5b,secure=on,"
                            f"dtb-address={VC_RAM_BASE - 8:#x}",
                            "-bios", str(GUEST))
+        with tempfile.TemporaryDirectory() as tmp:
+            kernel = Path(tmp) / "kernel.elf"
+            kernel.write_bytes(elf(VC_RAM_BASE - 8,
+                                   (VC_RAM_BASE - 8, bytes(16))))
+            self.assertRefused(message, "-M", "raspi5b,secure=on",
+                               "-bios", str(GUEST), "-kernel", str(kernel),
+                               "-initrd", str(kernel))
 
 
 if __name__ == "__main__":

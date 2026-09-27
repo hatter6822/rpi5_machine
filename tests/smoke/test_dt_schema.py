@@ -33,8 +33,9 @@ CHOSEN = r"(bootloader|os_prefix|overlay_prefix|power|rpi-sdram-size-gbit|" \
 
 # Messages that are expected, each with the reason. Anything else fails.
 KNOWN = (
-    # The firmware publishes the board revision and serial number here and
-    # the Raspberry Pi kernel reads them; no binding describes /system
+    # The firmware publishes the board revision code and serial number here
+    # and the Raspberry Pi kernel reads the former; no binding describes
+    # /system
     re.compile(r"system: linux,(revision|serial): .* is not of type"),
     # The firmware's /chosen properties and nodes
     re.compile(rf"chosen: '{CHOSEN}'(, '{CHOSEN}')* do not match any of "

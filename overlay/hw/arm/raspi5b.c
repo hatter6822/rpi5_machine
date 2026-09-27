@@ -370,8 +370,9 @@ static void raspi5b_boot_values(const Raspi5bMachineState *s,
 
 /*
  * The board's identity as the firmware writes it: the model name with
- * the revision of the board revision code, and the serial number, which
- * the Raspberry Pi kernel reads from /system as it reads the revision
+ * the revision of the board revision code, the serial number, and
+ * /system, from which the Raspberry Pi kernel reads the revision code
+ * (the serial it reads from the root's serial-number)
  */
 static void raspi5b_fdt_identity(const Raspi5bMachineState *s, void *fdt)
 {
@@ -464,7 +465,7 @@ static void raspi5b_fdt_chosen(const Raspi5bMachineState *s, void *fdt,
     qemu_fdt_setprop_cell(fdt, "/chosen/bootloader", "partition", partition);
     qemu_fdt_setprop_cell(fdt, "/chosen/bootloader", "rsts", rsts);
     qemu_fdt_setprop_cell(fdt, "/chosen/bootloader", "tryboot", 0);
-    /* None of USB, network, NVMe, HTTP or ramdisk boot */
+    /* No USB, network, tryboot, RAM disk, NVMe or secure boot */
     qemu_fdt_setprop_cell(fdt, "/chosen/bootloader", "capabilities", 0);
     qemu_fdt_setprop_cell(fdt, "/chosen/bootloader", "arg1", 0);
     qemu_fdt_setprop_cell(fdt, "/chosen/bootloader", "count", count);
@@ -732,6 +733,21 @@ static void raspi5b_check_overlap(const char *a, hwaddr a_start, hwaddr a_end,
 }
 
 /*
+ * Everything -bios loads stays below the VideoCore's memory, as the
+ * firmware keeps it; this also keeps the addresses written into the
+ * armstub in 32 bits. @end is where the last of it ends.
+ */
+static void raspi5b_check_fits(hwaddr end)
+{
+    if (end > BCM2712_VC_RAM_BASE) {
+        error_report("the armstub, kernel, initrd and device tree must fit "
+                     "below 0x%x, where the VideoCore's memory starts",
+                     BCM2712_VC_RAM_BASE);
+        exit(EXIT_FAILURE);
+    }
+}
+
+/*
  * -bios: load the armstub at address 0, the kernel, initrd and device
  * tree where the firmware puts them, and tell the armstub where they are
  * through its header. Every core starts in the armstub at EL3, as when
@@ -755,11 +771,13 @@ static void raspi5b_boot_armstub(Raspi5bMachineState *s,
         exit(EXIT_FAILURE);
     }
     stub_end = BCM2712_RAM_BASE + size;
+    raspi5b_check_fits(stub_end);
     s->armstub_size = size;
 
     if (machine->kernel_filename) {
         kernel = raspi5b_load_kernel(machine->kernel_filename, as,
                                      &kernel_start, &kernel_end);
+        raspi5b_check_fits(kernel_end);
         raspi5b_check_overlap("kernel", kernel_start, kernel_end,
                               "armstub", BCM2712_RAM_BASE, stub_end);
         next = MAX(next, kernel_end);
@@ -801,13 +819,7 @@ static void raspi5b_boot_armstub(Raspi5bMachineState *s,
                               s->binfo.initrd_start + s->binfo.initrd_size);
         next = MAX(next, dtb + dtb_size);
     }
-    /* This also keeps the addresses written into the armstub in 32 bits */
-    if (MAX(next, stub_end) > BCM2712_VC_RAM_BASE) {
-        error_report("the armstub, kernel, initrd and device tree must fit "
-                     "below 0x%x, where the VideoCore's memory starts",
-                     BCM2712_VC_RAM_BASE);
-        exit(EXIT_FAILURE);
-    }
+    raspi5b_check_fits(next);
 
     if (size >= RASPI5B_ARMSTUB_KERNEL_OFFSET + 4 &&
         ldl_le_p(stub + RASPI5B_ARMSTUB_MAGIC_OFFSET) ==
