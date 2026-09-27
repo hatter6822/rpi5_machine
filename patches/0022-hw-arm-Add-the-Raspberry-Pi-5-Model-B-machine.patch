@@ -22,7 +22,8 @@ sets the serial number the firmware reports.
 
 system_powerdown presses the power button on GIO 20 for 200 ms, which
 Linux reports as KEY_POWER. The green activity LED on GIO AON 9 is an
-LED device, so its changes show as trace events.
+LED device, so its changes show as trace events. A monitor's EDID
+answers at 0x50 on HDMI0's DDC bus.
 
 The stock Raspberry Pi OS kernel boots to the root file system mount on
 either device tree.

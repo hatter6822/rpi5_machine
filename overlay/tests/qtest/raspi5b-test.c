@@ -2314,6 +2314,377 @@ static void test_bsc_migrate(void)
 }
 
 /*
+ * UARTA, a 16550 whose 8-bit registers are 4 bytes apart (Linux
+ * 8250_bcm7271.c), and the second serial port
+ */
+#define UARTA_BASE              0x107d50c000ULL
+#define UARTA_SPI               276             /* bcm2712.dtsi */
+#define UARTA_FIFO_SIZE         32
+#define UART_RX                 0x00
+#define UART_TX                 0x00
+#define UART_DLL                0x00
+#define UART_IER                0x04
+#define UART_DLM                0x04
+#define UART_IIR                0x08
+#define UART_FCR                0x08
+#define UART_LCR                0x0c
+#define UART_MCR                0x10
+#define UART_LSR                0x14
+#define UART_MSR                0x18
+#define UART_SCR                0x1c
+#define UART_IER_RDI            BIT(0)
+#define UART_IER_THRI           BIT(1)
+#define UART_IIR_NO_INT         0x01
+#define UART_IIR_THRI           0x02
+#define UART_IIR_RDI            0x04
+#define UART_IIR_CTI            0x0c
+#define UART_IIR_FIFO_ENABLED   0xc0
+#define UART_FCR_ENABLE_FIFO    BIT(0)
+#define UART_FCR_TRIGGER_14     0xc0
+#define UART_LCR_WLEN8          0x03
+#define UART_LCR_DLAB           BIT(7)
+#define UART_MCR_OUT2           BIT(3)
+#define UART_MCR_LOOP           BIT(4)
+#define UART_LSR_DR             BIT(0)
+#define UART_LSR_OE             BIT(1)
+#define UART_LSR_THRE           BIT(5)
+#define UART_LSR_TEMT           BIT(6)
+#define UART_MSR_CTS            BIT(4)
+#define UART_MSR_DSR            BIT(5)
+#define UART_MSR_DCD            BIT(7)
+
+static uint32_t uarta_readl(QTestState *qts, uint32_t reg)
+{
+    return qtest_readl(qts, UARTA_BASE + reg);
+}
+
+static void uarta_writel(QTestState *qts, uint32_t reg, uint32_t val)
+{
+    qtest_writel(qts, UARTA_BASE + reg, val);
+}
+
+static void uarta_set_divisor(QTestState *qts, uint16_t divisor)
+{
+    uint32_t lcr = uarta_readl(qts, UART_LCR);
+
+    uarta_writel(qts, UART_LCR, lcr | UART_LCR_DLAB);
+    uarta_writel(qts, UART_DLL, divisor & 0xff);
+    uarta_writel(qts, UART_DLM, divisor >> 8);
+    uarta_writel(qts, UART_LCR, lcr);
+}
+
+static uint16_t uarta_divisor(QTestState *qts)
+{
+    uint32_t lcr = uarta_readl(qts, UART_LCR);
+    uint16_t divisor;
+
+    uarta_writel(qts, UART_LCR, lcr | UART_LCR_DLAB);
+    divisor = uarta_readl(qts, UART_DLL) | uarta_readl(qts, UART_DLM) << 8;
+    uarta_writel(qts, UART_LCR, lcr);
+    return divisor;
+}
+
+/* Nothing to send or take and no interrupt, as a 16550 resets */
+static void uarta_check_reset(QTestState *qts)
+{
+    g_assert_cmphex(uarta_readl(qts, UART_IER), ==, 0);
+    g_assert_cmphex(uarta_readl(qts, UART_IIR), ==, UART_IIR_NO_INT);
+    g_assert_cmphex(uarta_readl(qts, UART_LCR), ==, 0);
+    /* QEMU's 16550 sets OUT2, which gates its interrupt on a PC */
+    g_assert_cmphex(uarta_readl(qts, UART_MCR), ==, UART_MCR_OUT2);
+    g_assert_cmphex(uarta_readl(qts, UART_LSR), ==,
+                    UART_LSR_TEMT | UART_LSR_THRE);
+    /* Without a backend that has modem lines, its inputs read as asserted */
+    g_assert_cmphex(uarta_readl(qts, UART_MSR), ==,
+                    UART_MSR_DCD | UART_MSR_DSR | UART_MSR_CTS);
+    g_assert_cmphex(uarta_readl(qts, UART_SCR), ==, 0);
+    g_assert_false(gic_spi_pending(qts, UARTA_SPI));
+}
+
+static void test_uarta_reset_values(void)
+{
+    QTestState *qts = qtest_init("-machine raspi5b");
+
+    uarta_check_reset(qts);
+
+    qtest_quit(qts);
+}
+
+/* 32-bit accesses, each register in the low byte of its word */
+static void test_uarta_registers(void)
+{
+    QTestState *qts = qtest_init("-machine raspi5b");
+
+    uarta_writel(qts, UART_SCR, 0xa5);
+    g_assert_cmphex(uarta_readl(qts, UART_SCR), ==, 0xa5);
+    uarta_writel(qts, UART_LCR, UART_LCR_WLEN8);
+    g_assert_cmphex(uarta_readl(qts, UART_LCR), ==, UART_LCR_WLEN8);
+
+    /* With DLAB set, the first two words are the divisor latch */
+    uarta_set_divisor(qts, 0x1234);
+    g_assert_cmphex(uarta_readl(qts, UART_IER), ==, 0);
+    g_assert_cmphex(uarta_readl(qts, UART_LCR), ==, UART_LCR_WLEN8);
+    g_assert_cmphex(uarta_divisor(qts), ==, 0x1234);
+    uarta_writel(qts, UART_IER, UART_IER_RDI);
+    g_assert_cmphex(uarta_readl(qts, UART_IER), ==, UART_IER_RDI);
+    g_assert_cmphex(uarta_divisor(qts), ==, 0x1234);
+
+    qtest_quit(qts);
+}
+
+/*
+ * The baud rate is the 96 MHz clock divided by 16 and by the divisor,
+ * which shows in the receive timeout: 4 characters' time after a byte
+ * that leaves the FIFO below its trigger level
+ */
+static void test_uarta_baud_clock(void)
+{
+    QTestState *qts = qtest_init("-machine raspi5b");
+
+    /* 6 Mbaud with 8 data bits: 10 bits, 1667 ns a character */
+    uarta_writel(qts, UART_LCR, UART_LCR_WLEN8);
+    uarta_set_divisor(qts, 1);
+    uarta_writel(qts, UART_FCR, UART_FCR_ENABLE_FIFO | UART_FCR_TRIGGER_14);
+    uarta_writel(qts, UART_MCR, UART_MCR_LOOP);
+    uarta_writel(qts, UART_IER, UART_IER_RDI);
+    uarta_writel(qts, UART_TX, 'x');
+    qtest_clock_step(qts, 6 * SCALE_US);
+    g_assert_false(gic_spi_pending(qts, UARTA_SPI));
+    qtest_clock_step(qts, SCALE_US);
+    g_assert_true(gic_spi_pending(qts, UARTA_SPI));
+    g_assert_cmphex(uarta_readl(qts, UART_IIR), ==,
+                    UART_IIR_FIFO_ENABLED | UART_IIR_CTI);
+    g_assert_cmphex(uarta_readl(qts, UART_RX), ==, 'x');
+    g_assert_false(gic_spi_pending(qts, UARTA_SPI));
+
+    qtest_quit(qts);
+}
+
+/* The FIFOs hold 32 bytes, as Linux's 8250 driver has them */
+static void test_uarta_fifo(void)
+{
+    QTestState *qts = qtest_init("-machine raspi5b");
+
+    uarta_writel(qts, UART_FCR, UART_FCR_ENABLE_FIFO);
+    uarta_writel(qts, UART_MCR, UART_MCR_LOOP);
+    for (int i = 0; i < UARTA_FIFO_SIZE; i++) {
+        uarta_writel(qts, UART_TX, 0x40 + i);
+    }
+    g_assert_cmphex(uarta_readl(qts, UART_LSR), ==,
+                    UART_LSR_TEMT | UART_LSR_THRE | UART_LSR_DR);
+
+    /* One more overruns it and is lost */
+    uarta_writel(qts, UART_TX, 0x3f);
+    g_assert_cmphex(uarta_readl(qts, UART_LSR), ==,
+                    UART_LSR_TEMT | UART_LSR_THRE | UART_LSR_OE | UART_LSR_DR);
+    for (int i = 0; i < UARTA_FIFO_SIZE; i++) {
+        g_assert_cmphex(uarta_readl(qts, UART_RX), ==, 0x40 + i);
+    }
+    g_assert_cmphex(uarta_readl(qts, UART_LSR), ==,
+                    UART_LSR_TEMT | UART_LSR_THRE);
+
+    qtest_quit(qts);
+}
+
+#ifndef _WIN32
+/* A backend slow to take the bytes leaves 32 waiting in the transmit FIFO */
+static void test_uarta_transmit_fifo(void)
+{
+    g_autofree char *dir = g_dir_make_tmp("raspi5b-uarta-XXXXXX", NULL);
+    g_autofree char *path = g_strdup_printf("%s/sock", dir);
+    g_autoptr(GByteArray) sent = g_byte_array_new();
+    struct timeval timeout = { .tv_sec = 10 };
+    g_autofree uint8_t *received = NULL;
+    int server = qtest_socket_server(path);
+    QTestState *qts;
+    gint64 deadline;
+    int fd;
+
+    qts = qtest_initf("-machine raspi5b -serial null "
+                      "-chardev socket,id=ua,path=%s -serial chardev:ua",
+                      path);
+    fd = accept(server, NULL, NULL);
+    g_assert_cmpint(fd, >=, 0);
+    close(server);
+    unlink(path);
+    rmdir(dir);
+
+    /* Fill the socket until a byte has to wait to be sent */
+    uarta_writel(qts, UART_FCR, UART_FCR_ENABLE_FIFO);
+    deadline = g_get_monotonic_time() + 30 * G_USEC_PER_SEC;
+    do {
+        uint8_t byte = sent->len;
+
+        g_assert_cmpint(g_get_monotonic_time(), <, deadline);
+        uarta_writel(qts, UART_TX, byte);
+        g_byte_array_append(sent, &byte, 1);
+    } while (uarta_readl(qts, UART_LSR) & UART_LSR_TEMT);
+
+    for (int i = 0; i < UARTA_FIFO_SIZE; i++) {
+        uint8_t byte = 0x80 | i;
+
+        uarta_writel(qts, UART_TX, byte);
+        g_byte_array_append(sent, &byte, 1);
+    }
+    g_assert_cmphex(uarta_readl(qts, UART_LSR), ==, 0);
+
+    /* Every byte goes out as the socket drains */
+    received = g_malloc(sent->len);
+    g_assert_cmpint(setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout,
+                               sizeof(timeout)), ==, 0);
+    for (size_t len = 0; len < sent->len;) {
+        ssize_t n = recv(fd, received + len, sent->len - len, 0);
+
+        g_assert_cmpint(n, >, 0);
+        len += n;
+    }
+    g_assert_cmpmem(received, sent->len, sent->data, sent->len);
+    g_assert_cmphex(uarta_readl(qts, UART_LSR), ==,
+                    UART_LSR_TEMT | UART_LSR_THRE);
+
+    qtest_quit(qts);
+    close(fd);
+}
+#endif
+
+static void test_uarta_interrupt(void)
+{
+    QTestState *qts = qtest_init("-machine raspi5b");
+
+    /* A byte received */
+    uarta_writel(qts, UART_MCR, UART_MCR_LOOP);
+    uarta_writel(qts, UART_IER, UART_IER_RDI);
+    g_assert_false(gic_spi_pending(qts, UARTA_SPI));
+    uarta_writel(qts, UART_TX, 'x');
+    g_assert_true(gic_spi_pending(qts, UARTA_SPI));
+    g_assert_cmphex(uarta_readl(qts, UART_IIR), ==, UART_IIR_RDI);
+    g_assert_cmphex(uarta_readl(qts, UART_RX), ==, 'x');
+    g_assert_cmphex(uarta_readl(qts, UART_IIR), ==, UART_IIR_NO_INT);
+    g_assert_false(gic_spi_pending(qts, UARTA_SPI));
+
+    /* Room to send, until IIR has been read */
+    uarta_writel(qts, UART_IER, UART_IER_THRI);
+    g_assert_true(gic_spi_pending(qts, UARTA_SPI));
+    g_assert_cmphex(uarta_readl(qts, UART_IIR), ==, UART_IIR_THRI);
+    g_assert_false(gic_spi_pending(qts, UARTA_SPI));
+
+    qtest_quit(qts);
+}
+
+/* Waits for a byte from the backend and takes it */
+static uint8_t uarta_receive(QTestState *qts)
+{
+    gint64 deadline = g_get_monotonic_time() + 10 * G_USEC_PER_SEC;
+
+    while (!(uarta_readl(qts, UART_LSR) & UART_LSR_DR)) {
+        g_assert_cmpint(g_get_monotonic_time(), <, deadline);
+        g_usleep(1000);
+    }
+    return uarta_readl(qts, UART_RX);
+}
+
+/* UARTA is the second serial port */
+static void test_uarta_serial_port(void)
+{
+    static const char in[] = "ping", out[] = "pong";
+    g_autofree char *in_file = tmp_file("raspi5b-uarta-in-XXXXXX", in,
+                                        strlen(in));
+    g_autofree char *out_file = tmp_file("raspi5b-uarta-out-XXXXXX", "", 0);
+    g_autofree char *sent = NULL;
+    size_t len;
+    QTestState *qts;
+
+    qts = qtest_initf("-machine raspi5b -serial null "
+                      "-chardev file,id=ua,path=%s,input-path=%s "
+                      "-serial chardev:ua", out_file, in_file);
+
+    for (int i = 0; i < strlen(in); i++) {
+        g_assert_cmphex(uarta_receive(qts), ==, in[i]);
+    }
+    for (int i = 0; i < strlen(out); i++) {
+        uarta_writel(qts, UART_TX, out[i]);
+    }
+    g_assert_true(g_file_get_contents(out_file, &sent, &len, NULL));
+    g_assert_cmpmem(sent, len, out, strlen(out));
+
+    qtest_quit(qts);
+    unlink(in_file);
+    unlink(out_file);
+}
+
+static void test_uarta_reset(void)
+{
+    QTestState *qts = qtest_init("-machine raspi5b");
+
+    uarta_writel(qts, UART_LCR, UART_LCR_WLEN8);
+    uarta_set_divisor(qts, 52);
+    uarta_writel(qts, UART_FCR, UART_FCR_ENABLE_FIFO);
+    uarta_writel(qts, UART_MCR, UART_MCR_LOOP);
+    uarta_writel(qts, UART_SCR, 0x5a);
+    uarta_writel(qts, UART_IER, UART_IER_RDI);
+    uarta_writel(qts, UART_TX, 'x');
+    g_assert_true(gic_spi_pending(qts, UARTA_SPI));
+    qtest_system_reset(qts);
+    uarta_check_reset(qts);
+    /* Nothing is left in the receive FIFO */
+    g_assert_cmphex(uarta_readl(qts, UART_RX), ==, 0);
+    g_assert_cmphex(uarta_readl(qts, UART_LSR), ==,
+                    UART_LSR_TEMT | UART_LSR_THRE);
+
+    qtest_quit(qts);
+}
+
+/* The registers survive a migration, and so do the bytes in the FIFO */
+static void test_uarta_migrate(void)
+{
+    g_autofree char *file = g_strdup_printf("%s/raspi5b-uarta-%d.mig",
+                                            g_get_tmp_dir(), getpid());
+    g_autofree char *out = g_strdup_printf("exec:cat > %s", file);
+    g_autofree char *in = g_strdup_printf("exec:cat %s", file);
+    const char *args = "-machine raspi5b -m 1G";
+    const int count = UARTA_FIFO_SIZE - 4;
+    QTestState *src, *dst;
+
+    src = qtest_init(args);
+    uarta_writel(src, UART_LCR, UART_LCR_WLEN8);
+    uarta_set_divisor(src, 52);
+    uarta_writel(src, UART_FCR, UART_FCR_ENABLE_FIFO | UART_FCR_TRIGGER_14);
+    uarta_writel(src, UART_MCR, UART_MCR_LOOP);
+    uarta_writel(src, UART_SCR, 0x5a);
+    uarta_writel(src, UART_IER, UART_IER_RDI);
+    for (int i = 0; i < count; i++) {
+        uarta_writel(src, UART_TX, 0x40 + i);
+    }
+    g_assert_true(gic_spi_pending(src, UARTA_SPI));
+    qtest_qmp_assert_success(src, "{ 'execute': 'migrate',"
+                             "  'arguments': { 'uri': %s } }", out);
+    wait_for_migration(src);
+    qtest_quit(src);
+
+    dst = qtest_initf("%s -incoming defer", args);
+    qtest_qmp_assert_success(dst, "{ 'execute': 'migrate-incoming',"
+                             "  'arguments': { 'uri': %s } }", in);
+    wait_for_migration(dst);
+    g_assert_cmphex(uarta_readl(dst, UART_LCR), ==, UART_LCR_WLEN8);
+    g_assert_cmphex(uarta_divisor(dst), ==, 52);
+    g_assert_cmphex(uarta_readl(dst, UART_MCR), ==, UART_MCR_LOOP);
+    g_assert_cmphex(uarta_readl(dst, UART_SCR), ==, 0x5a);
+    g_assert_cmphex(uarta_readl(dst, UART_IER), ==, UART_IER_RDI);
+    g_assert_true(gic_spi_pending(dst, UARTA_SPI));
+    g_assert_cmphex(uarta_readl(dst, UART_IIR), ==,
+                    UART_IIR_FIFO_ENABLED | UART_IIR_RDI);
+    for (int i = 0; i < count; i++) {
+        g_assert_cmphex(uarta_readl(dst, UART_RX), ==, 0x40 + i);
+    }
+    g_assert_cmphex(uarta_readl(dst, UART_LSR), ==,
+                    UART_LSR_TEMT | UART_LSR_THRE);
+    g_assert_false(gic_spi_pending(dst, UARTA_SPI));
+
+    qtest_quit(dst);
+    unlink(file);
+}
+
+/*
  * The board: system_powerdown presses the power button, pulling GIO 20
  * low for 200 ms. Here with both edges enabled, as Linux gpio-keys has it.
  */
@@ -2694,6 +3065,17 @@ int main(int argc, char **argv)
     qtest_add_func("/raspi5b/bsc/interrupt", test_bsc_interrupt);
     qtest_add_func("/raspi5b/bsc/reset", test_bsc_reset);
     qtest_add_func("/raspi5b/bsc/migrate", test_bsc_migrate);
+    qtest_add_func("/raspi5b/uarta/reset-values", test_uarta_reset_values);
+    qtest_add_func("/raspi5b/uarta/registers", test_uarta_registers);
+    qtest_add_func("/raspi5b/uarta/baud-clock", test_uarta_baud_clock);
+    qtest_add_func("/raspi5b/uarta/fifo", test_uarta_fifo);
+#ifndef _WIN32
+    qtest_add_func("/raspi5b/uarta/transmit-fifo", test_uarta_transmit_fifo);
+#endif
+    qtest_add_func("/raspi5b/uarta/interrupt", test_uarta_interrupt);
+    qtest_add_func("/raspi5b/uarta/serial-port", test_uarta_serial_port);
+    qtest_add_func("/raspi5b/uarta/reset", test_uarta_reset);
+    qtest_add_func("/raspi5b/uarta/migrate", test_uarta_migrate);
     qtest_add_func("/raspi5b/board/power-button", test_power_button);
     qtest_add_func("/raspi5b/board/power-button-reset",
                    test_power_button_reset);

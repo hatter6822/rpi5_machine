@@ -208,14 +208,15 @@ static uint32_t raspi5b_board_rev(uint64_t ram_size)
 
 /*
  * Device tree nodes for hardware that is not modelled yet. They are marked
- * disabled rather than deleted so that phandle references stay valid. This
- * list should only ever shrink; see docs/PLAN.md.
+ * disabled rather than deleted so that phandle references stay valid. The
+ * list shrinks as models land; a device behind a newly modelled one, such
+ * as the Bluetooth radio on UARTA, joins it while it stays unmodelled. See
+ * docs/PLAN.md.
  */
 static const char *const raspi5b_unmodelled_compatibles[] = {
     "brcm,bcm2712-pcie",
     "brcm,bcm2712-mip",
     "brcm,bcm2712-sdhci",
-    "brcm,bcm7271-uart",
     "brcm,2712-v3d",
     "brcm,bcm2712-vc6",
     "brcm,bcm2712-hvs",
@@ -244,6 +245,8 @@ static const char *const raspi5b_unmodelled_compatibles[] = {
     "raspberrypi,bcm2835-power",
     "raspberrypi,rpi-rtc",
     "raspberrypi,rp1-firmware",
+    /* Behind modelled devices: the Bluetooth radio on UARTA */
+    "brcm,bcm43438-bt",
 };
 
 /*

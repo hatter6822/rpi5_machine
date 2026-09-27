@@ -24,7 +24,7 @@
 + /soc@107c000000/reset-controller@1504318:status = "disabled"
 + /soc@107c000000/clock@7c700000:status = "disabled"
 ~ /soc@107c000000/spi@7d004000:status = "disabled" (was "okay")
-~ /soc@107c000000/serial@7d50c000:status = "disabled" (was "okay")
++ /soc@107c000000/serial@7d50c000/bluetooth:status = "disabled"
 ~ /soc@107c000000/avs-monitor@7d542000:status = "disabled" (was "okay")
 + /soc@107c000000/power:status = "disabled"
 + /soc@107c000000/fb:status = "disabled"

@@ -1,0 +1,82 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: A7om <hatter6822@gmail.com>
+Date: Sat, 26 Sep 2026 00:00:00 +0000
+Subject: [PATCH] hw/char/serial: Make the FIFO depth a property
+
+The 16550 model's FIFOs hold 16 bytes, as the 16550A's do. Some UARTs
+that are otherwise 16550-compatible have deeper ones, and their drivers
+write as many bytes as those hold each time the transmit FIFO empties:
+Linux's 8250 driver writes 32 to a Broadcom BCM7271 UART. With 16-byte
+FIFOs, the bytes past the 16th overwrite the oldest ones still waiting
+when the backend is slow to take them, and in loopback mode, where the
+model moves each byte to the receive FIFO at once, they overrun it.
+
+Add a fifo-size property, 16 by default, for the depth of both FIFOs.
+It cannot be less than 16, as the receive trigger levels stay those of
+the 16550A. The migration state is unchanged: the FIFOs' contents
+migrate at their size, which both sides take from the property.
+
+The Broadcom BCM2712, later in this series, uses it for its UARTA,
+whose FIFOs hold 32 bytes.
+---
+ hw/char/serial.c         | 13 ++++++++++---
+ include/hw/char/serial.h |  1 +
+ 2 files changed, 11 insertions(+), 3 deletions(-)
+
+diff --git a/hw/char/serial.c b/hw/char/serial.c
+index 4339562..5e0f2c1 100644
+--- a/hw/char/serial.c
++++ b/hw/char/serial.c
+@@ -560,7 +560,7 @@ static int serial_can_receive(SerialState *s)
+         if (!fifo8_is_full(&s->recv_fifo)) {
+             /*
+              * Advertise (fifo.itl - fifo.count) bytes when count < ITL, and 1
+-             * if above. If UART_FIFO_LENGTH - fifo.count is advertised the
++             * if above. If the free space in the fifo is advertised the
+              * effect will be to almost always fill the fifo completely before
+              * the guest has a chance to respond, effectively overriding the ITL
+              * that the guest has set.
+@@ -921,6 +921,12 @@ static void serial_realize(DeviceState *dev, Error **errp)
+ {
+     SerialState *s = SERIAL(dev);
+ 
++    /* The receive trigger levels, up to 14 bytes, are the 16550A's */
++    if (s->fifo_size < UART_FIFO_LENGTH) {
++        error_setg(errp, "fifo-size must be at least %d", UART_FIFO_LENGTH);
++        return;
++    }
++
+     s->modem_status_poll = timer_new_ns(QEMU_CLOCK_VIRTUAL, (QEMUTimerCB *) serial_update_msl, s);
+ 
+     s->fifo_timeout_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, (QEMUTimerCB *) fifo_timeout_int, s);
+@@ -928,8 +934,8 @@ static void serial_realize(DeviceState *dev, Error **errp)
+ 
+     qemu_chr_fe_set_handlers(&s->chr, serial_can_receive1, serial_receive1,
+                              serial_event, serial_be_change, s, NULL, true);
+-    fifo8_create(&s->recv_fifo, UART_FIFO_LENGTH);
+-    fifo8_create(&s->xmit_fifo, UART_FIFO_LENGTH);
++    fifo8_create(&s->recv_fifo, s->fifo_size);
++    fifo8_create(&s->xmit_fifo, s->fifo_size);
+ }
+ 
+ static void serial_unrealize(DeviceState *dev)
+@@ -966,6 +972,7 @@ static const Property serial_properties[] = {
+     DEFINE_PROP_CHR("chardev", SerialState, chr),
+     DEFINE_PROP_UINT32("baudbase", SerialState, baudbase, 115200),
+     DEFINE_PROP_BOOL("wakeup", SerialState, wakeup, false),
++    DEFINE_PROP_UINT32("fifo-size", SerialState, fifo_size, UART_FIFO_LENGTH),
+ };
+ 
+ static void serial_class_init(ObjectClass *klass, const void *data)
+diff --git a/include/hw/char/serial.h b/include/hw/char/serial.h
+index ea82ffa..73efc31 100644
+--- a/include/hw/char/serial.h
++++ b/include/hw/char/serial.h
+@@ -66,6 +66,7 @@ struct SerialState {
+     uint64_t last_xmit_ts;
+     Fifo8 recv_fifo;
+     Fifo8 xmit_fifo;
++    uint32_t fifo_size;             /* the bytes each fifo holds */
+     /* Interrupt trigger level for recv_fifo */
+     uint8_t recv_fifo_itl;
+ 

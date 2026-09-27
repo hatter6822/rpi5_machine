@@ -65,6 +65,17 @@ Implemented devices
   LED, which RP1 drives, and so leaves the activity LED alone too
 * UART10: the PL011 debug UART at ``0x10_7d00_1000``, connected to the
   first ``-serial`` backend
+* UARTA: the 16550 wired to the Bluetooth radio, at ``0x10_7d50_c000``,
+  connected to the second ``-serial`` backend. Its 8-bit registers are 4
+  bytes apart, its FIFOs hold 32 bytes, and its baud rate divides a
+  96 MHz clock by 16 and by the divisor. The receive FIFO interrupts at
+  the 16550A's trigger levels, 1, 4, 8 or 14 bytes, where Linux's driver
+  gives the BCM7271 UART 1, 8, 16 or 30. The radio is not modelled: its
+  node in the firmware's device tree is disabled, which leaves Linux's
+  ``ttyS0`` a plain serial port. The Raspberry Pi OS kernel registers
+  8250 ports only when its command line asks for them, which the
+  firmware's tree does with ``8250.nr_uarts=1``; with the built-in tree,
+  add it to ``-append``
 * 1, 2, 4, 8 or 16 GiB of RAM at physical address 0 (``-m``; default 2 GiB)
 
 Every other block of the BCM2712 memory map is an ``unimplemented-device``
@@ -77,6 +88,7 @@ Missing devices
 * Firmware property tags specific to the Pi 5 (clocks, power, RTC, GPIO
   expander); the BCM283x set is answered
 * SD/eMMC controllers, PCIe root complexes and the RP1 south bridge
+* The Bluetooth radio on UARTA
 * The power LED, which RP1 drives, and the SD card detect line
 * Power domains (only V3D's is driven by Linux on this SoC)
 * Display (HVS, HDMI), V3D and ISP
@@ -200,8 +212,8 @@ the PMU, the GIC, the system timer, the mailbox and the firmware interface,
 the PM block, the RNG, the level 2 interrupt controllers, the GPIO blocks
 and their pin controllers, the HDMI ports' DDC I2C controllers, the power
 button with the state of its pin (GPIO, pulled up), the activity LED,
-UART10 (``serial10``, the
-``stdout-path``), the fixed clocks, and a CMA pool in the first GiB, where
+UART10 (``serial10``, the ``stdout-path``) and UARTA, the fixed clocks,
+and a CMA pool in the first GiB, where
 the VideoCore can reach Linux's buffers. Node names and properties follow
 Linux's ``bcm2712.dtsi`` and the firmware's tree, and the result validates
 against the Linux bindings, but for what the firmware adds for the OS,

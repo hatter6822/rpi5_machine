@@ -364,6 +364,7 @@ static void bcm2712_init(Object *obj)
     object_property_add_const_link(OBJECT(&s->property), "dma-mr",
                                    OBJECT(&s->vc_bus));
     object_initialize_child(obj, "uart10", &s->uart10, TYPE_PL011);
+    object_initialize_child(obj, "uarta", &s->uarta, TYPE_SERIAL_MM);
 }
 
 /*
@@ -587,6 +588,42 @@ static bool bcm2712_realize_vc(BCM2712State *s, Error **errp)
                                        MBOX_CHAN_PROPERTY, errp);
 }
 
+/* UARTA's FIFOs, as Linux's 8250 driver has them for a BCM7271 UART */
+#define BCM2712_UARTA_FIFO_SIZE     32
+
+/*
+ * The serial ports, in an order that stays as more are modelled: UART10,
+ * the PL011 debug UART on the 3-pin JST header, is serial_hd(0). UARTA, a
+ * 16550 with 32-bit registers wired to the Bluetooth radio on the Pi 5,
+ * is serial_hd(1); its baud rate divides the 96 MHz sw_baud clock by 16
+ * and by the divisor.
+ */
+static bool bcm2712_realize_uarts(BCM2712State *s, Error **errp)
+{
+    DeviceState *uarta = DEVICE(&s->uarta);
+
+    qdev_prop_set_chr(DEVICE(&s->uart10), "chardev", serial_hd(0));
+    if (!sysbus_realize(SYS_BUS_DEVICE(&s->uart10), errp)) {
+        return false;
+    }
+    bcm2712_map(SYS_BUS_DEVICE(&s->uart10), 0, BCM2712_UART10);
+    sysbus_connect_irq(SYS_BUS_DEVICE(&s->uart10), 0,
+                       bcm2712_spi(s, BCM2712_SPI_UART10));
+
+    qdev_prop_set_uint8(uarta, "regshift", 2);
+    qdev_prop_set_uint32(uarta, "baudbase", BCM2712_UARTA_CLK_HZ / 16);
+    qdev_prop_set_uint8(uarta, "endianness", DEVICE_LITTLE_ENDIAN);
+    qdev_prop_set_uint32(uarta, "fifo-size", BCM2712_UARTA_FIFO_SIZE);
+    qdev_prop_set_chr(uarta, "chardev", serial_hd(1));
+    if (!sysbus_realize(SYS_BUS_DEVICE(uarta), errp)) {
+        return false;
+    }
+    bcm2712_map(SYS_BUS_DEVICE(uarta), 0, BCM2712_UARTA);
+    sysbus_connect_irq(SYS_BUS_DEVICE(uarta), 0,
+                       bcm2712_spi(s, BCM2712_SPI_UARTA));
+    return true;
+}
+
 static void bcm2712_realize(DeviceState *dev, Error **errp)
 {
     BCM2712State *s = BCM2712(dev);
@@ -604,18 +641,10 @@ static void bcm2712_realize(DeviceState *dev, Error **errp)
         !bcm2712_realize_pinctrl(&s->pinctrl_aon, BCM2712_PINCTRL_AON, errp) ||
         !bcm2712_realize_ddcs(s, errp) ||
         !bcm2712_realize_systimer(s, errp) || !bcm2712_realize_pm(s, errp) ||
-        !bcm2712_realize_rng(s, errp) || !bcm2712_realize_vc(s, errp)) {
+        !bcm2712_realize_rng(s, errp) || !bcm2712_realize_vc(s, errp) ||
+        !bcm2712_realize_uarts(s, errp)) {
         return;
     }
-
-    /* UART10: the PL011 debug UART on the 3-pin JST header */
-    qdev_prop_set_chr(DEVICE(&s->uart10), "chardev", serial_hd(0));
-    if (!sysbus_realize(SYS_BUS_DEVICE(&s->uart10), errp)) {
-        return;
-    }
-    bcm2712_map(SYS_BUS_DEVICE(&s->uart10), 0, BCM2712_UART10);
-    sysbus_connect_irq(SYS_BUS_DEVICE(&s->uart10), 0,
-                       bcm2712_spi(s, BCM2712_SPI_UART10));
 
     /*
      * Everything not yet modelled logs its accesses under -d unimp. The
@@ -921,9 +950,9 @@ void bcm2712_fdt_populate(BCM2712State *s, void *fdt)
         "raspberrypi,bcm2835-firmware\0simple-mfd";
     uint32_t cpu_phandles[BCM2712_NUM_CPUS];
     uint32_t l2_phandles[BCM2712_NUM_L2_INTCS];
-    uint32_t gic, clk_uart, clk_vpu, mbox;
+    uint32_t gic, clk_sw_baud, clk_uart, clk_vpu, mbox;
     g_autofree char *systimer = NULL, *mailbox = NULL, *uart = NULL;
-    g_autofree char *pm = NULL, *rng = NULL;
+    g_autofree char *uarta = NULL, *pm = NULL, *rng = NULL;
     const char *firmware = BCM2712_FDT_SOC_PATH "/firmware";
     uint32_t spi;
 
@@ -939,6 +968,8 @@ void bcm2712_fdt_populate(BCM2712State *s, void *fdt)
                            BCM2712_FDT_SOC_BUS_SIZE);
 
     qemu_fdt_add_subnode(fdt, "/clocks");
+    clk_sw_baud = bcm2712_fdt_clock(fdt, "clk-sw-baud", "sw-baud",
+                                    BCM2712_UARTA_CLK_HZ);
     clk_uart = bcm2712_fdt_clock(fdt, "clk-uart", "uart-clock",
                                  BCM2712_FDT_CLK_UART);
     clk_vpu = bcm2712_fdt_clock(fdt, "clk-vpu", "vpu-clock",
@@ -965,6 +996,20 @@ void bcm2712_fdt_populate(BCM2712State *s, void *fdt)
     qemu_fdt_setprop_cell(fdt, pm, "#power-domain-cells", 1);
     qemu_fdt_setprop_cell(fdt, pm, "#reset-cells", 1);
     qemu_fdt_setprop(fdt, pm, "system-power-controller", NULL, 0);
+
+    /*
+     * UARTA as bcm2712.dtsi has it; the firmware's tree gives it a
+     * clock-frequency instead of the clock, which the binding does not take
+     */
+    uarta = bcm2712_fdt_soc_node(fdt, "serial", BCM2712_UARTA,
+                                 "brcm,bcm7271-uart",
+                                 sizeof("brcm,bcm7271-uart"));
+    qemu_fdt_setprop_string(fdt, uarta, "reg-names", "uart");
+    qemu_fdt_setprop_cell(fdt, uarta, "clocks", clk_sw_baud);
+    qemu_fdt_setprop_string(fdt, uarta, "clock-names", "sw_baud");
+    qemu_fdt_setprop_cells(fdt, uarta, "interrupts", GIC_FDT_IRQ_TYPE_SPI,
+                           BCM2712_SPI_UARTA, GIC_FDT_IRQ_FLAGS_LEVEL_HI);
+    qemu_fdt_setprop_string(fdt, uarta, "interrupt-names", "uart");
 
     uart = bcm2712_fdt_soc_node(fdt, "serial", BCM2712_UART10, uart_compat,
                                 sizeof(uart_compat));

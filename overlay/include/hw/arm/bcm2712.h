@@ -11,6 +11,7 @@
 
 #include "exec/hwaddr.h"
 #include "hw/char/pl011.h"
+#include "hw/char/serial-mm.h"
 #include "hw/display/bcm2835_fb.h"
 #include "hw/gpio/brcmstb_gpio.h"
 #include "hw/gpio/brcmstb_pinctrl.h"
@@ -182,6 +183,9 @@ enum {
 /* The HDMI ports, each with the I2C bus that reads its monitor's EDID */
 #define BCM2712_NUM_HDMI            2
 
+/* UARTA's baud clock, sw_baud in bcm2712.dtsi, in Hz */
+#define BCM2712_UARTA_CLK_HZ        96000000
+
 struct BCM2712State {
     /*< private >*/
     DeviceState parent_obj;
@@ -203,6 +207,7 @@ struct BCM2712State {
     BCM2835PowerMgtState pm;
     BCM2711Rng200State rng;
     PL011State uart10;
+    SerialMM uarta;
 
     /* The VideoCore firmware interface, behind the mailbox */
     BCM2835MboxState mbox;

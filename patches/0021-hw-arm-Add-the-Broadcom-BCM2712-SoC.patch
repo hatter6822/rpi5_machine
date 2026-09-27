@@ -11,14 +11,16 @@ the legacy ARM control block is gone.
 Model the SoC with the devices a bare-metal kernel or Linux needs to
 boot: the cores (MPIDR.Aff1 is the core number, CNTFRQ is 54 MHz,
 optional EL3), the GIC-400 with 288 SPIs and the timer and maintenance
-PPIs, UART10 (a PL011), the system timer, the watchdog and reset status
-block, the RNG200, the seven level 2 interrupt controllers, the two GPIO
-blocks and their pin controllers, and the VideoCore mailbox with the
-firmware property and framebuffer channels.
-The firmware reaches buffers through a VideoCore bus view that holds the
-first GiB of RAM at 0x0 and at 0xc000_0000. Every other block in the
-device tree is an unimplemented-device placeholder of its size, and two
-catch-all windows log accesses anywhere else in the peripheral ranges.
+PPIs, UART10 (a PL011) and UARTA (a 16550 with its registers 4 bytes
+apart), the system timer, the watchdog and reset status block, the
+RNG200, the seven level 2 interrupt controllers, the two GPIO blocks and
+their pin controllers, the HDMI ports' two DDC I2C controllers, and the
+VideoCore mailbox with the firmware property and framebuffer channels.
+UART10 is the first serial port and UARTA the second. The firmware
+reaches buffers through a VideoCore bus view that holds the first GiB of
+RAM at 0x0 and at 0xc000_0000. Every other block in the device tree is
+an unimplemented-device placeholder of its size, and two catch-all
+windows log accesses anywhere else in the peripheral ranges.
 
 bcm2712_fdt_populate() describes the modelled devices in a device tree,
 from the same constants as the memory map, for boards that generate one.
@@ -26,15 +28,15 @@ from the same constants as the memory map, for boards that generate one.
 Addresses, interrupts and compatibles follow Linux's bcm2712.dtsi;
 values not documented publicly are marked for checking on hardware.
 ---
- hw/arm/Kconfig     | 18 ++++++++++++++++++
+ hw/arm/Kconfig     | 19 +++++++++++++++++++
  hw/arm/meson.build |  1 +
- 2 files changed, 19 insertions(+)
+ 2 files changed, 20 insertions(+)
 
 diff --git a/hw/arm/Kconfig b/hw/arm/Kconfig
-index 16f83f0..eec70d9 100644
+index 16f83f0..d50414a 100644
 --- a/hw/arm/Kconfig
 +++ b/hw/arm/Kconfig
-@@ -384,6 +384,24 @@ config RASPI
+@@ -384,6 +384,25 @@ config RASPI
      select BCM2836_CONTROL
      select BCM2838_GPIO
  
@@ -53,7 +55,8 @@ index 16f83f0..eec70d9 100644
 +    select BRCMSTB_L2_INTC
 +    select BRCMSTB_PINCTRL
 +    select DEVICE_TREE
-+    select PL011 # UART
++    select PL011 # UART10
++    select SERIAL_MM # UARTA
 +    select UNIMP
 +
  config STM32F100_SOC

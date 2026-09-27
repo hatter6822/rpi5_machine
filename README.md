@@ -26,6 +26,7 @@ Pi OS booting from an SD card, is in progress.
 | 4 × Cortex-A76, `MPIDR.Aff1` = core with `MPIDR.MT` set, 54 MHz generic timer | done |
 | GIC-400 (GICv2 + virtualization extensions, 5 priority bits), timer/maintenance PPIs | done |
 | UART10 (PL011 debug UART) | done |
+| UARTA, the Bluetooth radio's 16550 (the radio is not modelled), as the second serial port | done |
 | System timer (1 MHz counter, four comparators) | done |
 | Watchdog and reset status (PM block) | done |
 | RNG200 random number generator | done |
