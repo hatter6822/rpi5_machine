@@ -2,13 +2,16 @@
 
 Freestanding AArch64 programs that run on `raspi5b` and, unchanged, on a
 real Raspberry Pi 5. They are built with clang and lld (`make guest` from
-the repository root) and booted by the smoke tests in `tests/smoke/`.
+the repository root) and booted by the smoke tests in `tests/smoke/`. The
+runtime below is the bare-metal guests'; `linux/` holds a program for
+Linux.
 
 | Directory | Contents |
 | --- | --- |
 | `lib/` | the runtime every guest links: entry, exception vectors, console, device-tree walker, GIC-400 driver, PSCI, watchdog and reset status (PM), firmware mailbox, RNG200, generic timer helpers, a switch to Non-secure EL2 for a guest that owns EL3, test runner |
 | `hello/` | the original smoke guest: boot EL, MPIDR, CNTFRQ, PSCI `CPU_ON` of every core, `SYSTEM_OFF` |
 | `suite/` | the bare-metal test suite (WS9.2), one file per area |
+| `linux/` | `firstboot`, a Linux program without a C library: the `/init` with which the `rpi5-boot` tests boot Raspberry Pi OS's kernel, which plays the OS's first boot (it rewrites the card's disk identifier and `cmdline.txt`, and reboots) |
 
 ## Runtime
 

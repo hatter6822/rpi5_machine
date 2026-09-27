@@ -324,8 +324,8 @@ firmware does before it starts the OS:
   two spaces apart, as the firmware joins them;
 * ``/chosen`` gets ``kaslr-seed`` and ``rng-seed`` from QEMU's random
   source (reproducible with ``-seed``), ``os_prefix`` and
-  ``overlay_prefix`` at their defaults, and the RAM size in
-  ``rpi-sdram-size-gbit``;
+  ``overlay_prefix`` at their defaults unless the tree has them, and the
+  RAM size in ``rpi-sdram-size-gbit``;
 * ``/chosen/bootloader`` describes the boot: ``boot-mode`` 3, RPIBOOT, in
   which the host supplies the boot files, as QEMU does; ``rsts``, the PM
   block's reset status as the boot found it; ``partition``, the

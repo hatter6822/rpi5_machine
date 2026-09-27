@@ -124,6 +124,17 @@ BOOTED_NODES = """
 };
 """
 
+# The prefixes a host that evaluated config.txt for the boot writes, as
+# the firmware writes them, from os_prefix and overlay_prefix
+PREFIX_NODES = """
+/ {
+    chosen {
+        os_prefix = "next/";
+        overlay_prefix = "ovl/";
+    };
+};
+"""
+
 # The board's Ethernet address: QEMU's second default one, as the first
 # goes to the default NIC configuration
 MAC = "52:54:00:12:34:57"
@@ -314,6 +325,13 @@ class DtbFixupTest(unittest.TestCase):
         self.assertEqual(tree["/chosen/bootloader"]["version"],
                          string("0123456789abcdef0123456789abcdef01234567"))
         self.assertEqual(tree["/chosen/power"]["max_current"], cells(5000))
+
+    def test_prefixes(self):
+        """A tree that names the config.txt prefixes keeps them"""
+        tree = self.tree(dts=MINIMAL_DTS + PREFIX_NODES)
+        self.assertEqual(tree["/chosen"]["os_prefix"], string("next/"))
+        self.assertEqual(tree["/chosen"]["overlay_prefix"],
+                         string("ovl/"))
 
     def test_cma_size(self):
         """A CMA pool sized in one cell gets the parent's two, as the

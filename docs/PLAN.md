@@ -59,7 +59,7 @@ commit (or a short series) with its own tests.
 
 ## 2. Current state
 
-Delivered so far: M1 (WS0.1–WS0.3, WS0.5, WS0.6, WS2.1, WS2.2, WS2.3a, WS2.4, WS2.5, WS3.2, WS3.6, WS9.2), M2 (WS1.2, WS1.5, WS3.1, WS3.3, WS3.4) and, of M3, WS2.3b–WS2.3e, WS2.6, WS4.1–WS4.6 and WS5.1, with WS5.2 deferred:
+Delivered so far: M1 (WS0.1–WS0.3, WS0.5, WS0.6, WS2.1, WS2.2, WS2.3a, WS2.4, WS2.5, WS3.2, WS3.6, WS9.2), M2 (WS1.2, WS1.5, WS3.1, WS3.3, WS3.4) and, of M3, WS2.3b–WS2.3e, WS2.6, WS3.5 (all but its exit test), WS4.1–WS4.6 and WS5.1, with WS5.2 deferred:
 
 | Area | State |
 | --- | --- |
@@ -67,8 +67,9 @@ Delivered so far: M1 (WS0.1–WS0.3, WS0.5, WS0.6, WS2.1, WS2.2, WS2.3a, WS2.4, 
 | Kconfig (WS0.6) | every BCM283x device model has its own symbol, so `bcm2712` can select just the models it reuses; a `raspi5b`-only build is tested (`make check-minimal`) |
 | SoC (`bcm2712`) | 1–4 Cortex-A76 (`MPIDR.Aff1` = core with `MPIDR.MT` set (WS1.2), CNTFRQ 54 MHz, optional EL3, the IMPDEF registers firmware writes (WS1.5), warm reset through `RMR_EL3` (WS3.3)), GIC-400 with 288 SPIs, 5 priority bits and all timer/maintenance PPIs, UART10 (PL011), UARTA (a 16550 with 32-byte FIFOs, WS4.5), system timer (WS2.1), watchdog and reset status (WS2.4), RNG200 (WS2.5), the AVS monitor's temperature sensor (WS2.6), the seven brcmstb level 2 interrupt controllers (WS4.1), the two brcmstb GPIO blocks (WS4.2) and their pin controllers (WS4.3), the HDMI ports' two DDC I²C controllers (WS4.4), the two SD hosts with SDMA and ADMA2 (WS5.1), VideoCore mailbox with the BCM283x property and framebuffer channels (WS2.2), every identity tag answered (WS2.3a) and the Pi 5 firmware's own answers: its clocks, power domains and devices, temperature limit and reboot flags (WS2.3b), its framebuffer, kept within the VideoCore's 4 MiB (WS2.3c), its real-time clock (WS2.3d) and the temperature the AVS monitor reads (WS2.6), complete memory map with T0 placeholders and two catch-all windows |
 | Board (`raspi5b`) | 1/2/4/8/16 GiB RAM, board revision code, serial number (`serial=`), PSCI over SMC with EL2 entry (default) or guest-owned EL3 (`secure=on`), firmware such as TF-A's BL31 loaded with `-bios` and handed the kernel, initrd and device tree as the Pi's firmware does (WS3.3), system reset and power-off through PSCI, the watchdog and the monitor (WS3.6), a built-in device tree when no `-dtb` is given (WS3.2; `builtin-dtb=off` passes none), the power button on GIO 20, which `system_powerdown` presses, and the ACT LED on GIO AON 9 (WS4.6), a monitor's EDID on HDMI0's DDC bus (WS4.4), the SD card slot on SDIO1, filled by `-drive if=sd` and changed at run time, with its card-detect switch on GIO AON 5 (WS5.1), and in whichever tree the guest gets the firmware's changes, made anew for each boot (WS3.1): model, serial number, the command line it builds, `/chosen` with the boot's reset status, partition, count and tryboot, a 5 A supply and seeds, the CMA size, the bootloader configuration, the Ethernet address, unmodelled devices disabled |
-| Tests | qtest (UART IDs, GIC geometry, priority bits and security, RAM, placeholders, system timer, watchdog, mailbox, identity tags, the firmware's clocks, power states, reboot flags, framebuffer (with the display, by `screendump`) and real-time clock, RNG, the AVS monitor's temperature, L2 interrupt controllers, GPIO, pin control, the DDC I²C controllers and the EDID, UARTA, the power button and ACT LED, the SD hosts with card detect, PIO, SDMA and ADMA2), the built-in tree validated against the Linux v6.18 bindings (`make check-dt`), the device-tree fix-ups (each one, the built-in tree against a checked-in dump, the values of each boot across resets and migration), bare-metal smoke guest (EL, MPIDR, CNTFRQ, PSCI CPU_ON on all cores, SYSTEM_OFF, EL3 mode), and the bare-metal suite (WS9.2, 36 tests: GIC and the Secure/Non-secure group split, each core's MPIDR, every timer on every core, SGIs between all core pairs, SPI routing, PSCI, the system timer, the mailbox and identity tags, the firmware's clocks as `vcgencmd` reports them, a tryboot, the real-time clock and a framebuffer, the RNG, the temperature as Linux and the firmware read it, a software-raised interrupt through each edge-layout L2 controller, a GPIO output's own edge through GIO's, UART receive and loopback, the SD card's master boot record through PIO, a watchdog reset and four system resets checked against the boot state, an ID-register dump, the A76's IMPDEF registers; 1–4 cores, with the built-in tree, a `-dtb` one and none, EL2 and EL3), the `-bios` handoff (qtest), and real firmware (`make check-firmware`, all pinned: the smoke guest and the suite on TF-A's `rpi5` BL31, Linux on TF-A and through U-Boot, the EDK2 port to its shell, the same from an SD card (Linux's root file system, U-Boot by its `extlinux.conf`, EDK2's map of the card), and the changes to the firmware's tree against a checked-in list) |
-| Linux and firmware | the stock Raspberry Pi OS kernel (6.18) boots on 4 CPUs to the root-fs mount, without warnings ("firmware out-of-date" included), with KASLR, scaling the CPUs' clock through the firmware (cpufreq), switching power domains through it and reading and setting its real-time clock (`hwclock`), reading the SoC's temperature in `thermal_zone0` and shutting down at its critical trip, registering every L2 interrupt controller its tree enables, listing both GPIO blocks with their banks and applying pin states through both pin controllers, reading the EDID through the DDC I²C controller, with `ttyS0` on UARTA looping bytes back and exchanging them with the host, with `gpio-keys` reporting `system_powerdown` as `KEY_POWER` (and on the built-in tree the ACT LED following sysfs), mounting its ext4 root from an SD card and noticing cards inserted and removed at run time, with the firmware's `bcm2712-rpi-5-b.dtb` and on the built-in tree (1, 2 and 8 GiB), directly, on TF-A's BL31 or through U-Boot on it (WS3.4); the EDK2 port draws its boot menu on the firmware's framebuffer and reaches the UEFI shell, whose `date` and `time` read and set the firmware's clock |
+| Boot helper (WS3.5) | `scripts/rpi5-boot` boots an SD card image as a Pi 5's firmware boots it: the boot partition (MBR, GPT, `autoboot.txt`), `config.txt` with its filters and includes, the kernel, device tree, initramfs and command line it names, its overlays and parameters applied as the firmware applies them (the blob is `dtmerge`'s, byte for byte), `serial0` turned into `ttyAMA10`, and the card read again at each reboot |
+| Tests | qtest (UART IDs, GIC geometry, priority bits and security, RAM, placeholders, system timer, watchdog, mailbox, identity tags, the firmware's clocks, power states, reboot flags, framebuffer (with the display, by `screendump`) and real-time clock, RNG, the AVS monitor's temperature, L2 interrupt controllers, GPIO, pin control, the DDC I²C controllers and the EDID, UARTA, the power button and ACT LED, the SD hosts with card detect, PIO, SDMA and ADMA2), the built-in tree validated against the Linux v6.18 bindings (`make check-dt`), the device-tree fix-ups (each one, the built-in tree against a checked-in dump, the values of each boot across resets and migration), bare-metal smoke guest (EL, MPIDR, CNTFRQ, PSCI CPU_ON on all cores, SYSTEM_OFF, EL3 mode), and the bare-metal suite (WS9.2, 36 tests: GIC and the Secure/Non-secure group split, each core's MPIDR, every timer on every core, SGIs between all core pairs, SPI routing, PSCI, the system timer, the mailbox and identity tags, the firmware's clocks as `vcgencmd` reports them, a tryboot, the real-time clock and a framebuffer, the RNG, the temperature as Linux and the firmware read it, a software-raised interrupt through each edge-layout L2 controller, a GPIO output's own edge through GIO's, UART receive and loopback, the SD card's master boot record through PIO, a watchdog reset and four system resets checked against the boot state, an ID-register dump, the A76's IMPDEF registers; 1–4 cores, with the built-in tree, a `-dtb` one and none, EL2 and EL3), the `-bios` handoff (qtest), and real firmware (`make check-firmware`, all pinned: the smoke guest and the suite on TF-A's `rpi5` BL31, Linux on TF-A and through U-Boot, the EDK2 port to its shell, the same from an SD card (Linux's root file system, U-Boot by its `extlinux.conf`, EDK2's map of the card), and the changes to the firmware's tree against a checked-in list), and `scripts/rpi5-boot` (its device-tree, overlay and `config.txt` code, partition tables, `--print`, QEMU's runs and the reboot loop; with the firmware, every overlay and parameter of the release against `dtmerge`, and a Raspberry Pi OS-style first boot) |
+| Linux and firmware | the stock Raspberry Pi OS kernel (6.18) boots on 4 CPUs to the root-fs mount, without warnings ("firmware out-of-date" included), with KASLR, scaling the CPUs' clock through the firmware (cpufreq), switching power domains through it and reading and setting its real-time clock (`hwclock`), reading the SoC's temperature in `thermal_zone0` and shutting down at its critical trip, registering every L2 interrupt controller its tree enables, listing both GPIO blocks with their banks and applying pin states through both pin controllers, reading the EDID through the DDC I²C controller, with `ttyS0` on UARTA looping bytes back and exchanging them with the host, with `gpio-keys` reporting `system_powerdown` as `KEY_POWER` (and on the built-in tree the ACT LED following sysfs), mounting its ext4 root from an SD card and noticing cards inserted and removed at run time, with the firmware's `bcm2712-rpi-5-b.dtb` and on the built-in tree (1, 2 and 8 GiB), directly, on TF-A's BL31 or through U-Boot on it (WS3.4); the EDK2 port draws its boot menu on the firmware's framebuffer and reaches the UEFI shell, whose `date` and `time` read and set the firmware's clock; `scripts/rpi5-boot` boots the kernel from a card laid out as Raspberry Pi OS's, with the OS's `config.txt`, overlays and `cmdline.txt`, through a first boot that rewrites the card and reboots (WS3.5) |
 
 Known provisional values, each marked in the code: 288 SPIs
 (`TODO(WS1.3)`), the VideoCore memory size and DMA channel mask
@@ -1052,6 +1053,72 @@ Rather than emulating the closed-source firmware, a host tool
 
 **Done when:** it boots an unmodified Raspberry Pi OS Lite image to the
 login prompt with one command.
+
+*Delivered:* `scripts/rpi5-boot IMAGE [-- QEMU-OPTION...]`, in Python,
+reading the card with mtools rather than `pyfatfs`, which would need
+installing from PyPI. It picks the partition the bootloader boots: MBR
+primaries from 1 and logical partitions from 5, GPT entries, a card that
+is one FAT file system as partition 0; the one `autoboot.txt` names, else
+the first FAT partition with a `config.txt`; `--partition` chooses
+another. `config.txt` is read as the firmware reads it: lines cut at 98
+characters, comments, `include`, the conditional filters (model,
+`board-type`, serial number, the expression filter over the boot
+variables, `[tryboot]`, `[none]` and `[all]`, a filter replacing the one
+of its kind before it; the `gpio` and `EDID` filters never match) and the
+old names (`device_tree_overlay`, `device_tree_param`, `ramfsfile`). From
+it come the kernel (`kernel`, else `kernel_2712.img` or `kernel8.img`),
+`os_prefix` when its directory has the kernel and the tree, the device
+tree (`device_tree`; an empty one gives none, which `builtin-dtb=off`
+passes on, and `os_check=0` boots without a missing one), the overlays'
+directory (`overlay_prefix`, under `os_prefix` when that has the
+overlays' README), the initramfs (`initramfs` with several files,
+concatenated as the firmware loads them, or `auto_initramfs`),
+`cmdline`, `armstub` (loaded with `-bios` and `secure=on`, the tree at
+`device_tree_address` when given) and `enable_uart` (0 drops
+`console=serial0`); `uart_2ndstage` and `dtdebug` make it verbose, and
+`arm_64bit=0`, `pciex4_reset=0`, `kernel_address`, `upstream_kernel` and
+`boot_ramdisk` are reported as ignored. Step 2's `fdtoverlay` would not
+do: libfdt's overlay code has no parameters, and merges, numbers
+phandles and copies labels differently from the firmware. The script
+carries a port of the firmware's own code instead (raspberrypi/utils,
+`dtmerge/dtoverlay.c`): the overlay map (renamed overlays, per-platform
+ones, unsupported ones), fix-ups and local fix-ups, every kind of
+parameter (integers of each size, booleans and inverted ones, strings,
+bytes, fragment switches, lookup tables and literals, `reg` renaming its
+node, `bootargs` appended to), the order of `dtoverlay` and `dtparam`
+lines (a parameter goes to the open overlay, else to the base tree, with
+the synonyms `i2c_arm` and `i2c_vc` for a tree without an `i2c` alias),
+and libfdt's in-place editing, down to the bytes a resize leaves behind.
+The blob it writes is the one `dtmerge` writes, which `make
+check-firmware` checks for every overlay of the pinned firmware release,
+with its defaults and with each of its parameters, and for each of the
+Pi 5 tree's own parameters. The command line is `cmdline.txt`'s first
+line with `serial0` and `serial1` turned into the UARTs the tree's
+aliases name (`ttyAMA10` on a Pi 5), `root=` replaced by `--root` and
+`--append` added. QEMU runs with `-action reboot=shutdown` and a QMP
+socket pair: a reboot ends it, and rpi5-boot reads the card again for the
+next boot, as the bootloader does; Raspberry Pi OS's first boot rewrites
+`cmdline.txt` and reboots. What a Pi 5 carries across a reboot in its
+registers starts afresh instead: the partition `reboot N` asks for,
+tryboot, `boot_arg1` and the boot count. Images QEMU's SD card cannot
+take are refused with what to do about them: compressed ones, and sizes
+that are not a power of two up to 2 GiB or a multiple of 512 KiB above.
+The machine now keeps `/chosen`'s `os_prefix` and `overlay_prefix` when
+the tree has them, as rpi5-boot writes them. `scripts/firmware` also
+fetches the release's overlays and builds `dtmerge` from a pinned commit
+of raspberrypi/utils. `tests/smoke/test_rpi5_boot.py` covers the tree
+code, overlays and parameters, `config.txt` and the files it chooses, the
+command line, partition tables, `--print`, QEMU's runs (a guest that
+powers off, one that reboots, stops by SIGTERM and by Ctrl-C) and the
+reboot loop; with the firmware, the comparison with `dtmerge` and
+Raspberry Pi OS's kernel booted from a card laid out as the OS's, with
+pi-gen's `config.txt` and `cmdline.txt` and an initramfs whose `/init`
+(`tests/guest/linux/firstboot.c`) plays the OS's first boot: it gives
+the card a new disk identifier, rewrites `cmdline.txt` to match and
+reboots, and the second boot, from the new command line, powers off.
+*Outstanding:* the boot **Done when** asks for. Raspberry Pi OS Lite
+images are downloaded from downloads.raspberrypi.com, which the
+environment this was built in cannot reach.
 
 #### WS3.6 Reset and power semantics (done)
 *Delivered:* the audit found every stateful child of the SoC on the main

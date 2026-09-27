@@ -632,10 +632,20 @@ static void raspi5b_fdt_bootargs(const Raspi5bMachineState *s, void *fdt,
     qemu_fdt_setprop_string(fdt, "/chosen", "bootargs", args->str);
 }
 
+/* A string property of /chosen, unless the tree has one of that name */
+static void raspi5b_fdt_chosen_default(void *fdt, const char *name,
+                                       const char *value)
+{
+    if (!fdt_getprop(fdt, fdt_path_offset(fdt, "/chosen"), name, NULL)) {
+        qemu_fdt_setprop_string(fdt, "/chosen", name, value);
+    }
+}
+
 /*
  * /chosen as the firmware fills it in, beyond bootargs: entropy for the
  * kernel, the boot the bootloader made, the power supply, and the
- * config.txt prefixes, at their defaults
+ * config.txt prefixes, at their defaults unless the tree has them (as a
+ * host that evaluated config.txt for the boot writes them)
  */
 static void raspi5b_fdt_chosen(const Raspi5bMachineState *s, void *fdt,
                                uint64_t ram_size)
@@ -673,8 +683,8 @@ static void raspi5b_fdt_chosen(const Raspi5bMachineState *s, void *fdt,
                           0);
     qemu_fdt_setprop_cell(fdt, "/chosen/power", "power_reset", 0);
 
-    qemu_fdt_setprop_string(fdt, "/chosen", "os_prefix", "");
-    qemu_fdt_setprop_string(fdt, "/chosen", "overlay_prefix", "overlays/");
+    raspi5b_fdt_chosen_default(fdt, "os_prefix", "");
+    raspi5b_fdt_chosen_default(fdt, "overlay_prefix", "overlays/");
     qemu_fdt_setprop_cell(fdt, "/chosen", "rpi-sdram-size-gbit",
                           ram_size / (GiB / 8));
 }
