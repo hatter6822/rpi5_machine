@@ -28,6 +28,7 @@
 #include "system/address-spaces.h"
 #include "system/device_tree.h"
 #include "system/system.h"
+#include <libfdt.h>
 
 /* Sizes follow the device tree "reg" properties (spanning multi-reg nodes) */
 const MemMapEntry bcm2712_memmap[BCM2712_NUM_DEVICES] = {
@@ -755,7 +756,8 @@ static void bcm2712_fdt_l2_intcs(void *fdt, uint32_t *phandles)
 
 /*
  * A GPIO block, as bcm2712.dtsi has it; the binding takes no
- * brcm,gpio-direct, which the firmware's tree adds
+ * brcm,gpio-direct, which the firmware's tree adds. The phandle is for
+ * the board's nodes that use its lines.
  */
 static char *bcm2712_fdt_gpio(void *fdt, BCM2712Device dev,
                               const uint32_t *widths, size_t banks)
@@ -772,6 +774,7 @@ static char *bcm2712_fdt_gpio(void *fdt, BCM2712Device dev,
     qemu_fdt_setprop_cell(fdt, path, "#gpio-cells", 2);
     qemu_fdt_setprop(fdt, path, "brcm,gpio-bank-widths", cells,
                      banks * sizeof(uint32_t));
+    qemu_fdt_setprop_cell(fdt, path, "phandle", qemu_fdt_alloc_phandle(fdt));
     return path;
 }
 
@@ -790,6 +793,26 @@ static void bcm2712_fdt_gpios(void *fdt, const uint32_t *l2_phandles)
     qemu_fdt_setprop_cell(fdt, gio, "interrupts", BCM2712_MAIN_IRQ_GIO);
     qemu_fdt_setprop(fdt, gio, "interrupt-controller", NULL, 0);
     qemu_fdt_setprop_cell(fdt, gio, "#interrupt-cells", 2);
+}
+
+char *bcm2712_fdt_node_path(void *fdt, BCM2712Device dev)
+{
+    g_autofree char *unit = g_strdup_printf("@%x",
+        bcm2712_fdt_bus_addr(bcm2712_memmap[dev].base));
+    int soc = fdt_path_offset(fdt, BCM2712_FDT_SOC_PATH);
+    int node;
+
+    if (soc < 0) {
+        return NULL;
+    }
+    fdt_for_each_subnode(node, fdt, soc) {
+        const char *name = fdt_get_name(fdt, node, NULL);
+
+        if (name && g_str_has_suffix(name, unit)) {
+            return g_strdup_printf(BCM2712_FDT_SOC_PATH "/%s", name);
+        }
+    }
+    return NULL;
 }
 
 void bcm2712_fdt_populate(BCM2712State *s, void *fdt)

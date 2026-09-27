@@ -20,18 +20,22 @@ is fixed up: nodes of devices the model lacks are disabled, and
 /system/linux,revision gets the board revision. The serial= property
 sets the serial number the firmware reports.
 
+system_powerdown presses the power button on GIO 20 for 200 ms, which
+Linux reports as KEY_POWER. The green activity LED on GIO AON 9 is an
+LED device, so its changes show as trace events.
+
 The stock Raspberry Pi OS kernel boots to the root file system mount on
 either device tree.
 ---
- hw/arm/Kconfig     | 6 ++++++
+ hw/arm/Kconfig     | 7 +++++++
  hw/arm/meson.build | 1 +
- 2 files changed, 7 insertions(+)
+ 2 files changed, 8 insertions(+)
 
 diff --git a/hw/arm/Kconfig b/hw/arm/Kconfig
-index adfb100..56497ca 100644
+index adfb100..4f63818 100644
 --- a/hw/arm/Kconfig
 +++ b/hw/arm/Kconfig
-@@ -384,6 +384,12 @@ config RASPI
+@@ -384,6 +384,13 @@ config RASPI
      select BCM2836_CONTROL
      select BCM2838_GPIO
  
@@ -40,6 +44,7 @@ index adfb100..56497ca 100644
 +    default y
 +    depends on TCG && AARCH64
 +    select BCM2712
++    select LED
 +
  config BCM2712
      bool

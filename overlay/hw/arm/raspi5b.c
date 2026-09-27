@@ -22,6 +22,7 @@
 #include "qemu/guest-random.h"
 #include "qemu/host-utils.h"
 #include "qemu/range.h"
+#include "qemu/timer.h"
 #include "qemu/units.h"
 #include "qapi/error.h"
 #include "qapi/visitor.h"
@@ -32,10 +33,13 @@
 #include "hw/core/loader.h"
 #include "hw/core/qdev-properties.h"
 #include "hw/core/registerfields.h"
+#include "hw/misc/led.h"
 #include "migration/vmstate.h"
+#include "standard-headers/linux/input.h"
 #include "system/address-spaces.h"
 #include "system/device_tree.h"
 #include "system/reset.h"
+#include "system/runstate.h"
 #include "elf.h"
 #include <libfdt.h>
 
@@ -63,10 +67,39 @@ struct Raspi5bMachineState {
      * keeps in a register a reset leaves alone
      */
     uint8_t boot_count;
+
+    /*
+     * The power button, which system_powerdown presses for a moment: its
+     * line, and the timer that releases it
+     */
+    Notifier powerdown;
+    qemu_irq pwr_button;
+    QEMUTimer *pwr_button_release;
 };
 
 /* An obviously made-up serial number, overridden with "serial=" */
 #define RASPI5B_DEFAULT_SERIAL  0x0123456789abcdefULL
+
+/*
+ * The board's use of the SoC's GPIO lines, from the firmware's device
+ * tree. The power button pulls GIO 20 (PWR_GPIO) low while pressed; AON
+ * GPIO 9 lights the green activity LED while driven low. Both lines are
+ * pulled up.
+ */
+#define RASPI5B_GIO_PWR_BUTTON          20
+#define RASPI5B_AON_GPIO_ACT_LED        9
+
+/*
+ * system_powerdown presses the power button for a moment. Linux reports
+ * KEY_POWER once the line has stayed low for the debounce interval, and
+ * systemd-logind then powers off; the press outlasts the interval with
+ * room to spare for a busy guest.
+ */
+#define RASPI5B_PWR_BUTTON_DEBOUNCE_MS  50
+#define RASPI5B_PWR_BUTTON_PRESS_MS     200
+
+/* include/dt-bindings/gpio/gpio.h */
+#define RASPI5B_FDT_GPIO_ACTIVE_LOW     1
 
 /*
  * With -bios the machine loads what the firmware runs at EL3 (config.txt's
@@ -279,6 +312,42 @@ static void raspi5b_fdt_memory(void *fdt, uint64_t ram_size)
 }
 
 /*
+ * The power button and the activity LED, as the firmware's tree has them
+ * but under node names their bindings accept. The power LED hangs off
+ * RP1, which is not modelled.
+ */
+static void raspi5b_fdt_gpio_users(void *fdt)
+{
+    g_autofree char *gio = bcm2712_fdt_node_path(fdt, BCM2712_GIO);
+    g_autofree char *gio_aon = bcm2712_fdt_node_path(fdt, BCM2712_GIO_AON);
+    const char *button = "/gpio-keys/power-button";
+    const char *led = "/leds/led-act";
+
+    qemu_fdt_add_subnode(fdt, "/gpio-keys");
+    qemu_fdt_setprop_string(fdt, "/gpio-keys", "compatible", "gpio-keys");
+    qemu_fdt_add_subnode(fdt, button);
+    qemu_fdt_setprop_string(fdt, button, "label", "pwr_button");
+    qemu_fdt_setprop_cell(fdt, button, "linux,code", KEY_POWER);
+    qemu_fdt_setprop_cells(fdt, button, "gpios",
+                           qemu_fdt_get_phandle(fdt, gio),
+                           RASPI5B_GIO_PWR_BUTTON,
+                           RASPI5B_FDT_GPIO_ACTIVE_LOW);
+    qemu_fdt_setprop_cell(fdt, button, "debounce-interval",
+                          RASPI5B_PWR_BUTTON_DEBOUNCE_MS);
+
+    qemu_fdt_add_subnode(fdt, "/leds");
+    qemu_fdt_setprop_string(fdt, "/leds", "compatible", "gpio-leds");
+    qemu_fdt_add_subnode(fdt, led);
+    qemu_fdt_setprop_string(fdt, led, "label", "ACT");
+    qemu_fdt_setprop_cells(fdt, led, "gpios",
+                           qemu_fdt_get_phandle(fdt, gio_aon),
+                           RASPI5B_AON_GPIO_ACT_LED,
+                           RASPI5B_FDT_GPIO_ACTIVE_LOW);
+    qemu_fdt_setprop_string(fdt, led, "default-state", "off");
+    qemu_fdt_setprop_string(fdt, led, "linux,default-trigger", "mmc0");
+}
+
+/*
  * Room left in the built-in tree for what arm_load_dtb() and
  * raspi5b_modify_dtb() add: memory, PSCI, /chosen with the command line,
  * /system. load_device_tree() leaves at least as much for a -dtb blob.
@@ -287,9 +356,9 @@ static void raspi5b_fdt_memory(void *fdt, uint64_t ram_size)
 
 /*
  * The device tree given without -dtb: the board's own nodes, the SoC's,
- * and the console on UART10 as on the firmware's tree. arm_load_dtb()
- * adds the memory, PSCI and /chosen properties, then the same fix-ups as
- * for a -dtb blob apply.
+ * the board's users of GPIO lines, and the console on UART10 as on the
+ * firmware's tree. arm_load_dtb() adds the memory, PSCI and /chosen
+ * properties, then the same fix-ups as for a -dtb blob apply.
  */
 static void *raspi5b_get_dtb(const struct arm_boot_info *info, int *size)
 {
@@ -306,6 +375,7 @@ static void *raspi5b_get_dtb(const struct arm_boot_info *info, int *size)
     qemu_fdt_setprop_cell(fdt, "/", "#size-cells", 2);
 
     bcm2712_fdt_populate(&s->soc, fdt);
+    raspi5b_fdt_gpio_users(fdt);
 
     qemu_fdt_add_subnode(fdt, "/chosen");
     qemu_fdt_setprop_string(fdt, "/chosen", "stdout-path",
@@ -615,14 +685,51 @@ static void raspi5b_fdt_boot(void *opaque)
                             "kaslr-seed", kaslr_seed);
 }
 
-/* The boot count outlives resets, so it moves with the machine */
+static bool raspi5b_pwr_button_needed(void *opaque)
+{
+    Raspi5bMachineState *s = opaque;
+
+    return timer_pending(s->pwr_button_release);
+}
+
+/* A press in progress: when the button comes back up */
+static const VMStateDescription vmstate_raspi5b_pwr_button = {
+    .name = "raspi5b/pwr-button",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = raspi5b_pwr_button_needed,
+    .fields = (const VMStateField[]) {
+        VMSTATE_TIMER_PTR(pwr_button_release, Raspi5bMachineState),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
+/* Without the subsection, no press is in progress */
+static int raspi5b_pre_load(void *opaque)
+{
+    Raspi5bMachineState *s = opaque;
+
+    timer_del(s->pwr_button_release);
+    return 0;
+}
+
+/*
+ * The boot count outlives resets, so it moves with the machine, and so
+ * does a press of the power button; the level of its line moves with
+ * GIO
+ */
 static const VMStateDescription vmstate_raspi5b = {
     .name = "raspi5b",
     .version_id = 1,
     .minimum_version_id = 1,
+    .pre_load = raspi5b_pre_load,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT8(boot_count, Raspi5bMachineState),
         VMSTATE_END_OF_LIST()
+    },
+    .subsections = (const VMStateDescription * const []) {
+        &vmstate_raspi5b_pwr_button,
+        NULL
     },
 };
 
@@ -835,6 +942,52 @@ static void raspi5b_boot_armstub(Raspi5bMachineState *s,
     }
 }
 
+static void raspi5b_pwr_button_release(void *opaque)
+{
+    Raspi5bMachineState *s = opaque;
+
+    qemu_set_irq(s->pwr_button, 1);
+}
+
+/*
+ * A reset leaves a press in progress alone, as it would a finger on the
+ * button: the line stays low through it and comes back up on time
+ */
+static void raspi5b_powerdown_req(Notifier *n, void *opaque)
+{
+    Raspi5bMachineState *s = container_of(n, Raspi5bMachineState, powerdown);
+
+    qemu_set_irq(s->pwr_button, 0);
+    timer_mod(s->pwr_button_release,
+              qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
+              RASPI5B_PWR_BUTTON_PRESS_MS * SCALE_MS);
+}
+
+/*
+ * Connect the power button and the activity LED to their GPIO lines, and
+ * hold the lines at the level of their pull-ups: the button released,
+ * the LED dark
+ */
+static void raspi5b_wire_gpio(Raspi5bMachineState *s)
+{
+    DeviceState *gio = DEVICE(&s->soc.gio);
+    DeviceState *gio_aon = DEVICE(&s->soc.gio_aon);
+    LEDState *act_led;
+
+    s->pwr_button = qdev_get_gpio_in(gio, RASPI5B_GIO_PWR_BUTTON);
+    qemu_set_irq(s->pwr_button, 1);
+    s->pwr_button_release = timer_new_ns(QEMU_CLOCK_VIRTUAL,
+                                         raspi5b_pwr_button_release, s);
+    s->powerdown.notify = raspi5b_powerdown_req;
+    qemu_register_powerdown_notifier(&s->powerdown);
+
+    act_led = led_create_simple(OBJECT(s), GPIO_POLARITY_ACTIVE_LOW,
+                                LED_COLOR_GREEN, "ACT");
+    qdev_connect_gpio_out(gio_aon, RASPI5B_AON_GPIO_ACT_LED,
+                          qdev_get_gpio_in(DEVICE(act_led), 0));
+    qemu_set_irq(qdev_get_gpio_in(gio_aon, RASPI5B_AON_GPIO_ACT_LED), 1);
+}
+
 static void raspi5b_machine_init(MachineState *machine)
 {
     Raspi5bMachineState *s = RASPI5B_MACHINE(machine);
@@ -877,6 +1030,7 @@ static void raspi5b_machine_init(MachineState *machine)
     /* The command line tag answers with -append: cmdline.txt's part */
     qdev_prop_set_string(soc, "command-line", machine->kernel_cmdline);
     qdev_realize(soc, NULL, &error_fatal);
+    raspi5b_wire_gpio(s);
 
     s->binfo = (struct arm_boot_info) {
         .ram_size = machine->ram_size,

@@ -1311,11 +1311,17 @@ typedef struct Gio {
     const char *name;           /* child of /machine/soc */
     uint64_t base;
     uint32_t widths[2];         /* bcm2712.dtsi */
+    uint32_t high[2];           /* lines the board pulls up */
 } Gio;
 
+/* The board's use of the lines (raspi5b.c) */
+#define PWR_BUTTON_GIO          20      /* low while pressed */
+#define PWR_BUTTON_PRESS_NS     (200 * SCALE_MS)
+#define ACT_LED_AON_GPIO        9       /* lit while low */
+
 static const Gio gios[] = {
-    { "gio",        0x107d508500ULL, { 32, 22 } },
-    { "gio-aon",    0x107d517c00ULL, { 17, 6 } },
+    { "gio",        0x107d508500ULL, { 32, 22 }, { BIT(PWR_BUTTON_GIO) } },
+    { "gio-aon",    0x107d517c00ULL, { 17, 6 }, { BIT(ACT_LED_AON_GPIO) } },
 };
 
 #define GIO             (&gios[0])
@@ -1380,7 +1386,10 @@ static void gio_check_reset(QTestState *qts)
     g_assert_false(l2_readl(qts, L2_MAIN_IRQ, L2_LEVEL_STATUS) & BIT(0));
 }
 
-/* Every line an input, every interrupt disabled, nothing pending */
+/*
+ * Every line an input, every interrupt disabled, nothing pending; the
+ * lines read low but for those the board pulls up
+ */
 static void test_gio_reset_values(void)
 {
     QTestState *qts = qtest_init("-machine raspi5b");
@@ -1388,7 +1397,8 @@ static void test_gio_reset_values(void)
     gio_check_reset(qts);
     for (int i = 0; i < ARRAY_SIZE(gios); i++) {
         for (int bank = 0; bank < ARRAY_SIZE(gios[i].widths); bank++) {
-            g_assert_cmphex(gio_readl(qts, &gios[i], bank, GIO_DATA), ==, 0);
+            g_assert_cmphex(gio_readl(qts, &gios[i], bank, GIO_DATA), ==,
+                            gios[i].high[bank]);
         }
     }
     qtest_quit(qts);
@@ -1432,7 +1442,8 @@ static void test_gio_widths(void)
             for (int bit = gio->widths[bank]; bit < GIO_BANK_LINES; bit++) {
                 gio_set_input(qts, gio, bank * GIO_BANK_LINES + bit, 1);
             }
-            g_assert_cmphex(gio_readl(qts, gio, bank, GIO_DATA), ==, 0);
+            g_assert_cmphex(gio_readl(qts, gio, bank, GIO_DATA), ==,
+                            gio->high[bank]);
             g_assert_cmphex(gio_readl(qts, gio, bank, GIO_STAT), ==, 0);
         }
     }
@@ -1480,7 +1491,7 @@ static void test_gio_data(void)
     g_assert_cmphex(gio_readl(qts, gio, 1, GIO_DATA), ==, BIT(3));
     g_assert_true(qtest_get_irq(qts, line));
     /* Other lines stayed where they were */
-    g_assert_cmphex(gio_readl(qts, gio, 0, GIO_DATA), ==, 0);
+    g_assert_cmphex(gio_readl(qts, gio, 0, GIO_DATA), ==, gio->high[0]);
 
     qtest_quit(qts);
 }
@@ -1610,7 +1621,8 @@ static void test_gio_aon(void)
     gio_writel(qts, gio, 0, GIO_EC, BIT(5));
     gio_writel(qts, gio, 0, GIO_MASK, BIT(5));
     gio_set_input(qts, gio, 5, 1);
-    g_assert_cmphex(gio_readl(qts, gio, 0, GIO_DATA), ==, BIT(5));
+    g_assert_cmphex(gio_readl(qts, gio, 0, GIO_DATA), ==,
+                    BIT(5) | gio->high[0]);
     g_assert_cmphex(gio_readl(qts, gio, 0, GIO_STAT), ==, BIT(5));
     for (int i = 0; i < ARRAY_SIZE(l2_intcs); i++) {
         g_assert_cmphex(l2_readl(qts, &l2_intcs[i], 0), ==, 0);
@@ -1652,7 +1664,8 @@ static void test_gio_reset(void)
     qtest_system_reset(qts);
 
     gio_check_reset(qts);
-    g_assert_cmphex(gio_readl(qts, gio, 0, GIO_DATA), ==, BIT(2));
+    g_assert_cmphex(gio_readl(qts, gio, 0, GIO_DATA), ==,
+                    BIT(2) | gio->high[0]);
     g_assert_true(qtest_get_irq(qts, 2));
     g_assert_false(qtest_get_irq(qts, 3));
 
@@ -1688,7 +1701,8 @@ static void test_gio_migrate(void)
     wait_for_migration(dst);
 
     g_assert_cmphex(gio_readl(dst, gio, 0, GIO_STAT), ==, BIT(4));
-    g_assert_cmphex(gio_readl(dst, gio, 0, GIO_DATA), ==, BIT(4));
+    g_assert_cmphex(gio_readl(dst, gio, 0, GIO_DATA), ==,
+                    BIT(4) | gio->high[0]);
     g_assert_cmphex(gio_readl(dst, gio, 1, GIO_DATA), ==, BIT(0));
     g_assert_true(gio_irq(dst));
     /* The input is still high: no new edge until it falls and rises */
@@ -1702,6 +1716,153 @@ static void test_gio_migrate(void)
 
     qtest_quit(dst);
     unlink(file);
+}
+
+/*
+ * The board: system_powerdown presses the power button, pulling GIO 20
+ * low for 200 ms. Here with both edges enabled, as Linux gpio-keys has it.
+ */
+static QTestState *power_button_init(const char *args)
+{
+    QTestState *qts = qtest_init(args);
+
+    g_assert_cmphex(gio_readl(qts, GIO, 0, GIO_DATA) & BIT(PWR_BUTTON_GIO),
+                    ==, BIT(PWR_BUTTON_GIO));
+    gio_unmask_main_irq(qts);
+    gio_writel(qts, GIO, 0, GIO_EI, BIT(PWR_BUTTON_GIO));
+    gio_writel(qts, GIO, 0, GIO_MASK, BIT(PWR_BUTTON_GIO));
+    return qts;
+}
+
+static void power_button_press(QTestState *qts)
+{
+    qtest_qmp_assert_success(qts, "{ 'execute': 'system_powerdown' }");
+    qtest_qmp_eventwait(qts, "POWERDOWN");
+}
+
+static bool power_button_pressed(QTestState *qts)
+{
+    return !(gio_readl(qts, GIO, 0, GIO_DATA) & BIT(PWR_BUTTON_GIO));
+}
+
+/* Takes the interrupt the last edge raised */
+static void power_button_edge(QTestState *qts)
+{
+    g_assert_cmphex(gio_readl(qts, GIO, 0, GIO_STAT), ==,
+                    BIT(PWR_BUTTON_GIO));
+    g_assert_true(gio_irq(qts));
+    gio_writel(qts, GIO, 0, GIO_STAT, BIT(PWR_BUTTON_GIO));
+    g_assert_false(gio_irq(qts));
+}
+
+static void test_power_button(void)
+{
+    QTestState *qts = power_button_init("-machine raspi5b");
+
+    power_button_press(qts);
+    g_assert_true(power_button_pressed(qts));
+    power_button_edge(qts);
+    qtest_clock_step(qts, PWR_BUTTON_PRESS_NS - 1);
+    g_assert_true(power_button_pressed(qts));
+    g_assert_cmphex(gio_readl(qts, GIO, 0, GIO_STAT), ==, 0);
+    qtest_clock_step(qts, 1);
+    g_assert_false(power_button_pressed(qts));
+    power_button_edge(qts);
+
+    /* A second request during a press holds the button down longer */
+    power_button_press(qts);
+    qtest_clock_step(qts, PWR_BUTTON_PRESS_NS / 2);
+    power_button_press(qts);
+    qtest_clock_step(qts, PWR_BUTTON_PRESS_NS - 1);
+    g_assert_true(power_button_pressed(qts));
+    qtest_clock_step(qts, 1);
+    g_assert_false(power_button_pressed(qts));
+
+    qtest_quit(qts);
+}
+
+/* A reset during a press leaves the button down until it is released */
+static void test_power_button_reset(void)
+{
+    QTestState *qts = power_button_init("-machine raspi5b");
+
+    power_button_press(qts);
+    qtest_clock_step(qts, PWR_BUTTON_PRESS_NS / 4);
+    qtest_system_reset(qts);
+    gio_check_reset(qts);
+    g_assert_true(power_button_pressed(qts));
+    qtest_clock_step(qts, PWR_BUTTON_PRESS_NS * 3 / 4 - 1);
+    g_assert_true(power_button_pressed(qts));
+    qtest_clock_step(qts, 1);
+    g_assert_false(power_button_pressed(qts));
+
+    qtest_quit(qts);
+}
+
+/* A press in progress carries on on the destination */
+static void test_power_button_migrate(void)
+{
+    g_autofree char *file = g_strdup_printf("%s/raspi5b-pwr-%d.mig",
+                                            g_get_tmp_dir(), getpid());
+    g_autofree char *out = g_strdup_printf("exec:cat > %s", file);
+    g_autofree char *in = g_strdup_printf("exec:cat %s", file);
+    const char *args = "-machine raspi5b -m 1G";
+    QTestState *src, *dst;
+    int64_t now;
+
+    src = power_button_init(args);
+    power_button_press(src);
+    qtest_clock_step(src, PWR_BUTTON_PRESS_NS / 4);
+    now = PWR_BUTTON_PRESS_NS / 4;
+    qtest_qmp_assert_success(src, "{ 'execute': 'migrate',"
+                             "  'arguments': { 'uri': %s } }", out);
+    wait_for_migration(src);
+    qtest_quit(src);
+
+    dst = qtest_initf("%s -incoming defer", args);
+    qtest_qmp_assert_success(dst, "{ 'execute': 'migrate-incoming',"
+                             "  'arguments': { 'uri': %s } }", in);
+    wait_for_migration(dst);
+
+    /* The qtest clock is not migrated: carry it over by hand */
+    qtest_clock_set(dst, now);
+    g_assert_true(power_button_pressed(dst));
+    power_button_edge(dst);
+    qtest_clock_step(dst, PWR_BUTTON_PRESS_NS * 3 / 4 - 1);
+    g_assert_true(power_button_pressed(dst));
+    qtest_clock_step(dst, 1);
+    g_assert_false(power_button_pressed(dst));
+    power_button_edge(dst);
+
+    qtest_quit(dst);
+    unlink(file);
+}
+
+/* The ACT LED follows AON GPIO 9, which the board pulls up */
+static void test_act_led(void)
+{
+    QTestState *qts = qtest_init("-machine raspi5b");
+    const Gio *gio = GIO_AON;
+
+    qtest_irq_intercept_in(qts, "/machine/act");
+
+    /* An output, as Linux gpio-leds sets it up: dark, then lit, dark */
+    gio_writel(qts, gio, 0, GIO_DATA, BIT(ACT_LED_AON_GPIO));
+    gio_writel(qts, gio, 0, GIO_IODIR,
+               gio_valid(gio, 0) & ~BIT(ACT_LED_AON_GPIO));
+    gio_writel(qts, gio, 0, GIO_DATA, 0);
+    gio_writel(qts, gio, 0, GIO_DATA, BIT(ACT_LED_AON_GPIO));
+    g_assert_true(qtest_get_irq(qts, 0));
+    gio_writel(qts, gio, 0, GIO_DATA, 0);
+    g_assert_false(qtest_get_irq(qts, 0));
+
+    /* Released, the line goes back up */
+    gio_writel(qts, gio, 0, GIO_IODIR, gio_valid(gio, 0));
+    g_assert_true(qtest_get_irq(qts, 0));
+    g_assert_cmphex(gio_readl(qts, gio, 0, GIO_DATA), ==,
+                    BIT(ACT_LED_AON_GPIO));
+
+    qtest_quit(qts);
 }
 
 static void test_unimplemented_regions(void)
@@ -1925,6 +2086,12 @@ int main(int argc, char **argv)
     qtest_add_func("/raspi5b/gpio/aon", test_gio_aon);
     qtest_add_func("/raspi5b/gpio/reset", test_gio_reset);
     qtest_add_func("/raspi5b/gpio/migrate", test_gio_migrate);
+    qtest_add_func("/raspi5b/board/power-button", test_power_button);
+    qtest_add_func("/raspi5b/board/power-button-reset",
+                   test_power_button_reset);
+    qtest_add_func("/raspi5b/board/power-button-migrate",
+                   test_power_button_migrate);
+    qtest_add_func("/raspi5b/board/act-led", test_act_led);
     qtest_add_func("/raspi5b/pm/registers", test_pm_registers);
     qtest_add_func("/raspi5b/pm/watchdog-countdown",
                    test_pm_watchdog_countdown);

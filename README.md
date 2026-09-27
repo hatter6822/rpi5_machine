@@ -31,6 +31,7 @@ Pi OS booting from an SD card, is in progress.
 | RNG200 random number generator | done |
 | Broadcom L2 interrupt controllers (7, both register layouts) | done |
 | BCM2712 GPIO blocks (GIO: 32 + 22 lines, AON: 17 + 6), edge and level interrupts | done |
+| The board's power button, which `system_powerdown` presses, and its ACT LED, whose changes are trace events | done |
 | System reset (PSCI, watchdog, monitor) and power-off | done |
 | Firmware boot contract: EL2 entry, PSCI over SMC (`secure=off`); guest-owned EL3 (`secure=on`) | done |
 | Firmware loaded with `-bios` (`secure=on`) the way the Pi's firmware loads it: TF-A's `rpi5` BL31 runs the bare-metal suite on its own PSCI and boots Linux, directly or through U-Boot; the EDK2 port reaches the UEFI shell | done |

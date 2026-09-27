@@ -211,4 +211,11 @@ struct BCM2712State {
  */
 void bcm2712_fdt_populate(BCM2712State *s, void *fdt);
 
+/*
+ * The path of the node at @dev's base address on the "soc" bus of a tree
+ * that bcm2712_fdt_populate() wrote, or NULL if there is none; to be
+ * freed. The GPIO blocks' nodes have phandles.
+ */
+char *bcm2712_fdt_node_path(void *fdt, BCM2712Device dev);
+
 #endif /* HW_ARM_BCM2712_H */
