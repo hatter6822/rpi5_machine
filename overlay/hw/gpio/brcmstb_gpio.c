@@ -283,6 +283,12 @@ static void brcmstb_gpio_realize(DeviceState *dev, Error **errp)
     }
 }
 
+/*
+ * The levels of the lines follow from the registers and the inputs. The
+ * devices the lines drive keep the levels they were given in their own
+ * migrated state, so nothing is driven again: a post_load hook must not
+ * change another device's state.
+ */
 static int brcmstb_gpio_post_load(void *opaque, int version_id)
 {
     BrcmstbGpioState *s = BRCMSTB_GPIO(opaque);
