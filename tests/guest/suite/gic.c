@@ -14,12 +14,16 @@
 
 /*
  * 288 SPIs + 32 private interrupts: TODO(WS1.3) until GICD_TYPER is read
- * on hardware. Five priority bits: GIC-400 TRM, section 3.1.
+ * on hardware. Five priority bits: GIC-400 TRM, section 3.1, of which
+ * the Non-secure side of a GIC with the Security Extensions sees the top
+ * four, as below TF-A.
  */
 TEST(gic_geometry, "gic/geometry")
 {
+    bool non_secure = gic_has_security_extensions() && current_el() < 3;
+
     ASSERT_EQ(gic_num_irqs(), 320);
-    ASSERT_EQ(gic_priority_bits(), 5);
+    ASSERT_EQ(gic_priority_bits(), non_secure ? 4 : 5);
 }
 
 static volatile unsigned sgi_count, sgi_intid, sgi_core;

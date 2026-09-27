@@ -1,0 +1,264 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: A7om <hatter6822@gmail.com>
+Date: Sat, 26 Sep 2026 00:00:00 +0000
+Subject: [PATCH] target/arm: Define the Cortex-A76's IMPLEMENTATION DEFINED
+ registers
+
+The cortex-a76 CPU has none of the IMPLEMENTATION DEFINED registers
+its TRM lists, so firmware written for the core takes UNDEFs: TF-A's
+cortex_a76 support writes CPUACTLR{,2,3}_EL1 and CPUECTLR_EL1 in its
+errata workarounds, CPUPWRCTLR_EL1 in the core power-down sequence
+and, for erratum 1946160, the CPUPSELR/CPUPOR/CPUPMR/CPUPCR_EL3 patch
+registers, and its reset handler stops at the first of them.
+
+The Neoverse N1 derives from the Cortex-A76 and has the same registers
+at the same encodings, which QEMU already defines for it. Name that
+table after the A76, move it ahead of the A76 and define it there
+too; the N1 and the V1 keep using it.
+---
+ target/arm/tcg/cpu64.c | 203 +++++++++++++++++++++--------------------
+ 1 file changed, 105 insertions(+), 98 deletions(-)
+
+diff --git a/target/arm/tcg/cpu64.c b/target/arm/tcg/cpu64.c
+index 8a3ebf6..11ea7a5 100644
+--- a/target/arm/tcg/cpu64.c
++++ b/target/arm/tcg/cpu64.c
+@@ -333,6 +333,105 @@ static void aarch64_a72_initfn(Object *obj)
+     define_cortex_a72_a57_a53_cp_reginfo(cpu);
+ }
+ 
++static CPAccessResult access_actlr_w(CPUARMState *env, const ARMCPRegInfo *r,
++                                     bool read)
++{
++    if (!read) {
++        int el = arm_current_el(env);
++
++        /* Because ACTLR_EL2 is constant 0, writes below EL2 trap to EL2. */
++        if (el < 2 && arm_is_el2_enabled(env)) {
++            return CP_ACCESS_TRAP_EL2;
++        }
++        /* Because ACTLR_EL3 is constant 0, writes below EL3 trap to EL3. */
++        if (el < 3 && arm_feature(env, ARM_FEATURE_EL3)) {
++            return CP_ACCESS_TRAP_EL3;
++        }
++    }
++    return CP_ACCESS_OK;
++}
++
++/*
++ * The Cortex-A76's IMPLEMENTATION DEFINED registers, which the Neoverse
++ * N1 derived from it shares. Firmware such as TF-A writes them in errata
++ * workarounds and in the core power-down sequence.
++ */
++static const ARMCPRegInfo cortex_a76_cp_reginfo[] = {
++    { .name = "ATCR_EL1", .state = ARM_CP_STATE_AA64,
++      .opc0 = 3, .opc1 = 0, .crn = 15, .crm = 7, .opc2 = 0,
++      .access = PL1_RW, .type = ARM_CP_CONST, .resetvalue = 0,
++      /* Traps and enables are the same as for TCR_EL1. */
++      .accessfn = access_tvm_trvm, .fgt = FGT_TCR_EL1, },
++    { .name = "ATCR_EL2", .state = ARM_CP_STATE_AA64,
++      .opc0 = 3, .opc1 = 4, .crn = 15, .crm = 7, .opc2 = 0,
++      .access = PL2_RW, .type = ARM_CP_CONST, .resetvalue = 0 },
++    { .name = "ATCR_EL3", .state = ARM_CP_STATE_AA64,
++      .opc0 = 3, .opc1 = 6, .crn = 15, .crm = 7, .opc2 = 0,
++      .access = PL3_RW, .type = ARM_CP_CONST, .resetvalue = 0 },
++    { .name = "ATCR_EL12", .state = ARM_CP_STATE_AA64,
++      .opc0 = 3, .opc1 = 5, .crn = 15, .crm = 7, .opc2 = 0,
++      .access = PL2_RW, .type = ARM_CP_CONST, .resetvalue = 0 },
++    { .name = "AVTCR_EL2", .state = ARM_CP_STATE_AA64,
++      .opc0 = 3, .opc1 = 4, .crn = 15, .crm = 7, .opc2 = 1,
++      .access = PL2_RW, .type = ARM_CP_CONST, .resetvalue = 0 },
++    { .name = "CPUACTLR_EL1", .state = ARM_CP_STATE_AA64,
++      .opc0 = 3, .opc1 = 0, .crn = 15, .crm = 1, .opc2 = 0,
++      .access = PL1_RW, .type = ARM_CP_CONST, .resetvalue = 0,
++      .accessfn = access_actlr_w },
++    { .name = "CPUACTLR2_EL1", .state = ARM_CP_STATE_AA64,
++      .opc0 = 3, .opc1 = 0, .crn = 15, .crm = 1, .opc2 = 1,
++      .access = PL1_RW, .type = ARM_CP_CONST, .resetvalue = 0,
++      .accessfn = access_actlr_w },
++    { .name = "CPUACTLR3_EL1", .state = ARM_CP_STATE_AA64,
++      .opc0 = 3, .opc1 = 0, .crn = 15, .crm = 1, .opc2 = 2,
++      .access = PL1_RW, .type = ARM_CP_CONST, .resetvalue = 0,
++      .accessfn = access_actlr_w },
++    /*
++     * Report CPUCFR_EL1.SCU as 1, as we do not implement the DSU
++     * (and in particular its system registers).
++     */
++    { .name = "CPUCFR_EL1", .state = ARM_CP_STATE_AA64,
++      .opc0 = 3, .opc1 = 0, .crn = 15, .crm = 0, .opc2 = 0,
++      .access = PL1_R, .type = ARM_CP_CONST, .resetvalue = 4 },
++    { .name = "CPUECTLR_EL1", .state = ARM_CP_STATE_AA64,
++      .opc0 = 3, .opc1 = 0, .crn = 15, .crm = 1, .opc2 = 4,
++      .access = PL1_RW, .type = ARM_CP_CONST, .resetvalue = 0x961563010,
++      .accessfn = access_actlr_w },
++    { .name = "CPUPCR_EL3", .state = ARM_CP_STATE_AA64,
++      .opc0 = 3, .opc1 = 6, .crn = 15, .crm = 8, .opc2 = 1,
++      .access = PL3_RW, .type = ARM_CP_CONST, .resetvalue = 0 },
++    { .name = "CPUPMR_EL3", .state = ARM_CP_STATE_AA64,
++      .opc0 = 3, .opc1 = 6, .crn = 15, .crm = 8, .opc2 = 3,
++      .access = PL3_RW, .type = ARM_CP_CONST, .resetvalue = 0 },
++    { .name = "CPUPOR_EL3", .state = ARM_CP_STATE_AA64,
++      .opc0 = 3, .opc1 = 6, .crn = 15, .crm = 8, .opc2 = 2,
++      .access = PL3_RW, .type = ARM_CP_CONST, .resetvalue = 0 },
++    { .name = "CPUPSELR_EL3", .state = ARM_CP_STATE_AA64,
++      .opc0 = 3, .opc1 = 6, .crn = 15, .crm = 8, .opc2 = 0,
++      .access = PL3_RW, .type = ARM_CP_CONST, .resetvalue = 0 },
++    { .name = "CPUPWRCTLR_EL1", .state = ARM_CP_STATE_AA64,
++      .opc0 = 3, .opc1 = 0, .crn = 15, .crm = 2, .opc2 = 7,
++      .access = PL1_RW, .type = ARM_CP_CONST, .resetvalue = 0,
++      .accessfn = access_actlr_w },
++    { .name = "ERXPFGCDN_EL1", .state = ARM_CP_STATE_AA64,
++      .opc0 = 3, .opc1 = 0, .crn = 15, .crm = 2, .opc2 = 2,
++      .access = PL1_RW, .type = ARM_CP_CONST, .resetvalue = 0,
++      .accessfn = access_actlr_w },
++    { .name = "ERXPFGCTL_EL1", .state = ARM_CP_STATE_AA64,
++      .opc0 = 3, .opc1 = 0, .crn = 15, .crm = 2, .opc2 = 1,
++      .access = PL1_RW, .type = ARM_CP_CONST, .resetvalue = 0,
++      .accessfn = access_actlr_w },
++    { .name = "ERXPFGF_EL1", .state = ARM_CP_STATE_AA64,
++      .opc0 = 3, .opc1 = 0, .crn = 15, .crm = 2, .opc2 = 0,
++      .access = PL1_RW, .type = ARM_CP_CONST, .resetvalue = 0,
++      .accessfn = access_actlr_w },
++};
++
++static void define_cortex_a76_cp_reginfo(ARMCPU *cpu)
++{
++    define_arm_cp_regs(cpu, cortex_a76_cp_reginfo);
++}
++
+ static void aarch64_a76_initfn(Object *obj)
+ {
+     ARMCPU *cpu = ARM_CPU(obj);
+@@ -405,6 +504,8 @@ static void aarch64_a76_initfn(Object *obj)
+ 
+     /* From D5.1 AArch64 PMU register summary */
+     cpu->isar.reset_pmcr_el0 = 0x410b3000;
++
++    define_cortex_a76_cp_reginfo(cpu);
+ }
+ 
+ static void aarch64_a78ae_initfn(Object *obj)
+@@ -534,100 +635,6 @@ static void aarch64_a64fx_initfn(Object *obj)
+     /* TODO:  Add A64FX specific HPC extension registers */
+ }
+ 
+-static CPAccessResult access_actlr_w(CPUARMState *env, const ARMCPRegInfo *r,
+-                                     bool read)
+-{
+-    if (!read) {
+-        int el = arm_current_el(env);
+-
+-        /* Because ACTLR_EL2 is constant 0, writes below EL2 trap to EL2. */
+-        if (el < 2 && arm_is_el2_enabled(env)) {
+-            return CP_ACCESS_TRAP_EL2;
+-        }
+-        /* Because ACTLR_EL3 is constant 0, writes below EL3 trap to EL3. */
+-        if (el < 3 && arm_feature(env, ARM_FEATURE_EL3)) {
+-            return CP_ACCESS_TRAP_EL3;
+-        }
+-    }
+-    return CP_ACCESS_OK;
+-}
+-
+-static const ARMCPRegInfo neoverse_n1_cp_reginfo[] = {
+-    { .name = "ATCR_EL1", .state = ARM_CP_STATE_AA64,
+-      .opc0 = 3, .opc1 = 0, .crn = 15, .crm = 7, .opc2 = 0,
+-      .access = PL1_RW, .type = ARM_CP_CONST, .resetvalue = 0,
+-      /* Traps and enables are the same as for TCR_EL1. */
+-      .accessfn = access_tvm_trvm, .fgt = FGT_TCR_EL1, },
+-    { .name = "ATCR_EL2", .state = ARM_CP_STATE_AA64,
+-      .opc0 = 3, .opc1 = 4, .crn = 15, .crm = 7, .opc2 = 0,
+-      .access = PL2_RW, .type = ARM_CP_CONST, .resetvalue = 0 },
+-    { .name = "ATCR_EL3", .state = ARM_CP_STATE_AA64,
+-      .opc0 = 3, .opc1 = 6, .crn = 15, .crm = 7, .opc2 = 0,
+-      .access = PL3_RW, .type = ARM_CP_CONST, .resetvalue = 0 },
+-    { .name = "ATCR_EL12", .state = ARM_CP_STATE_AA64,
+-      .opc0 = 3, .opc1 = 5, .crn = 15, .crm = 7, .opc2 = 0,
+-      .access = PL2_RW, .type = ARM_CP_CONST, .resetvalue = 0 },
+-    { .name = "AVTCR_EL2", .state = ARM_CP_STATE_AA64,
+-      .opc0 = 3, .opc1 = 4, .crn = 15, .crm = 7, .opc2 = 1,
+-      .access = PL2_RW, .type = ARM_CP_CONST, .resetvalue = 0 },
+-    { .name = "CPUACTLR_EL1", .state = ARM_CP_STATE_AA64,
+-      .opc0 = 3, .opc1 = 0, .crn = 15, .crm = 1, .opc2 = 0,
+-      .access = PL1_RW, .type = ARM_CP_CONST, .resetvalue = 0,
+-      .accessfn = access_actlr_w },
+-    { .name = "CPUACTLR2_EL1", .state = ARM_CP_STATE_AA64,
+-      .opc0 = 3, .opc1 = 0, .crn = 15, .crm = 1, .opc2 = 1,
+-      .access = PL1_RW, .type = ARM_CP_CONST, .resetvalue = 0,
+-      .accessfn = access_actlr_w },
+-    { .name = "CPUACTLR3_EL1", .state = ARM_CP_STATE_AA64,
+-      .opc0 = 3, .opc1 = 0, .crn = 15, .crm = 1, .opc2 = 2,
+-      .access = PL1_RW, .type = ARM_CP_CONST, .resetvalue = 0,
+-      .accessfn = access_actlr_w },
+-    /*
+-     * Report CPUCFR_EL1.SCU as 1, as we do not implement the DSU
+-     * (and in particular its system registers).
+-     */
+-    { .name = "CPUCFR_EL1", .state = ARM_CP_STATE_AA64,
+-      .opc0 = 3, .opc1 = 0, .crn = 15, .crm = 0, .opc2 = 0,
+-      .access = PL1_R, .type = ARM_CP_CONST, .resetvalue = 4 },
+-    { .name = "CPUECTLR_EL1", .state = ARM_CP_STATE_AA64,
+-      .opc0 = 3, .opc1 = 0, .crn = 15, .crm = 1, .opc2 = 4,
+-      .access = PL1_RW, .type = ARM_CP_CONST, .resetvalue = 0x961563010,
+-      .accessfn = access_actlr_w },
+-    { .name = "CPUPCR_EL3", .state = ARM_CP_STATE_AA64,
+-      .opc0 = 3, .opc1 = 6, .crn = 15, .crm = 8, .opc2 = 1,
+-      .access = PL3_RW, .type = ARM_CP_CONST, .resetvalue = 0 },
+-    { .name = "CPUPMR_EL3", .state = ARM_CP_STATE_AA64,
+-      .opc0 = 3, .opc1 = 6, .crn = 15, .crm = 8, .opc2 = 3,
+-      .access = PL3_RW, .type = ARM_CP_CONST, .resetvalue = 0 },
+-    { .name = "CPUPOR_EL3", .state = ARM_CP_STATE_AA64,
+-      .opc0 = 3, .opc1 = 6, .crn = 15, .crm = 8, .opc2 = 2,
+-      .access = PL3_RW, .type = ARM_CP_CONST, .resetvalue = 0 },
+-    { .name = "CPUPSELR_EL3", .state = ARM_CP_STATE_AA64,
+-      .opc0 = 3, .opc1 = 6, .crn = 15, .crm = 8, .opc2 = 0,
+-      .access = PL3_RW, .type = ARM_CP_CONST, .resetvalue = 0 },
+-    { .name = "CPUPWRCTLR_EL1", .state = ARM_CP_STATE_AA64,
+-      .opc0 = 3, .opc1 = 0, .crn = 15, .crm = 2, .opc2 = 7,
+-      .access = PL1_RW, .type = ARM_CP_CONST, .resetvalue = 0,
+-      .accessfn = access_actlr_w },
+-    { .name = "ERXPFGCDN_EL1", .state = ARM_CP_STATE_AA64,
+-      .opc0 = 3, .opc1 = 0, .crn = 15, .crm = 2, .opc2 = 2,
+-      .access = PL1_RW, .type = ARM_CP_CONST, .resetvalue = 0,
+-      .accessfn = access_actlr_w },
+-    { .name = "ERXPFGCTL_EL1", .state = ARM_CP_STATE_AA64,
+-      .opc0 = 3, .opc1 = 0, .crn = 15, .crm = 2, .opc2 = 1,
+-      .access = PL1_RW, .type = ARM_CP_CONST, .resetvalue = 0,
+-      .accessfn = access_actlr_w },
+-    { .name = "ERXPFGF_EL1", .state = ARM_CP_STATE_AA64,
+-      .opc0 = 3, .opc1 = 0, .crn = 15, .crm = 2, .opc2 = 0,
+-      .access = PL1_RW, .type = ARM_CP_CONST, .resetvalue = 0,
+-      .accessfn = access_actlr_w },
+-};
+-
+-static void define_neoverse_n1_cp_reginfo(ARMCPU *cpu)
+-{
+-    define_arm_cp_regs(cpu, neoverse_n1_cp_reginfo);
+-}
+-
+ static const ARMCPRegInfo neoverse_v1_cp_reginfo[] = {
+     { .name = "CPUECTLR2_EL1", .state = ARM_CP_STATE_AA64,
+       .opc0 = 3, .opc1 = 0, .crn = 15, .crm = 1, .opc2 = 5,
+@@ -647,10 +654,10 @@ static const ARMCPRegInfo neoverse_v1_cp_reginfo[] = {
+ static void define_neoverse_v1_cp_reginfo(ARMCPU *cpu)
+ {
+     /*
+-     * The Neoverse V1 has all of the Neoverse N1's IMPDEF
+-     * registers and a few more of its own.
++     * The Neoverse V1 has all of the Neoverse N1's (that is, the
++     * Cortex-A76's) IMPDEF registers and a few more of its own.
+      */
+-    define_arm_cp_regs(cpu, neoverse_n1_cp_reginfo);
++    define_arm_cp_regs(cpu, cortex_a76_cp_reginfo);
+     define_arm_cp_regs(cpu, neoverse_v1_cp_reginfo);
+ }
+ 
+@@ -727,7 +734,7 @@ static void aarch64_neoverse_n1_initfn(Object *obj)
+     /* From D5.1 AArch64 PMU register summary */
+     cpu->isar.reset_pmcr_el0 = 0x410c3000;
+ 
+-    define_neoverse_n1_cp_reginfo(cpu);
++    define_cortex_a76_cp_reginfo(cpu);
+ }
+ 
+ static void aarch64_neoverse_v1_initfn(Object *obj)

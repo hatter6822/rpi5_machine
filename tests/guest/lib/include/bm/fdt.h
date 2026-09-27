@@ -41,6 +41,10 @@ bool fdt_node_is_enabled(int node);
 /* Big-endian cell @index of a property value */
 uint32_t fdt_cell(const void *prop, unsigned index);
 
+/* A property of one cell, or of two for a 64-bit value; false if not */
+bool fdt_prop_u32(int node, const char *name, uint32_t *val);
+bool fdt_prop_u64(int node, const char *name, uint64_t *val);
+
 /*
  * CPU physical address and size of the @index-th "reg" entry, translated
  * through the "ranges" of every ancestor

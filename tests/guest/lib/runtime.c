@@ -14,6 +14,7 @@
 #include <bm/psci.h>
 #include <bm/runtime.h>
 #include <bm/string.h>
+#include <bm/timer.h>
 
 /* raspi5b addresses, used when there is no device tree (bcm2712.dtsi) */
 #define DEFAULT_UART10          0x107d001000ul
@@ -57,6 +58,15 @@ extern volatile uint64_t secondary_release[BM_MAX_CPUS];
 
 /* At EL3: set by bm_start_core(), cleared by the core when it is done */
 static volatile bool secondary_busy[BM_MAX_CPUS];
+
+/*
+ * Below EL3: cores PSCI CPU_ON has started since this boot. TF-A's
+ * Raspberry Pi port reports a core off before the core has reset into its
+ * holding pen, where it clears its mailbox slot, losing a CPU_ON that got
+ * there first; so a core that has run before gets time to reach the pen.
+ */
+static bool secondary_ran[BM_MAX_CPUS];
+#define SECONDARY_RESTART_US    10000
 
 static bool dt_pl011(int node, uintptr_t *base)
 {
@@ -291,10 +301,19 @@ int64_t bm_start_core(unsigned core, void (*fn)(unsigned core))
         return PSCI_INVALID_PARAMS;
     }
     if (current_el() < 3) {
+        int64_t ret;
+
         secondary_fn[core] = fn;
         dsb_sy();
-        return psci_cpu_on((uint64_t)core << 8, (uintptr_t)secondary_entry,
-                           core);
+        if (secondary_ran[core]) {
+            delay_us(SECONDARY_RESTART_US);
+        }
+        ret = psci_cpu_on((uint64_t)core << 8, (uintptr_t)secondary_entry,
+                          core);
+        if (ret == PSCI_SUCCESS) {
+            secondary_ran[core] = true;
+        }
+        return ret;
     }
 
     /* No PSCI below a guest that owns EL3: release it from the spin table */

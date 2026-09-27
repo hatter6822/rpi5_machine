@@ -1,6 +1,6 @@
 /*
- * Tests that run on every core: per-core timers, SGIs between every pair
- * of cores, SPI routing, and PSCI CPU_ON/CPU_OFF.
+ * Tests that run on every core: its MPIDR, per-core timers, SGIs between
+ * every pair of cores, SPI routing, and PSCI CPU_ON/CPU_OFF.
  *
  * Copyright (c) 2026 A7om
  *
@@ -97,6 +97,29 @@ static bool on_every_core(void (*body)(unsigned core))
         }
     }
     return true;
+}
+
+/*
+ * smp/mpidr: each core's MPIDR_EL1 as the silicon reports it. A DynamIQ
+ * core sets the MT bit and numbers itself in Aff1, with thread 0 in Aff0;
+ * U is clear, as the cores share a cluster, and Aff2 and Aff3 are 0.
+ */
+
+#define MPIDR_RES1              BIT64(31)
+#define MPIDR_MT                BIT64(24)
+
+static void mpidr_body(unsigned core)
+{
+    uint64_t mpidr = read_sysreg(mpidr_el1);
+
+    if (mpidr != (MPIDR_RES1 | MPIDR_MT | (uint64_t)core << 8)) {
+        CORE_FAIL(core, "unexpected MPIDR_EL1", mpidr);
+    }
+}
+
+TEST(smp_mpidr, "smp/mpidr")
+{
+    on_every_core(mpidr_body);
 }
 
 /* timer/every-core: the EL1 physical and virtual timers of each core */

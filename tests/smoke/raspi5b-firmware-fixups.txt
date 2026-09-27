@@ -1,0 +1,82 @@
+# What raspi5b changes in the device tree of the Raspberry Pi firmware
+# release scripts/firmware pins, booting it as the firmware does:
+#   -M raspi5b,secure=on -bios bl31.bin -kernel kernel_2712.img \
+#       -dtb bcm2712-rpi-5-b.dtb \
+#       -append "console=ttyAMA10,115200 root=/dev/mmcblk0p2 rootwait"
+# as tests/smoke/fdt.py prints the difference ("+" added, "~" changed,
+# "-" removed), the seeds as RANDOM. test_firmware.py compares the
+# machine's changes with it; docs/system/arm/raspi5b.rst says where they
+# differ from the firmware's own. After a change, check the difference is
+# the one intended, and write the lines below from
+#   python3 tests/smoke/fdt.py bcm2712-rpi-5-b.dtb fixed.dtb
+# with fixed.dtb from the command above and -M ...,dumpdtb=fixed.dtb.
++ /:serial-number = "0123456789abcdef"
+~ /:model = "Raspberry Pi 5 Model B Rev 1.0" (was "Raspberry Pi 5")
++ /system
++ /system:linux,serial = <0x1234567 0x89abcdef>
++ /system:linux,revision = <0xb04170>
+~ /memory@0:reg = <0x0 0x0 0x0 0x3fc00000 0x0 0x40000000 0x0 0x40000000> (was <0x0 0x0 0x0 0x28000000>)
+~ /reserved-memory/linux,cma:size = <0x0 0x4000000> (was <0x4000000>)
+~ /reserved-memory/nvram@0:reg = <0x0 0x3fc80000 0x0 0x4d> (was <0x0 0x0 0x0 0x0>)
+~ /reserved-memory/nvram@0:status = "okay" (was "disabled")
++ /soc@107c000000/reset-controller@119500:status = "disabled"
+~ /soc@107c000000/mmc@fff000:status = "disabled" (was "okay")
++ /soc@107c000000/reset-controller@1504318:status = "disabled"
++ /soc@107c000000/gpio@7d517c00:status = "disabled"
++ /soc@107c000000/clock@7c700000:status = "disabled"
++ /soc@107c000000/interrupt-controller@7d508380:status = "disabled"
++ /soc@107c000000/interrupt-controller@7d508400:status = "disabled"
+~ /soc@107c000000/spi@7d004000:status = "disabled" (was "okay")
++ /soc@107c000000/intc@7d503000:status = "disabled"
++ /soc@107c000000/pinctrl@7d504100:status = "disabled"
++ /soc@107c000000/gpio@7d508500:status = "disabled"
+~ /soc@107c000000/serial@7d50c000:status = "disabled" (was "okay")
++ /soc@107c000000/pinctrl@7d510700:status = "disabled"
+~ /soc@107c000000/avs-monitor@7d542000:status = "disabled" (was "okay")
++ /soc@107c000000/power:status = "disabled"
++ /soc@107c000000/fb:status = "disabled"
++ /soc@107c000000/rpi_rtc:status = "disabled"
++ /soc@107c000000/nvmem/nvmem_otp:status = "disabled"
++ /soc@107c000000/nvmem/nvmem_cust:status = "disabled"
++ /soc@107c000000/nvmem/nvmem_mac:status = "disabled"
++ /soc@107c000000/nvmem/nvmem_priv:status = "disabled"
++ /soc@107c000000/gpiomem@7d508500:status = "disabled"
++ /soc@107c000000/gpiomem@7d517c00:status = "disabled"
++ /soc@107c000000/gpiomem@7d504100:status = "disabled"
++ /soc@107c000000/gpiomem@7d510700:status = "disabled"
+~ /axi/pcie@1000120000:status = "disabled" (was "okay")
+~ /axi/pcie@1000120000/rp1/ethernet@100000:local-mac-address = [52 54 00 12 34 57] (was [00 00 00 00 00 00])
++ /axi/pcie@1000120000/rp1/gpiomem@d0000:status = "disabled"
++ /axi/msi-controller@1000130000:status = "disabled"
++ /axi/msi-controller@1000131000:status = "disabled"
++ /axi/iommu@5100:status = "disabled"
++ /axi/iommu@5200:status = "disabled"
++ /axi/iommu@5280:status = "disabled"
++ /axi/iommuc@5b00:status = "disabled"
++ /axi/dma@10000:status = "disabled"
++ /axi/dma@10600:status = "disabled"
++ /axi/syscon@400018:status = "disabled"
++ /axi/codec@800000:status = "disabled"
+~ /axi/pisp_be@880000:status = "disabled" (was "okay")
+~ /axi/mmc@1100000:status = "disabled" (was "okay")
++ /rp1_firmware:status = "disabled"
++ /chosen:rpi-sdram-size-gbit = <0x10>
++ /chosen:overlay_prefix = "overlays/"
++ /chosen:os_prefix = ""
++ /chosen:rng-seed = RANDOM
++ /chosen:kaslr-seed = RANDOM
++ /chosen:rpi-serial64 = "0123456789abcdef"
+~ /chosen:bootargs = "reboot=w coherent_pool=1M 8250.nr_uarts=1 pci=pcie_bus_safe cgroup_disable=memory numa_policy=interleave nvme.max_host_mem_size_mb=32  smsc95xx.macaddr=52:54:00:12:34:57 vc_mem.mem_base=0x3fc00000 vc_mem.mem_size=0x40000000  console=ttyAMA10,115200 root=/dev/mmcblk0p2 rootwait" (was "reboot=w coherent_pool=1M 8250.nr_uarts=1 pci=pcie_bus_safe cgroup_disable=memory numa_policy=interleave nvme.max_host_mem_size_mb=32")
++ /chosen/power
++ /chosen/power:power_reset = <0x0>
++ /chosen/power:usb_over_current_detected = <0x0>
++ /chosen/power:usb_max_current_enable = <0x1>
++ /chosen/power:max_current = <0x1388>
++ /chosen/bootloader
++ /chosen/bootloader:count = <0x1>
++ /chosen/bootloader:arg1 = <0x0>
++ /chosen/bootloader:capabilities = <0x0>
++ /chosen/bootloader:tryboot = <0x0>
++ /chosen/bootloader:rsts = <0x1000>
++ /chosen/bootloader:partition = <0x0>
++ /chosen/bootloader:boot-mode = <0x3>

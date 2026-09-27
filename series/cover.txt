@@ -10,10 +10,17 @@ Ethernet, USB or GPIO.
 
 The target for now is bare-metal and microkernel bring-up. The machine
 boots like the Raspberry Pi firmware does: the guest enters at EL2 with
-PSCI over SMC, or owns EL3 with secure=on. Without -dtb it generates a
-device tree, which validates against the kernel's bindings. The stock
-Raspberry Pi OS kernel boots to the root file system mount, on that
-tree or on the firmware's bcm2712-rpi-5-b.dtb.
+PSCI over SMC, or owns EL3 with secure=on. With secure=on, -bios loads
+firmware such as TF-A's BL31 as the Pi's firmware loads its armstub,
+and hands it the kernel and device tree the same way. Without -dtb the
+machine generates a device tree, which validates against the kernel's
+bindings. Either tree gets the changes the firmware makes before it
+starts the OS, anew for each boot: the model and serial number, the
+command line it builds, what /chosen reports about the boot and the
+power supply, and seeds for KASLR and the RNG. The stock Raspberry Pi
+OS kernel boots to the root file system mount, on that tree or on the
+firmware's bcm2712-rpi-5-b.dtb, directly, started by TF-A, or through
+U-Boot.
 
 The series is in four parts:
 
@@ -30,7 +37,14 @@ The series is in four parts:
   code, keeps every tag within the value buffer it declares, and
   answers the firmware and board identity tags Linux asks for.
 
-- A new RNG200 model, and two fixes for bugs found by the tests:
+- A new RNG200 model, three target/arm changes TF-A needs, and two
+  fixes for bugs found by the tests:
+  - the Cortex-A76's IMPLEMENTATION DEFINED registers, without which
+    TF-A stops in its reset handler;
+  - a CPU property that sets MPIDR_EL1.MT, by which TF-A numbers the
+    A76 cores;
+  - a warm reset when software sets RMR_ELx.RR, as TF-A's CPU_OFF does
+    to send a core back to its holding pen;
   - with the Security Extensions, a Non-secure write to GICD_SGIR could
     raise Group 0 SGIs;
   - a generic timer whose offset exceeds the count, such as the virtual
@@ -38,10 +52,11 @@ The series is in four parts:
 
 - The SoC, the board, a qtest and the documentation.
 
-Testing: the qtest covers every modelled device at register level. A
-bare-metal test suite runs on 1 to 4 cores, at EL2 and EL3, with and
-without a device tree. It covers per-core timers and SGIs, SPI routing,
-PSCI, the mailbox, the watchdog and system resets, the RNG and the UART.
+Testing: the qtest covers every modelled device at register level, and
+the -bios handoff. A bare-metal test suite runs on 1 to 4 cores, at EL2
+and EL3, with and without a device tree, and on TF-A's PSCI. It covers
+per-core timers and SGIs, SPI routing, PSCI, the mailbox, the watchdog
+and system resets, the RNG and the UART.
 The suite lives out of tree, with the rest of the development history:
 https://github.com/hatter6822/rpi5_machine
 

@@ -6,6 +6,7 @@
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
+#include <bm/fdt.h>
 #include <bm/io.h>
 #include <bm/pm.h>
 #include <bm/runtime.h>
@@ -52,14 +53,21 @@ TEST(pm_watchdog_countdown, "pm/watchdog-countdown")
     ASSERT_EQ(pm_read(PM_RSTC) & PM_RSTC_WRCFG_MASK, 0);
 }
 
+/* /chosen/bootloader/boot-mode when the host supplies the boot files */
+#define BOOT_MODE_RPIBOOT       3
+
 /*
  * Arm a 10 tick (150 us) watchdog, as Linux does to reboot, and check
  * after the reset that the boot count went up and the reset status says
- * the watchdog did it, keeping the partition set beforehand.
+ * the watchdog did it, keeping the partition set beforehand; and that
+ * the firmware reports the same in the device tree, if it gives one.
  */
 TEST(pm_watchdog_reset, "pm/watchdog-reset")
 {
     uint64_t *boot = &bm_test_scratch()[0];
+    uint64_t *fw_count = &bm_test_scratch()[1];
+    int fw = fdt_path_offset("/chosen/bootloader");
+    uint32_t count, mode, reported;
     unsigned partition;
     uint32_t rsts;
 
@@ -70,6 +78,7 @@ TEST(pm_watchdog_reset, "pm/watchdog-reset")
             ASSERT_EQ(rsts & (PM_RSTS_HADWRF | PM_RSTS_HADPOR),
                       PM_RSTS_HADPOR);
         }
+        *fw_count = fdt_prop_u32(fw, "count", &count) ? count : UINT64_MAX;
         pm_set_partition(42);
         pm_watchdog_start(10);
         wait_until(false, 100000);
@@ -85,4 +94,17 @@ TEST(pm_watchdog_reset, "pm/watchdog-reset")
     ASSERT_EQ(partition, 42);
     ASSERT_EQ(pm_read(PM_RSTC), PM_RSTC_RESET);
     ASSERT_EQ(pm_watchdog_left(), 0);
+
+    if (*fw_count == UINT64_MAX) {
+        return;
+    }
+    ASSERT(fdt_prop_u32(fw, "count", &count));
+    ASSERT_EQ(count, (*fw_count + 1) & 0xff);
+    ASSERT(fdt_prop_u32(fw, "rsts", &reported));
+    ASSERT_EQ(reported, rsts);
+    /* Files the host supplies come from the partition asked for */
+    if (fdt_prop_u32(fw, "boot-mode", &mode) && mode == BOOT_MODE_RPIBOOT) {
+        ASSERT(fdt_prop_u32(fw, "partition", &reported));
+        ASSERT_EQ(reported, 42);
+    }
 }

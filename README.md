@@ -7,21 +7,23 @@ submission.
 ```
 $ make setup build guest
 $ build/qemu-system-aarch64 -M raspi5b -nographic -kernel tests/guest/build/hello.elf
-raspi5b: core 0 up at EL2, MPIDR 0x0000000080000000, CNTFRQ 54000000 Hz
+raspi5b: core 0 up at EL2, MPIDR 0x0000000081000000, CNTFRQ 54000000 Hz
 raspi5b: PSCI 1.1
-raspi5b: core 1 online, MPIDR 0x0000000080000100
-raspi5b: core 2 online, MPIDR 0x0000000080000200
-raspi5b: core 3 online, MPIDR 0x0000000080000300
+raspi5b: core 1 online, MPIDR 0x0000000081000100
+raspi5b: core 2 online, MPIDR 0x0000000081000200
+raspi5b: core 3 online, MPIDR 0x0000000081000300
 raspi5b: PSCI SYSTEM_OFF
 ```
 
 ## Status
 
-The first milestone targets bare-metal and microkernel bring-up.
+Milestones M1 (bare-metal and microkernel bring-up) and M2 (the Pi's own
+boot chain: TF-A, U-Boot and UEFI run unmodified) are done; M3, Raspberry
+Pi OS booting from an SD card, is next.
 
 | Area | State |
 | --- | --- |
-| 4 × Cortex-A76, `MPIDR.Aff1` = core, 54 MHz generic timer | done |
+| 4 × Cortex-A76, `MPIDR.Aff1` = core with `MPIDR.MT` set, 54 MHz generic timer | done |
 | GIC-400 (GICv2 + virtualization extensions, 5 priority bits), timer/maintenance PPIs | done |
 | UART10 (PL011 debug UART) | done |
 | System timer (1 MHz counter, four comparators) | done |
@@ -29,9 +31,11 @@ The first milestone targets bare-metal and microkernel bring-up.
 | RNG200 random number generator | done |
 | System reset (PSCI, watchdog, monitor) and power-off | done |
 | Firmware boot contract: EL2 entry, PSCI over SMC (`secure=off`); guest-owned EL3 (`secure=on`) | done |
+| Firmware loaded with `-bios` (`secure=on`) the way the Pi's firmware loads it: TF-A's `rpi5` BL31 runs the bare-metal suite on its own PSCI and boots Linux, directly or through U-Boot; the EDK2 port reaches the UEFI shell | done |
 | Complete BCM2712 memory map, unmodelled blocks logged with `-d unimp` | done |
 | Built-in device tree when no `-dtb` is given, validated against the Linux bindings | done |
-| Bare-metal test suite (26 tests: interrupts, timers and SGIs on every core, PSCI, resets, mailbox, RNG, UART, Secure/Non-secure GIC groups) on 1–4 cores, EL2 and EL3 | done |
+| The firmware's device-tree changes, made anew for each boot: model and serial number, the command line it builds, `/chosen` with the boot's reset status, partition and count, the power supply and seeds, the CMA pool and the bootloader configuration | done |
+| Bare-metal test suite (28 tests: interrupts, timers and SGIs on every core, PSCI, resets, mailbox, RNG, UART, Secure/Non-secure GIC groups, the A76's MPIDR and IMPDEF registers) on 1–4 cores, EL2 and EL3 | done |
 | Linux: stock Raspberry Pi OS kernel boots to the root-fs mount, on the built-in device tree or `bcm2712-rpi-5-b.dtb` | smoke-tested |
 | VideoCore mailbox and firmware property channel: BCM283x tag set, board and firmware identity | done; Pi 5 clock, power, RTC and GPIO tags planned (WS2.3b) |
 | SD, PCIe, RP1, GPIO, … | see [docs/PLAN.md](docs/PLAN.md) |
@@ -50,7 +54,8 @@ overlay/       new files, laid out exactly as in the QEMU tree
 patches/       changes to existing QEMU files (git format-patch series)
 series/        how patches and overlay files form the upstream series, cover letter
 scripts/       qemu-tree: applies the overlay and patches, creates/refreshes
-               patches, exports the upstream series
+               patches, exports the upstream series; firmware: builds the
+               pinned firmware the firmware tests boot
 tests/guest/   bare-metal runtime, smoke guest and test suite (clang + lld, no GCC)
 tests/smoke/   end-to-end tests that boot the guests
 tests/configs/ QEMU device configurations for test builds
@@ -81,6 +86,7 @@ $ sudo apt install build-essential python3-venv ninja-build \
 | `make export-series` | write the upstream patch series to `build-series/` and check it (applies, checkpatch; `SERIES_FLAGS=--build` builds every commit) |
 | `make check-minimal` | build a QEMU whose only board is `raspi5b` (in `build-minimal/`) and run the same tests on it |
 | `make check-dt` | validate the built-in device tree against the Linux bindings, fetched into `build-dt-schema/` the first time (needs `pip install dtschema` and network access) |
+| `make check-firmware` | boot real firmware with `-bios`: TF-A and U-Boot, built at pinned releases into `build-firmware/` the first time, with the EDK2 port and a Raspberry Pi OS kernel fetched there (needs `gcc-aarch64-linux-gnu`, U-Boot's host-tool dependencies `bison flex libssl-dev libgnutls28-dev`, and network access) |
 | `make checkpatch` | run QEMU's `checkpatch.pl` over our sources and patches |
 | `make status` | show overlay/patch state and any unmanaged edits in `qemu/` |
 | `make unapply` | return `qemu/` to the pristine pinned commit |
@@ -91,13 +97,19 @@ $ sudo apt install build-essential python3-venv ninja-build \
 qemu-system-aarch64 -M raspi5b[,secure=on][,serial=N][,builtin-dtb=off] \
     [-smp 1-4] [-m 1G|2G|4G|8G|16G] \
     -kernel <Image|payload.elf> [-dtb bcm2712-rpi-5-b.dtb] [-append ...]
+qemu-system-aarch64 -M raspi5b,secure=on[,dtb-address=ADDR] -bios bl31.bin \
+    [-kernel <Image|payload.elf>] [-dtb ...] [-initrd ...] [-append ...]
 ```
 
 By default the guest enters at **EL2** and QEMU provides **PSCI over SMC**,
 matching the contract of the Pi 5 firmware and its resident TF-A BL31. With
 `secure=on`, EL3 and the GIC Security Extensions are exposed and every core
-starts at the image entry point. Full details, including device-tree
-handling, are in [the machine documentation](overlay/docs/system/arm/raspi5b.rst).
+starts at the image entry point. With `secure=on` and `-bios`, the machine
+loads that firmware at address 0 as the Pi's firmware loads its armstub,
+places the kernel, initrd and device tree as the firmware does and tells
+the armstub where they are; TF-A then provides PSCI and enters the kernel
+at EL2. Full details, including device-tree handling, are in [the machine
+documentation](overlay/docs/system/arm/raspi5b.rst).
 
 ## Documentation
 

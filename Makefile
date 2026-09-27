@@ -21,8 +21,8 @@ OVERLAY_SRCS := $(shell cd overlay && find . -name '*.[ch]' | sed 's|^\./||')
 
 .DEFAULT_GOAL := build
 .PHONY: FORCE help setup apply unapply status configure build guest check \
-        check-qtest check-smoke check-minimal check-dt checkpatch export-series \
-        run-hello \
+        check-qtest check-smoke check-minimal check-dt firmware check-firmware \
+        checkpatch export-series run-hello \
         clean distclean
 
 help:
@@ -36,6 +36,8 @@ help:
 	@echo 'check        run the raspi5b qtest and the smoke tests'
 	@echo 'check-minimal build QEMU with raspi5b as its only board, run check on it'
 	@echo 'check-dt     validate the built-in device tree (needs dtschema, network)'
+	@echo 'firmware     build the pinned firmware check-firmware boots (network)'
+	@echo 'check-firmware boot real firmware with -bios (needs aarch64-linux-gnu-gcc)'
 	@echo 'checkpatch   run QEMU checkpatch.pl over overlay sources and patches'
 	@echo 'export-series write the upstream series to $$(SERIES_DIR) and check it'
 	@echo 'run-hello    boot the hello guest interactively'
@@ -117,7 +119,7 @@ DT_SCHEMA_MARKER := $(DT_SCHEMA_DIR)/.check-dt
 
 $(DT_SCHEMA):
 	@if [ -e '$(DT_SCHEMA_DIR)' ] && [ ! -f '$(DT_SCHEMA_MARKER)' ] && \
-	   [ -n "$$(find '$(DT_SCHEMA_DIR)' -mindepth 1 -maxdepth 1 -print -quit 2>&1)" ]; then \
+	   [ -n "$$(find -H '$(DT_SCHEMA_DIR)' -mindepth 1 -maxdepth 1 -print -quit 2>&1)" ]; then \
 		echo "check-dt: $(DT_SCHEMA_DIR) exists and was not made here;" \
 		     "set DT_SCHEMA_DIR to a new or empty directory" >&2; exit 1; \
 	fi
@@ -137,6 +139,19 @@ check-dt: build guest $(DT_SCHEMA)
 	QEMU=$(abspath $(QEMU_BIN)) GUEST=$(GUEST_BUILD)/hello.elf \
 		DT_SCHEMA=$(abspath $(DT_SCHEMA)) \
 		$(PYTHON) -m unittest discover -s tests/smoke -p test_dt_schema.py -v
+
+# Real firmware booted with -bios: scripts/firmware builds it at pinned
+# versions in $(FIRMWARE_DIR), which must be new, empty, or marked as made
+# there by an earlier run, as for check-dt. It skips what is up to date.
+FIRMWARE_DIR ?= build-firmware
+
+firmware:
+	scripts/firmware $(FIRMWARE_DIR)
+
+check-firmware: build guest firmware
+	QEMU=$(abspath $(QEMU_BIN)) GUEST=$(GUEST_BUILD)/hello.elf \
+		SUITE=$(GUEST_BUILD)/suite.elf FIRMWARE=$(abspath $(FIRMWARE_DIR)) \
+		$(PYTHON) -m unittest discover -s tests/smoke -p test_firmware.py -v
 
 # The upstream series (scripts/qemu-tree export): SERIES_FLAGS takes
 # -v <n>, --build (build every commit) and --signoff
@@ -165,8 +180,9 @@ clean:
 
 # distclean removes a directory only when this repository made it, since
 # each of these variables can point anywhere: a build directory carries
-# configure's stamp, an export the marker scripts/qemu-tree writes, and the
-# schema directory the marker check-dt writes. A directory that holds a
+# configure's stamp, an export the marker scripts/qemu-tree writes, the
+# schema directory the marker check-dt writes, and the firmware directory
+# the marker scripts/firmware writes. A directory that holds a
 # repository is never a build directory, whatever it carries:
 # not this one or a parent of it ('make configure BUILD_DIR=.' leaves the
 # stamp in the checkout), and not another checkout (qemu/ included).
@@ -191,3 +207,4 @@ distclean: clean
 	$(call rm_made,$(MINIMAL_BUILD_DIR),[ -f '$(MINIMAL_BUILD_DIR)/$(notdir $(CONFIGURE_STAMP))' ])
 	$(call rm_made,$(SERIES_DIR),[ -f '$(SERIES_DIR)/.qemu-tree-export' ])
 	$(call rm_made,$(DT_SCHEMA_DIR),[ -f '$(DT_SCHEMA_MARKER)' ])
+	$(call rm_made,$(FIRMWARE_DIR),[ -f '$(FIRMWARE_DIR)/.check-firmware' ])

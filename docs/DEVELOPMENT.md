@@ -50,8 +50,8 @@ Edit it in `qemu/`, then either
 
 ```
 scripts/qemu-tree new hw-misc-add-bcm2712-foo qemu-relative/path ...   # new patch
-scripts/qemu-tree refresh 0012-hw-arm-Add-the-Broadcom-BCM2712-SoC.patch
-scripts/qemu-tree refresh 0012-hw-arm-Add-the-Broadcom-BCM2712-SoC.patch MAINTAINERS
+scripts/qemu-tree refresh 0015-hw-arm-Add-the-Broadcom-BCM2712-SoC.patch
+scripts/qemu-tree refresh 0015-hw-arm-Add-the-Broadcom-BCM2712-SoC.patch MAINTAINERS
 ```
 
 `new` appends a patch to the series and opens git's editor for a commit
@@ -111,8 +111,10 @@ We follow upstream QEMU conventions so the code can be submitted unchanged:
 | Register-level device tests | `overlay/tests/qtest/*-test.c` | `make check-qtest` |
 | Bare-metal guests and test suite over UART ([format](../tests/guest/README.md)) | `tests/guest/`, `tests/smoke/` | `make check-smoke` |
 | Both, on a QEMU whose only board is `raspi5b` | `tests/configs/raspi5b-only.mak` | `make check-minimal` |
+| The device tree the guest gets: each firmware change, the built-in tree against a checked-in dump (`raspi5b-builtin-tree.txt`), and what each boot gets across resets and migration | `tests/smoke/test_dtb.py` | `make check-smoke` |
 | Built-in device tree against the Linux bindings (dt-schema) | `tests/smoke/test_dt_schema.py` | `make check-dt` |
-| Linux / firmware boots | `overlay/tests/functional/aarch64/` (planned, WS9.3) | QEMU functional test runner |
+| Real firmware with `-bios`: TF-A's `rpi5` BL31 running the bare-metal guests; Linux through TF-A and through U-Boot; the EDK2 port to its shell; the changes to the firmware's own tree (`raspi5b-firmware-fixups.txt`). Pinned and built or fetched by `scripts/firmware` | `tests/smoke/test_firmware.py` | `make check-firmware` |
+| Linux / firmware boots, upstream | `overlay/tests/functional/aarch64/` (planned, WS9.3) | QEMU functional test runner |
 
 Each new device lands with a qtest for its registers and reset values. The
 bare-metal guests are built with `clang --target=aarch64-none-elf` and `lld`,
@@ -133,13 +135,19 @@ build/qemu-system-aarch64 -M raspi5b -m 4G -nographic \
 
 Without storage the boot currently ends at the root-fs mount (expected).
 
+`make firmware` puts the pinned kernel and device tree in `build-firmware/`,
+with TF-A's BL31, U-Boot and the EDK2 port; the machine documentation
+shows how to boot each of them.
+
 ### Debugging
 
 * `-d unimp,guest_errors` shows accesses to unmodelled blocks by name
   (`bcm2712.mbox`, `bcm2712.soc`, ...).
 * `-s -S` and `gdb-multiarch` for guest debugging; `-trace 'bcm2712*'` once
   trace points exist.
-* `-machine dumpdtb=out.dtb` shows the device tree after QEMU's fix-ups.
+* `-machine dumpdtb=out.dtb` shows the device tree after QEMU's fix-ups;
+  `python3 tests/smoke/fdt.py out.dtb` prints it, and
+  `python3 tests/smoke/fdt.py in.dtb out.dtb` what they changed.
 
 ## Upstreaming
 

@@ -43,14 +43,16 @@ DT_MODES = ("builtin", "file", "none")
 Run = collections.namedtuple("Run", "results out status timed_out")
 
 
-def run_suite(*machine_args, dtb=None, secure=False, answer=None):
+def run_suite(*machine_args, dtb=None, secure=False, bios=None, answer=None):
     """Boot the suite and return its Run.
 
     @dtb is a -dtb blob, None for the built-in tree, or "none" for no tree.
+    @secure gives the suite EL3; @bios is firmware to own EL3 instead,
+    which starts the suite as the firmware would a kernel.
     @answer is the line to send when uart/echo asks for one.
     """
     machine = "raspi5b"
-    if secure:
+    if secure or bios:
         machine += ",secure=on"
     if dtb == "none":
         machine += ",builtin-dtb=off"
@@ -58,7 +60,9 @@ def run_suite(*machine_args, dtb=None, secure=False, answer=None):
            "-serial", "stdio", "-kernel", str(SUITE), *machine_args]
     if dtb not in (None, "none"):
         cmd += ["-dtb", str(dtb)]
-    if secure:
+    if bios:
+        cmd += ["-bios", str(bios)]
+    elif secure:
         cmd += ["-semihosting-config", "enable=on,target=native"]
     proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                             stderr=subprocess.DEVNULL, text=True)
@@ -91,22 +95,8 @@ def run_suite(*machine_args, dtb=None, secure=False, answer=None):
     return Run(results, out, status, timed_out.is_set())
 
 
-@unittest.skipUnless(QEMU.exists() and SUITE.exists(),
-                     "build QEMU and the guests first (make build guest)")
-@unittest.skipUnless(shutil.which("dtc"),
-                     "needs dtc (device-tree-compiler)")
-class SuiteTest(unittest.TestCase):
-
-    @classmethod
-    def setUpClass(cls):
-        cls.tmp = Path(tempfile.mkdtemp())
-        cls.dtb = cls.tmp / "bcm2712-min.dtb"
-        subprocess.run(["dtc", "-q", "-I", "dts", "-O", "dtb",
-                        "-o", cls.dtb, DTS], check=True)
-
-    @classmethod
-    def tearDownClass(cls):
-        shutil.rmtree(cls.tmp)
+class SuiteChecks:
+    """Checks of a suite Run, for the test cases that boot the suite."""
 
     def assertExited(self, run):
         """QEMU ran to the guest's exit and returned 0: a transcript alone
@@ -131,6 +121,24 @@ class SuiteTest(unittest.TestCase):
         for name, (outcome, detail) in run.results.items():
             expected = "SKIP" if name in skipped else "PASS"
             self.assertEqual(outcome, expected, f"{name}: {detail}\n{out}")
+
+
+@unittest.skipUnless(QEMU.exists() and SUITE.exists(),
+                     "build QEMU and the guests first (make build guest)")
+@unittest.skipUnless(shutil.which("dtc"),
+                     "needs dtc (device-tree-compiler)")
+class SuiteTest(SuiteChecks, unittest.TestCase):
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = Path(tempfile.mkdtemp())
+        cls.dtb = cls.tmp / "bcm2712-min.dtb"
+        subprocess.run(["dtc", "-q", "-I", "dts", "-O", "dtb",
+                        "-o", cls.dtb, DTS], check=True)
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(cls.tmp)
 
     def suite_dtb(self, mode):
         return {"builtin": None, "file": self.dtb, "none": "none"}[mode]

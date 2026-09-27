@@ -8,7 +8,10 @@
  * Register layout from the Arm GIC Architecture Specification v2 (IHI
  * 0048B), chapter 4. All interrupts use Group 0, delivered as IRQ
  * (GICC_CTLR.FIQEn = 0), so the same code runs at EL2 without Security
- * Extensions and at EL3 with them.
+ * Extensions and at EL3 with them. Below firmware that owns EL3, such as
+ * TF-A, it sees the Non-secure copies of the registers: interrupts stay
+ * in the Group 1 the firmware gave them, the group registers read as
+ * zero and ignore writes, and GICC_PMR has one priority bit fewer.
  */
 
 #include <bm/gic.h>
@@ -32,6 +35,8 @@
 #define GICC_BPR                0x008
 #define GICC_IAR                0x00c
 #define GICC_EOIR               0x010
+
+#define GICD_TYPER_SECURITYEXTN BIT(10)
 
 #define GICD_CTLR_ENABLE        (BIT(0) | BIT(1))       /* Group 0 and 1 */
 #define GICC_CTLR_ENABLE        (BIT(0) | BIT(1))       /* FIQEn = 0 */
@@ -85,6 +90,11 @@ void gic_init_cpu(void)
 unsigned gic_num_irqs(void)
 {
     return num_irqs;
+}
+
+bool gic_has_security_extensions(void)
+{
+    return mmio_read32(dist + GICD_TYPER) & GICD_TYPER_SECURITYEXTN;
 }
 
 /* Priority bits implemented: the ones that read back from GICC_PMR */
