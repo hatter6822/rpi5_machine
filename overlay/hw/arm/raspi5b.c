@@ -638,7 +638,7 @@ static void raspi5b_cpu_reset(void *opaque)
  * point, and in *start and *end the memory the kernel uses, which for an
  * Image includes the BSS its header declares. An Image whose header takes
  * it past the VideoCore's memory is refused, and so is an ELF whose entry
- * point, where the armstub jumps, lies outside that memory.
+ * point, where the armstub jumps, lies outside every segment it loads.
  */
 static hwaddr raspi5b_load_kernel(const char *filename, AddressSpace *as,
                                   hwaddr *start, hwaddr *end)
@@ -651,11 +651,14 @@ static hwaddr raspi5b_load_kernel(const char *filename, AddressSpace *as,
     size = load_elf_as(filename, NULL, NULL, NULL, &entry, &low, &high, NULL,
                        ELFDATA2LSB, EM_AARCH64, 1, 0, as);
     if (size > 0) {
-        if (entry < low || entry >= high) {
+        /*
+         * The segments may leave gaps between low and high; they are the
+         * only ROMs yet, so a ROM at the entry point is one of them
+         */
+        if (!rom_ptr_for_as(as, entry, 4)) {
             error_report("could not load kernel '%s': its entry point "
-                         "0x%" PRIx64 " lies outside 0x%" PRIx64 "-0x%" PRIx64
-                         ", where it is loaded", filename, entry, low,
-                         high - 1);
+                         "0x%" PRIx64 " lies outside every segment it loads",
+                         filename, entry);
             exit(EXIT_FAILURE);
         }
         *start = low;
