@@ -46,8 +46,9 @@ die() {
 
 [ $# -eq 1 ] || die "usage: scripts/firmware DIR"
 dir=$1
+# find -H looks into DIR when it is a symbolic link to a directory
 if [ -e "$dir" ] && [ ! -f "$dir/.check-firmware" ] &&
-   [ -n "$(find "$dir" -mindepth 1 -maxdepth 1 -print -quit 2>&1)" ]; then
+   [ -n "$(find -H "$dir" -mindepth 1 -maxdepth 1 -print -quit 2>&1)" ]; then
     die "$dir exists and was not made here; use a new or empty directory"
 fi
 mkdir -p "$dir"

@@ -119,7 +119,7 @@ DT_SCHEMA_MARKER := $(DT_SCHEMA_DIR)/.check-dt
 
 $(DT_SCHEMA):
 	@if [ -e '$(DT_SCHEMA_DIR)' ] && [ ! -f '$(DT_SCHEMA_MARKER)' ] && \
-	   [ -n "$$(find '$(DT_SCHEMA_DIR)' -mindepth 1 -maxdepth 1 -print -quit 2>&1)" ]; then \
+	   [ -n "$$(find -H '$(DT_SCHEMA_DIR)' -mindepth 1 -maxdepth 1 -print -quit 2>&1)" ]; then \
 		echo "check-dt: $(DT_SCHEMA_DIR) exists and was not made here;" \
 		     "set DT_SCHEMA_DIR to a new or empty directory" >&2; exit 1; \
 	fi
