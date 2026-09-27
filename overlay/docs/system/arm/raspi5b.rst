@@ -86,7 +86,7 @@ stock Pi 5) and hands it the rest the way the firmware does:
   ``kernel_address`` for 64-bit kernels (a Linux ``Image`` at that address
   plus its ``text_offset``, taken as ``0x8_0000`` for kernels before
   Linux 3.17, whose header has no ``image_size``; an ELF file at its own
-  addresses);
+  addresses, which must hold its entry point);
 * ``-initrd`` goes at 128 MiB or above the kernel, whichever is higher,
   and the device tree at the next 2 MiB boundary, or at
   ``-machine dtb-address=<addr>``, the counterpart of

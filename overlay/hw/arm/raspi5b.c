@@ -637,7 +637,8 @@ static void raspi5b_cpu_reset(void *opaque)
  * RASPI5B_KERNEL_ADDR plus the Image's text_offset. Returns the entry
  * point, and in *start and *end the memory the kernel uses, which for an
  * Image includes the BSS its header declares. An Image whose header takes
- * it past the VideoCore's memory is refused.
+ * it past the VideoCore's memory is refused, and so is an ELF whose entry
+ * point, where the armstub jumps, lies outside that memory.
  */
 static hwaddr raspi5b_load_kernel(const char *filename, AddressSpace *as,
                                   hwaddr *start, hwaddr *end)
@@ -650,6 +651,13 @@ static hwaddr raspi5b_load_kernel(const char *filename, AddressSpace *as,
     size = load_elf_as(filename, NULL, NULL, NULL, &entry, &low, &high, NULL,
                        ELFDATA2LSB, EM_AARCH64, 1, 0, as);
     if (size > 0) {
+        if (entry < low || entry >= high) {
+            error_report("could not load kernel '%s': its entry point "
+                         "0x%" PRIx64 " lies outside 0x%" PRIx64 "-0x%" PRIx64
+                         ", where it is loaded", filename, entry, low,
+                         high - 1);
+            exit(EXIT_FAILURE);
+        }
         *start = low;
         *end = high;
         return entry;
@@ -790,7 +798,8 @@ static void raspi5b_boot_armstub(Raspi5bMachineState *s,
                               s->binfo.initrd_start + s->binfo.initrd_size);
         next = MAX(next, dtb + dtb_size);
     }
-    if (MAX(next, stub_end) > BCM2712_VC_RAM_BASE || kernel > UINT32_MAX) {
+    /* This also keeps the addresses written into the armstub in 32 bits */
+    if (MAX(next, stub_end) > BCM2712_VC_RAM_BASE) {
         error_report("the armstub, kernel, initrd and device tree must fit "
                      "below 0x%x, where the VideoCore's memory starts",
                      BCM2712_VC_RAM_BASE);

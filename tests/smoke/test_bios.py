@@ -5,6 +5,7 @@
 # (tests/smoke/test_firmware.py); the armstub handoff itself is checked at
 # register level by the qtest.
 
+import struct
 import subprocess
 import tempfile
 import unittest
@@ -14,6 +15,23 @@ from test_hello import GUEST, QEMU, TIMEOUT
 
 # Where the VideoCore's memory starts, below which everything is loaded
 VC_RAM_BASE = 0x3fc00000
+
+
+def elf(entry, addr, code):
+    """A little-endian AArch64 executable that loads @code at @addr, with
+    its entry point at @entry"""
+    ehsize, phentsize = 64, 56
+    header = struct.pack("<16sHHIQQQIHHHHHH",
+                         b"\x7fELF\x02\x01\x01",    # 64-bit, LSB, version 1
+                         2, 183, 1,                 # ET_EXEC, EM_AARCH64
+                         entry, ehsize, 0,          # entry, phoff, shoff
+                         0, ehsize, phentsize, 1,   # one program header
+                         0, 0, 0)                   # and no sections
+    segment = struct.pack("<IIQQQQQQ",
+                          1, 5,                     # PT_LOAD, R and X
+                          ehsize + phentsize, addr, addr,
+                          len(code), len(code), 0x1000)
+    return header + segment + code
 
 
 @unittest.skipUnless(QEMU.exists() and GUEST.exists(),
@@ -121,6 +139,22 @@ class BiosOptionsTest(unittest.TestCase):
                                        "-M", "raspi5b,secure=on",
                                        "-bios", str(GUEST),
                                        "-kernel", str(image))
+
+    def test_elf_entry(self):
+        """An ELF whose entry point, where the armstub would jump, lies
+        outside what it loads"""
+        with tempfile.TemporaryDirectory() as tmp:
+            kernel = Path(tmp) / "kernel.elf"
+            for entry in (0x40000000, 0x1ffffc, 0x200010):
+                kernel.write_bytes(elf(entry, 0x200000, bytes(16)))
+                with self.subTest(entry=hex(entry)):
+                    self.assertRefused(f"could not load kernel '{kernel}': "
+                                       f"its entry point {entry:#x} lies "
+                                       "outside 0x200000-0x20000f, where it "
+                                       "is loaded",
+                                       "-M", "raspi5b,secure=on",
+                                       "-bios", str(GUEST),
+                                       "-kernel", str(kernel))
 
     def test_past_videocore(self):
         """A device tree placed where it runs into the VideoCore's memory,
