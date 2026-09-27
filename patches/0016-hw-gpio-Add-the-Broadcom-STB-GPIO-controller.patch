@@ -1,0 +1,62 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: A7om <hatter6822@gmail.com>
+Date: Sat, 26 Sep 2026 00:00:00 +0000
+Subject: [PATCH] hw/gpio: Add the Broadcom STB GPIO controller
+
+Broadcom set-top-box SoCs, including the BCM2712 of the Raspberry Pi 5,
+have "UPG GIO" GPIO blocks: banks of up to 32 lines, each with eight
+registers for open drain, data, direction, interrupt polarity, both
+edges, enable, level sensitivity and status. Linux drives them with
+gpio-brcmstb.c. The "bank-widths" property sets the number of lines of
+each bank, and so the number of banks.
+
+Reads of DATA return the level of each line: what an output drives,
+otherwise the level driven into the matching GPIO input, which each
+line's GPIO output follows. Detection watches the lines whatever their
+direction; an edge sets its status bit until cleared, while a
+level-sensitive line keeps its bit set for as long as it is active. The
+one interrupt output is the OR of the enabled status bits of every bank.
+---
+ hw/gpio/Kconfig      | 3 +++
+ hw/gpio/meson.build  | 1 +
+ hw/gpio/trace-events | 7 +++++++
+ 3 files changed, 11 insertions(+)
+
+diff --git a/hw/gpio/Kconfig b/hw/gpio/Kconfig
+index 83d6ba3..85a2299 100644
+--- a/hw/gpio/Kconfig
++++ b/hw/gpio/Kconfig
+@@ -38,3 +38,6 @@ config BCM2835_GPIO
+ config BCM2838_GPIO
+     bool
+     select SD
++
++config BRCMSTB_GPIO
++    bool
+diff --git a/hw/gpio/meson.build b/hw/gpio/meson.build
+index d4465f5..53e3785 100644
+--- a/hw/gpio/meson.build
++++ b/hw/gpio/meson.build
+@@ -12,6 +12,7 @@ system_ss.add(when: 'CONFIG_NRF51_SOC', if_true: files('nrf51_gpio.c'))
+ system_ss.add(when: 'CONFIG_OMAP', if_true: files('omap_gpio.c'))
+ system_ss.add(when: 'CONFIG_BCM2835_GPIO', if_true: files('bcm2835_gpio.c'))
+ system_ss.add(when: 'CONFIG_BCM2838_GPIO', if_true: files('bcm2838_gpio.c'))
++system_ss.add(when: 'CONFIG_BRCMSTB_GPIO', if_true: files('brcmstb_gpio.c'))
+ system_ss.add(when: 'CONFIG_STM32L4X5_SOC', if_true: files('stm32l4x5_gpio.c'))
+ system_ss.add(when: 'CONFIG_ASPEED_SOC', if_true: files('aspeed_gpio.c'))
+ system_ss.add(when: 'CONFIG_ASPEED_SOC', if_true: files('aspeed_sgpio.c'))
+diff --git a/hw/gpio/trace-events b/hw/gpio/trace-events
+index cea896b..1398f4b 100644
+--- a/hw/gpio/trace-events
++++ b/hw/gpio/trace-events
+@@ -46,3 +46,10 @@ stm32l4x5_gpio_read(char *gpio, uint64_t addr) "GPIO%s addr: 0x%" PRIx64 " "
+ stm32l4x5_gpio_write(char *gpio, uint64_t addr, uint64_t data) "GPIO%s addr: 0x%" PRIx64 " val: 0x%" PRIx64 ""
+ stm32l4x5_gpio_update_idr(char *gpio, uint32_t old_idr, uint32_t new_idr) "GPIO%s from: 0x%x to: 0x%x"
+ stm32l4x5_gpio_pins(char *gpio, uint16_t disconnected, uint16_t high) "GPIO%s disconnected pins: 0x%x levels: 0x%x"
++
++# brcmstb_gpio.c
++brcmstb_gpio_read(const char *id, uint64_t offset, uint32_t value) "%s: offset 0x%02" PRIx64 " value 0x%08" PRIx32
++brcmstb_gpio_write(const char *id, uint64_t offset, uint64_t value) "%s: offset 0x%02" PRIx64 " value 0x%08" PRIx64
++brcmstb_gpio_set_input(const char *id, int line, int level) "%s: input %d level %d"
++brcmstb_gpio_output(const char *id, int line, int level) "%s: line %d level %d"
++brcmstb_gpio_irq(const char *id, int level) "%s: interrupt %d"

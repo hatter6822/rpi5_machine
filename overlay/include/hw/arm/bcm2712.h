@@ -12,6 +12,7 @@
 #include "exec/hwaddr.h"
 #include "hw/char/pl011.h"
 #include "hw/display/bcm2835_fb.h"
+#include "hw/gpio/brcmstb_gpio.h"
 #include "hw/intc/arm_gic.h"
 #include "hw/intc/brcmstb_l2_intc.h"
 #include "hw/misc/bcm2711_rng200.h"
@@ -168,6 +169,11 @@ typedef enum BCM2712L2Intc {
     BCM2712_NUM_L2_INTCS
 } BCM2712L2Intc;
 
+/* Inputs of the level 2 controllers, i.e. the N in "interrupts = <N>" */
+enum {
+    BCM2712_MAIN_IRQ_GIO        = 0,    /* of BCM2712_L2_MAIN_IRQ */
+};
+
 struct BCM2712State {
     /*< private >*/
     DeviceState parent_obj;
@@ -180,6 +186,8 @@ struct BCM2712State {
     ARMCPU cpu[BCM2712_NUM_CPUS];
     GICState gic;
     BrcmstbL2IntcState l2_intc[BCM2712_NUM_L2_INTCS];
+    BrcmstbGpioState gio;       /* line n: BCM2712 GPIO n */
+    BrcmstbGpioState gio_aon;   /* line n: always-on GPIO n */
     BCM2835SystemTimerState systimer;
     BCM2835PowerMgtState pm;
     BCM2711Rng200State rng;

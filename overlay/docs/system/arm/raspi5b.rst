@@ -39,7 +39,12 @@ Implemented devices
   (``brcm,l2-intc``) for the display, the always-on block and the
   firmware's doorbells, and the level layout (``brcm,bcm7271-l2-intc``)
   for the other four, among them those of the GPIO block and the HDMI
-  I2C controllers. No device drives their inputs yet
+  I2C controllers
+* The two Broadcom GPIO blocks: GIO at ``0x10_7d50_8500``, 32 + 22 lines,
+  interrupting through the main level 2 controller, and GIO AON at
+  ``0x10_7d51_7c00``, 17 + 6 lines, whose interrupt is not connected, as
+  no device tree gives it one. Every line detects edges and levels,
+  outputs included; nothing on the board drives the lines yet
 * UART10: the PL011 debug UART at ``0x10_7d00_1000``, connected to the
   first ``-serial`` backend
 * 1, 2, 4, 8 or 16 GiB of RAM at physical address 0 (``-m``; default 2 GiB)
@@ -54,7 +59,8 @@ Missing devices
 * Firmware property tags specific to the Pi 5 (clocks, power, RTC, GPIO
   expander); the BCM283x set is answered
 * SD/eMMC controllers, PCIe root complexes and the RP1 south bridge
-* GPIO and pin control
+* Pin control, and the board's use of the GPIO lines (power button, SD
+  card detect, LEDs)
 * Power domains (only V3D's is driven by Linux on this SoC)
 * Display (HVS, HDMI), V3D and ISP
 
@@ -169,11 +175,11 @@ Device tree
 Without ``-dtb``, the machine generates a device tree describing what it
 models, derived from its memory map: the CPUs with PSCI, the generic timer,
 the PMU, the GIC, the system timer, the mailbox and the firmware interface,
-the PM block, the RNG, the level 2 interrupt controllers, UART10
-(``serial10``, the ``stdout-path``), the fixed clocks, and a CMA pool in
-the first GiB, where the VideoCore can reach Linux's buffers. Node names
-and properties follow Linux's ``bcm2712.dtsi`` and the firmware's tree,
-and the result validates against the Linux bindings, but for what the
+the PM block, the RNG, the level 2 interrupt controllers, the GPIO blocks,
+UART10 (``serial10``, the ``stdout-path``), the fixed clocks, and a CMA
+pool in the first GiB, where the VideoCore can reach Linux's buffers. Node
+names and properties follow Linux's ``bcm2712.dtsi`` and the firmware's
+tree, and the result validates against the Linux bindings, but for what the
 firmware adds for the OS, which no binding describes. ``-machine
 raspi5b,builtin-dtb=off`` gives the guest no device tree at all, like an
 empty ``device_tree=`` line in the firmware's ``config.txt``.

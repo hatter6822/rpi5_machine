@@ -59,16 +59,16 @@ commit (or a short series) with its own tests.
 
 ## 2. Current state
 
-Delivered so far: M1 (WS0.1–WS0.3, WS0.5, WS0.6, WS2.1, WS2.2, WS2.3a, WS2.4, WS2.5, WS3.2, WS3.6, WS9.2), M2 (WS1.2, WS1.5, WS3.1, WS3.3, WS3.4) and, of M3, WS4.1:
+Delivered so far: M1 (WS0.1–WS0.3, WS0.5, WS0.6, WS2.1, WS2.2, WS2.3a, WS2.4, WS2.5, WS3.2, WS3.6, WS9.2), M2 (WS1.2, WS1.5, WS3.1, WS3.3, WS3.4) and, of M3, WS4.1 and WS4.2:
 
 | Area | State |
 | --- | --- |
 | Repository | pinned QEMU v11.1.1 submodule, overlay + patch series (patches may share files, like an upstream series) managed by `scripts/qemu-tree`, which also exports the upstream series (WS0.5: a commit per patch and a cover letter, checked with `git am`, checkpatch and a build of every commit), CI with ccache |
 | Kconfig (WS0.6) | every BCM283x device model has its own symbol, so `bcm2712` can select just the models it reuses; a `raspi5b`-only build is tested (`make check-minimal`) |
-| SoC (`bcm2712`) | 1–4 Cortex-A76 (`MPIDR.Aff1` = core with `MPIDR.MT` set (WS1.2), CNTFRQ 54 MHz, optional EL3, the IMPDEF registers firmware writes (WS1.5), warm reset through `RMR_EL3` (WS3.3)), GIC-400 with 288 SPIs, 5 priority bits and all timer/maintenance PPIs, UART10 (PL011), system timer (WS2.1), watchdog and reset status (WS2.4), RNG200 (WS2.5), the seven brcmstb level 2 interrupt controllers (WS4.1), VideoCore mailbox with the BCM283x property and framebuffer channels (WS2.2) and every identity tag answered (WS2.3a), complete memory map with T0 placeholders and two catch-all windows |
+| SoC (`bcm2712`) | 1–4 Cortex-A76 (`MPIDR.Aff1` = core with `MPIDR.MT` set (WS1.2), CNTFRQ 54 MHz, optional EL3, the IMPDEF registers firmware writes (WS1.5), warm reset through `RMR_EL3` (WS3.3)), GIC-400 with 288 SPIs, 5 priority bits and all timer/maintenance PPIs, UART10 (PL011), system timer (WS2.1), watchdog and reset status (WS2.4), RNG200 (WS2.5), the seven brcmstb level 2 interrupt controllers (WS4.1), the two brcmstb GPIO blocks (WS4.2), VideoCore mailbox with the BCM283x property and framebuffer channels (WS2.2) and every identity tag answered (WS2.3a), complete memory map with T0 placeholders and two catch-all windows |
 | Board (`raspi5b`) | 1/2/4/8/16 GiB RAM, board revision code, serial number (`serial=`), PSCI over SMC with EL2 entry (default) or guest-owned EL3 (`secure=on`), firmware such as TF-A's BL31 loaded with `-bios` and handed the kernel, initrd and device tree as the Pi's firmware does (WS3.3), system reset and power-off through PSCI, the watchdog and the monitor (WS3.6), a built-in device tree when no `-dtb` is given (WS3.2; `builtin-dtb=off` passes none), and in whichever tree the guest gets the firmware's changes, made anew for each boot (WS3.1): model, serial number, the command line it builds, `/chosen` with the boot's reset status, partition and count, a 5 A supply and seeds, the CMA size, the bootloader configuration, the Ethernet address, unmodelled devices disabled |
-| Tests | qtest (UART IDs, GIC geometry, priority bits and security, RAM, placeholders, system timer, watchdog, mailbox, identity tags, RNG, L2 interrupt controllers), the built-in tree validated against the Linux v6.18 bindings (`make check-dt`), the device-tree fix-ups (each one, the built-in tree against a checked-in dump, the values of each boot across resets and migration), bare-metal smoke guest (EL, MPIDR, CNTFRQ, PSCI CPU_ON on all cores, SYSTEM_OFF, EL3 mode), and the bare-metal suite (WS9.2, 29 tests: GIC and the Secure/Non-secure group split, each core's MPIDR, every timer on every core, SGIs between all core pairs, SPI routing, PSCI, the system timer, the mailbox and identity tags, the RNG, a software-raised interrupt through each edge-layout L2 controller, UART receive and loopback, a watchdog reset and four system resets checked against the boot state, an ID-register dump, the A76's IMPDEF registers; 1–4 cores, with the built-in tree, a `-dtb` one and none, EL2 and EL3), the `-bios` handoff (qtest), and real firmware (`make check-firmware`, all pinned: the smoke guest and the suite on TF-A's `rpi5` BL31, Linux on TF-A and through U-Boot, the EDK2 port to its shell, and the changes to the firmware's tree against a checked-in list) |
-| Linux and firmware | the stock Raspberry Pi OS kernel (6.18) boots on 4 CPUs to the root-fs mount, without warnings ("firmware out-of-date" included), with KASLR and registering every L2 interrupt controller its tree enables, with the firmware's `bcm2712-rpi-5-b.dtb` and on the built-in tree (1, 2 and 8 GiB), directly, on TF-A's BL31 or through U-Boot on it (WS3.4); the EDK2 port reaches the UEFI shell |
+| Tests | qtest (UART IDs, GIC geometry, priority bits and security, RAM, placeholders, system timer, watchdog, mailbox, identity tags, RNG, L2 interrupt controllers, GPIO), the built-in tree validated against the Linux v6.18 bindings (`make check-dt`), the device-tree fix-ups (each one, the built-in tree against a checked-in dump, the values of each boot across resets and migration), bare-metal smoke guest (EL, MPIDR, CNTFRQ, PSCI CPU_ON on all cores, SYSTEM_OFF, EL3 mode), and the bare-metal suite (WS9.2, 30 tests: GIC and the Secure/Non-secure group split, each core's MPIDR, every timer on every core, SGIs between all core pairs, SPI routing, PSCI, the system timer, the mailbox and identity tags, the RNG, a software-raised interrupt through each edge-layout L2 controller, a GPIO output's own edge through GIO's, UART receive and loopback, a watchdog reset and four system resets checked against the boot state, an ID-register dump, the A76's IMPDEF registers; 1–4 cores, with the built-in tree, a `-dtb` one and none, EL2 and EL3), the `-bios` handoff (qtest), and real firmware (`make check-firmware`, all pinned: the smoke guest and the suite on TF-A's `rpi5` BL31, Linux on TF-A and through U-Boot, the EDK2 port to its shell, and the changes to the firmware's tree against a checked-in list) |
+| Linux and firmware | the stock Raspberry Pi OS kernel (6.18) boots on 4 CPUs to the root-fs mount, without warnings ("firmware out-of-date" included), with KASLR, registering every L2 interrupt controller its tree enables and listing both GPIO blocks with their banks, with the firmware's `bcm2712-rpi-5-b.dtb` and on the built-in tree (1, 2 and 8 GiB), directly, on TF-A's BL31 or through U-Boot on it (WS3.4); the EDK2 port reaches the UEFI shell |
 
 Known provisional values, each marked in the code: 288 SPIs
 (`TODO(WS1.3)`), the VideoCore memory size and DMA channel mask
@@ -966,7 +966,41 @@ downstream DT; the Linux log shows "parent irq: 27").
 follow); Linux registers all L2 controllers (already visible as
 `irq_brcmstb_l2: registered L2 intc` lines).
 
-#### WS4.2 brcmstb GPIO (M)
+#### WS4.2 brcmstb GPIO (done)
+*Delivered:* a new model, `brcmstb-gpio` (`hw/gpio/brcmstb_gpio.c`), with
+its Kconfig symbol, meson line and trace events as upstream-first patch
+0016, ahead of the SoC patch. A `bank-widths` array property sets the
+banks and their lines; the SoC gives GIO 32 + 22 lines and GIO AON
+17 + 6, as `bcm2712.dtsi` does (the Pi 5's own tree trims GIO's second
+bank to 4). The semantics below hold, with the details the driver leaves
+open settled as follows (TODO(WS0.4)): `DATA` reads the level of each
+line (the level driven in from outside for an input or a released
+open-drain output, the output's own otherwise), and detection watches
+that level whatever the direction, so an output interrupts on its own
+edges; an edge latches its `STAT` bit whether or not `MASK` enables it;
+a level-sensitive line keeps setting its bit while at its active level,
+and the bit stays set until written with 1 once the line has left it.
+Reset makes every line an input with every interrupt disabled and
+falling-edge detection, and latches nothing; input levels survive it.
+Bits beyond a bank's width read as zero. GIO interrupts through input 0
+of `main_irq`; GIO AON's output stays unconnected. Both nodes are in the
+built-in tree (`brcm,bcm7445-gpio`, as the binding requires, and no
+`brcm,gpio-direct`, which it forbids), each L2 controller node gets a
+phandle, and `brcm,brcmstb-gpio` leaves the list of compatibles disabled
+in a `-dtb` tree. qtests cover reset values, bank widths, `DATA` for
+inputs, outputs and open-drain lines and the GPIO outputs that follow
+them, each edge mode, masking, both level polarities, GIO AON going
+nowhere, system reset and migration; the bare-metal suite takes an
+output's own rising edge through GIO, `main_irq` and SPI 244, acking it
+as Linux does (`gpio/loopback-irq`). Linux (6.18, `gpio-brcmstb`) lists
+four chips on the built-in tree (32, 22, 17 and 6 lines) and on the
+firmware's tree (32, 4, 17 and 6, with its line names, the RP1 run hog
+and the SD regulators' lines as outputs), and delivers edge events on a
+line driven from the host through qtest's `set_irq_in`. The firmware's
+power button (GIO 20) and card detect (AON 5) stay with WS4.6 and
+WS5.1: `gpio-keys` defers until pin control is enabled (WS4.3), and must
+find GIO 20 high by then, so WS4.6 comes first.
+
 **Depends:** WS4.1.
 `brcm,brcmstb-gpio` from Linux `gpio-brcmstb.c`: per bank of 32 lines,
 eight 32-bit registers at a `0x20` stride: `ODEN` (open drain), `DATA`,

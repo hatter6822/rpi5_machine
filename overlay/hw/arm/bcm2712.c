@@ -24,6 +24,7 @@
 #include "hw/core/sysbus.h"
 #include "hw/misc/bcm2835_mbox_defs.h"
 #include "hw/misc/unimp.h"
+#include "qobject/qlist.h"
 #include "system/address-spaces.h"
 #include "system/device_tree.h"
 #include "system/system.h"
@@ -155,6 +156,14 @@ static const struct {
         L2_LEVEL_COMPAT,
     },
 };
+
+/*
+ * The lines in each bank of the two GPIO blocks, as bcm2712.dtsi has
+ * them. The Pi 5's own tree trims GIO's second bank to the 4 lines the
+ * board uses.
+ */
+static const uint32_t bcm2712_gio_widths[] = { 32, 22 };
+static const uint32_t bcm2712_gio_aon_widths[] = { 17, 6 };
 
 /* GIC-400 register frames, relative to bcm2712_memmap[BCM2712_GIC] */
 #define GIC400_DIST_OFS             0x1000
@@ -303,6 +312,8 @@ static void bcm2712_init(Object *obj)
         object_initialize_child(obj, bcm2712_l2_intcs[i].name, &s->l2_intc[i],
                                 TYPE_BRCMSTB_L2_INTC);
     }
+    object_initialize_child(obj, "gio", &s->gio, TYPE_BRCMSTB_GPIO);
+    object_initialize_child(obj, "gio-aon", &s->gio_aon, TYPE_BRCMSTB_GPIO);
     object_initialize_child(obj, "systimer", &s->systimer,
                             TYPE_BCM2835_SYSTIMER);
     object_initialize_child(obj, "pm", &s->pm, TYPE_BCM2835_POWERMGT);
@@ -352,6 +363,46 @@ static bool bcm2712_realize_l2_intcs(BCM2712State *s, Error **errp)
         bcm2712_map(sbd, 0, bcm2712_l2_intcs[i].dev);
         sysbus_connect_irq(sbd, 0, bcm2712_spi(s, bcm2712_l2_intcs[i].spi));
     }
+    return true;
+}
+
+static bool bcm2712_realize_gpio(BrcmstbGpioState *gpio, BCM2712Device dev,
+                                 const uint32_t *widths, size_t banks,
+                                 Error **errp)
+{
+    QList *list = qlist_new();
+
+    for (size_t i = 0; i < banks; i++) {
+        qlist_append_int(list, widths[i]);
+    }
+    qdev_prop_set_array(DEVICE(gpio), "bank-widths", list);
+    if (!sysbus_realize(SYS_BUS_DEVICE(gpio), errp)) {
+        return false;
+    }
+    bcm2712_map(SYS_BUS_DEVICE(gpio), 0, dev);
+    return true;
+}
+
+/*
+ * The two GPIO blocks. GIO interrupts through the main level 2
+ * controller. GIO AON's interrupt output stays unconnected: no tree says
+ * where it goes, and bcm2712.dtsi deliberately leaves the block without
+ * interrupt-controller, as the firmware watches the PMIC's interrupt
+ * line through it.
+ */
+static bool bcm2712_realize_gpios(BCM2712State *s, Error **errp)
+{
+    DeviceState *main_irq = DEVICE(&s->l2_intc[BCM2712_L2_MAIN_IRQ]);
+
+    if (!bcm2712_realize_gpio(&s->gio, BCM2712_GIO, bcm2712_gio_widths,
+                              ARRAY_SIZE(bcm2712_gio_widths), errp) ||
+        !bcm2712_realize_gpio(&s->gio_aon, BCM2712_GIO_AON,
+                              bcm2712_gio_aon_widths,
+                              ARRAY_SIZE(bcm2712_gio_aon_widths), errp)) {
+        return false;
+    }
+    sysbus_connect_irq(SYS_BUS_DEVICE(&s->gio), 0,
+                       qdev_get_gpio_in(main_irq, BCM2712_MAIN_IRQ_GIO));
     return true;
 }
 
@@ -497,6 +548,7 @@ static void bcm2712_realize(DeviceState *dev, Error **errp)
 
     if (!bcm2712_realize_cpus(s, errp) || !bcm2712_realize_gic(s, errp) ||
         !bcm2712_realize_l2_intcs(s, errp) ||
+        !bcm2712_realize_gpios(s, errp) ||
         !bcm2712_realize_systimer(s, errp) || !bcm2712_realize_pm(s, errp) ||
         !bcm2712_realize_rng(s, errp) || !bcm2712_realize_vc(s, errp)) {
         return;
@@ -684,19 +736,60 @@ static uint32_t bcm2712_fdt_gic(BCM2712State *s, void *fdt)
 }
 
 /* In reverse, since libfdt adds each subnode first */
-static void bcm2712_fdt_l2_intcs(void *fdt)
+static void bcm2712_fdt_l2_intcs(void *fdt, uint32_t *phandles)
 {
     for (int i = BCM2712_NUM_L2_INTCS - 1; i >= 0; i--) {
         g_autofree char *path = bcm2712_fdt_soc_node(fdt,
             "interrupt-controller", bcm2712_l2_intcs[i].dev,
             bcm2712_l2_intcs[i].compat, bcm2712_l2_intcs[i].compat_len);
 
+        phandles[i] = qemu_fdt_alloc_phandle(fdt);
         qemu_fdt_setprop_cells(fdt, path, "interrupts", GIC_FDT_IRQ_TYPE_SPI,
                                bcm2712_l2_intcs[i].spi,
                                GIC_FDT_IRQ_FLAGS_LEVEL_HI);
         qemu_fdt_setprop(fdt, path, "interrupt-controller", NULL, 0);
         qemu_fdt_setprop_cell(fdt, path, "#interrupt-cells", 1);
+        qemu_fdt_setprop_cell(fdt, path, "phandle", phandles[i]);
     }
+}
+
+/*
+ * A GPIO block, as bcm2712.dtsi has it; the binding takes no
+ * brcm,gpio-direct, which the firmware's tree adds
+ */
+static char *bcm2712_fdt_gpio(void *fdt, BCM2712Device dev,
+                              const uint32_t *widths, size_t banks)
+{
+    static const char compat[] = "brcm,bcm7445-gpio\0brcm,brcmstb-gpio";
+    g_autofree uint32_t *cells = g_new(uint32_t, banks);
+    char *path = bcm2712_fdt_soc_node(fdt, "gpio", dev, compat,
+                                      sizeof(compat));
+
+    for (size_t i = 0; i < banks; i++) {
+        cells[i] = cpu_to_be32(widths[i]);
+    }
+    qemu_fdt_setprop(fdt, path, "gpio-controller", NULL, 0);
+    qemu_fdt_setprop_cell(fdt, path, "#gpio-cells", 2);
+    qemu_fdt_setprop(fdt, path, "brcm,gpio-bank-widths", cells,
+                     banks * sizeof(uint32_t));
+    return path;
+}
+
+/* In reverse, since libfdt adds each subnode first */
+static void bcm2712_fdt_gpios(void *fdt, const uint32_t *l2_phandles)
+{
+    g_autofree char *gio_aon = NULL, *gio = NULL;
+
+    gio_aon = bcm2712_fdt_gpio(fdt, BCM2712_GIO_AON, bcm2712_gio_aon_widths,
+                               ARRAY_SIZE(bcm2712_gio_aon_widths));
+
+    gio = bcm2712_fdt_gpio(fdt, BCM2712_GIO, bcm2712_gio_widths,
+                           ARRAY_SIZE(bcm2712_gio_widths));
+    qemu_fdt_setprop_cell(fdt, gio, "interrupt-parent",
+                          l2_phandles[BCM2712_L2_MAIN_IRQ]);
+    qemu_fdt_setprop_cell(fdt, gio, "interrupts", BCM2712_MAIN_IRQ_GIO);
+    qemu_fdt_setprop(fdt, gio, "interrupt-controller", NULL, 0);
+    qemu_fdt_setprop_cell(fdt, gio, "#interrupt-cells", 2);
 }
 
 void bcm2712_fdt_populate(BCM2712State *s, void *fdt)
@@ -706,6 +799,7 @@ void bcm2712_fdt_populate(BCM2712State *s, void *fdt)
     static const char firmware_compat[] =
         "raspberrypi,bcm2835-firmware\0simple-mfd";
     uint32_t cpu_phandles[BCM2712_NUM_CPUS];
+    uint32_t l2_phandles[BCM2712_NUM_L2_INTCS];
     uint32_t gic, clk_uart, clk_vpu, mbox;
     g_autofree char *systimer = NULL, *mailbox = NULL, *uart = NULL;
     g_autofree char *pm = NULL, *rng = NULL;
@@ -735,7 +829,8 @@ void bcm2712_fdt_populate(BCM2712State *s, void *fdt)
     qemu_fdt_setprop_cell(fdt, "/", "interrupt-parent", gic);
     bcm2712_fdt_cpu_irqs(s, fdt, cpu_phandles);
 
-    bcm2712_fdt_l2_intcs(fdt);
+    bcm2712_fdt_l2_intcs(fdt, l2_phandles);
+    bcm2712_fdt_gpios(fdt, l2_phandles);
 
     rng = bcm2712_fdt_soc_node(fdt, "rng", BCM2712_RNG,
                                "brcm,bcm2711-rng200",

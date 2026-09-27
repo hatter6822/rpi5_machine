@@ -26,18 +26,18 @@ STATUS & ~MASK. Reset masks every input.
  4 files changed, 12 insertions(+)
 
 diff --git a/MAINTAINERS b/MAINTAINERS
-index da5355f..fe588e2 100644
+index da5355f..cfbbbdb 100644
 --- a/MAINTAINERS
 +++ b/MAINTAINERS
 @@ -1020,9 +1020,11 @@ S: Odd Fixes
  F: hw/arm/raspi*.c
  F: hw/*/bcm27*
  F: hw/*/bcm283*
-+F: hw/intc/brcmstb_l2_intc.c
++F: hw/*/brcmstb*
  F: include/hw/arm/rasp*
  F: include/hw/*/bcm27*
  F: include/hw/*/bcm283*
-+F: include/hw/intc/brcmstb_l2_intc.h
++F: include/hw/*/brcmstb*
  F: docs/system/arm/raspi.rst
  F: tests/functional/arm/test_raspi2.py
  F: tests/functional/aarch64/test_raspi*.py

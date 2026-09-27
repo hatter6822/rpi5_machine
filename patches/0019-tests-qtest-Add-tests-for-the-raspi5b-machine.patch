@@ -16,10 +16,10 @@ level 2 interrupt controllers.
  2 files changed, 2 insertions(+)
 
 diff --git a/MAINTAINERS b/MAINTAINERS
-index fe588e2..9b0d2be 100644
+index cfbbbdb..2bb2f5f 100644
 --- a/MAINTAINERS
 +++ b/MAINTAINERS
-@@ -1028,6 +1028,7 @@ F: include/hw/intc/brcmstb_l2_intc.h
+@@ -1028,6 +1028,7 @@ F: include/hw/*/brcmstb*
  F: docs/system/arm/raspi.rst
  F: tests/functional/arm/test_raspi2.py
  F: tests/functional/aarch64/test_raspi*.py

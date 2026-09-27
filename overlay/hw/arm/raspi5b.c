@@ -192,7 +192,6 @@ static const char *const raspi5b_unmodelled_compatibles[] = {
     "brcm,bcm2712-pispbe",
     "brcm,bcm2712c0-pinctrl",
     "brcm,bcm2712c0-aon-pinctrl",
-    "brcm,brcmstb-gpio",
     "brcm,brcmstb-reset",
     "brcm,bcm7216-pcie-sata-rescal",
     /* Nodes only present in the Raspberry Pi downstream device tree */

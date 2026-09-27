@@ -22,11 +22,9 @@
 + /soc@107c000000/reset-controller@119500:status = "disabled"
 ~ /soc@107c000000/mmc@fff000:status = "disabled" (was "okay")
 + /soc@107c000000/reset-controller@1504318:status = "disabled"
-+ /soc@107c000000/gpio@7d517c00:status = "disabled"
 + /soc@107c000000/clock@7c700000:status = "disabled"
 ~ /soc@107c000000/spi@7d004000:status = "disabled" (was "okay")
 + /soc@107c000000/pinctrl@7d504100:status = "disabled"
-+ /soc@107c000000/gpio@7d508500:status = "disabled"
 ~ /soc@107c000000/serial@7d50c000:status = "disabled" (was "okay")
 + /soc@107c000000/pinctrl@7d510700:status = "disabled"
 ~ /soc@107c000000/avs-monitor@7d542000:status = "disabled" (was "okay")

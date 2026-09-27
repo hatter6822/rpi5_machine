@@ -8,6 +8,7 @@
 
 hw-misc-Add-the-Broadcom-RNG200-random-number-generator: hw/misc/bcm2711_rng200.c include/hw/misc/bcm2711_rng200.h
 hw-intc-Add-the-Broadcom-STB-level-2-interrupt-controller: hw/intc/brcmstb_l2_intc.c include/hw/intc/brcmstb_l2_intc.h
+hw-gpio-Add-the-Broadcom-STB-GPIO-controller: hw/gpio/brcmstb_gpio.c include/hw/gpio/brcmstb_gpio.h
 hw-arm-Add-the-Broadcom-BCM2712-SoC: hw/arm/bcm2712.c include/hw/arm/bcm2712.h
 hw-arm-Add-the-Raspberry-Pi-5-Model-B-machine: hw/arm/raspi5b.c
 tests-qtest-Add-tests-for-the-raspi5b-machine: tests/qtest/raspi5b-test.c

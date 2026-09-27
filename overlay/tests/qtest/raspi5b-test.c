@@ -1291,6 +1291,419 @@ static void test_l2_intc_migrate(void)
     unlink(file);
 }
 
+/*
+ * brcmstb GPIO blocks (Linux gpio-brcmstb.c): banks of up to 32 lines,
+ * each with eight registers at a 0x20 stride. Their inputs are driven and
+ * their outputs watched from qtest through the SoC's children.
+ */
+#define GIO_ODEN                0x00
+#define GIO_DATA                0x04
+#define GIO_IODIR               0x08
+#define GIO_EC                  0x0c
+#define GIO_EI                  0x10
+#define GIO_MASK                0x14
+#define GIO_LEVEL               0x18
+#define GIO_STAT                0x1c
+#define GIO_BANK_SIZE           0x20
+#define GIO_BANK_LINES          32
+
+typedef struct Gio {
+    const char *name;           /* child of /machine/soc */
+    uint64_t base;
+    uint32_t widths[2];         /* bcm2712.dtsi */
+} Gio;
+
+static const Gio gios[] = {
+    { "gio",        0x107d508500ULL, { 32, 22 } },
+    { "gio-aon",    0x107d517c00ULL, { 17, 6 } },
+};
+
+#define GIO             (&gios[0])
+#define GIO_AON         (&gios[1])
+
+static uint32_t gio_readl(QTestState *qts, const Gio *gio, int bank,
+                          uint32_t reg)
+{
+    return qtest_readl(qts, gio->base + bank * GIO_BANK_SIZE + reg);
+}
+
+static void gio_writel(QTestState *qts, const Gio *gio, int bank,
+                       uint32_t reg, uint32_t val)
+{
+    qtest_writel(qts, gio->base + bank * GIO_BANK_SIZE + reg, val);
+}
+
+/* Drive @line (bank @line / 32) from outside */
+static void gio_set_input(QTestState *qts, const Gio *gio, int line,
+                          int level)
+{
+    g_autofree char *path = g_strdup_printf("/machine/soc/%s", gio->name);
+
+    qtest_set_irq_in(qts, path, NULL, line, level);
+}
+
+static uint32_t gio_valid(const Gio *gio, int bank)
+{
+    return MAKE_64BIT_MASK(0, gio->widths[bank]);
+}
+
+/* GIO interrupts through main_irq, which resets with every input masked */
+static void gio_unmask_main_irq(QTestState *qts)
+{
+    l2_writel(qts, L2_MAIN_IRQ, L2_LEVEL_MASK_CLEAR, BIT(0));
+}
+
+static bool gio_irq(QTestState *qts)
+{
+    bool status = l2_readl(qts, L2_MAIN_IRQ, L2_LEVEL_STATUS) & BIT(0);
+
+    g_assert_cmpint(gic_spi_pending(qts, L2_MAIN_IRQ->spi), ==, status);
+    return status;
+}
+
+static void gio_check_reset(QTestState *qts)
+{
+    for (int i = 0; i < ARRAY_SIZE(gios); i++) {
+        for (int bank = 0; bank < ARRAY_SIZE(gios[i].widths); bank++) {
+            const Gio *gio = &gios[i];
+
+            g_assert_cmphex(gio_readl(qts, gio, bank, GIO_ODEN), ==, 0);
+            g_assert_cmphex(gio_readl(qts, gio, bank, GIO_IODIR), ==,
+                            gio_valid(gio, bank));
+            g_assert_cmphex(gio_readl(qts, gio, bank, GIO_EC), ==, 0);
+            g_assert_cmphex(gio_readl(qts, gio, bank, GIO_EI), ==, 0);
+            g_assert_cmphex(gio_readl(qts, gio, bank, GIO_MASK), ==, 0);
+            g_assert_cmphex(gio_readl(qts, gio, bank, GIO_LEVEL), ==, 0);
+            g_assert_cmphex(gio_readl(qts, gio, bank, GIO_STAT), ==, 0);
+        }
+    }
+    g_assert_false(l2_readl(qts, L2_MAIN_IRQ, L2_LEVEL_STATUS) & BIT(0));
+}
+
+/* Every line an input, every interrupt disabled, nothing pending */
+static void test_gio_reset_values(void)
+{
+    QTestState *qts = qtest_init("-machine raspi5b");
+
+    gio_check_reset(qts);
+    for (int i = 0; i < ARRAY_SIZE(gios); i++) {
+        for (int bank = 0; bank < ARRAY_SIZE(gios[i].widths); bank++) {
+            g_assert_cmphex(gio_readl(qts, &gios[i], bank, GIO_DATA), ==, 0);
+        }
+    }
+    qtest_quit(qts);
+}
+
+/* Bits beyond a bank's width read as zero, whatever is written or driven */
+static void test_gio_widths(void)
+{
+    static const struct {
+        uint32_t reg, reset;
+    } regs[] = {
+        { GIO_ODEN, 0 }, { GIO_IODIR, UINT32_MAX }, { GIO_EC, 0 },
+        { GIO_EI, 0 }, { GIO_MASK, 0 }, { GIO_LEVEL, 0 },
+    };
+    QTestState *qts = qtest_init("-machine raspi5b");
+
+    for (int i = 0; i < ARRAY_SIZE(gios); i++) {
+        for (int bank = 0; bank < ARRAY_SIZE(gios[i].widths); bank++) {
+            const Gio *gio = &gios[i];
+            uint32_t valid = gio_valid(gio, bank);
+
+            for (int r = 0; r < ARRAY_SIZE(regs); r++) {
+                gio_writel(qts, gio, bank, regs[r].reg, UINT32_MAX);
+                g_assert_cmphex(gio_readl(qts, gio, bank, regs[r].reg), ==,
+                                valid);
+                gio_writel(qts, gio, bank, regs[r].reg, regs[r].reset);
+            }
+
+            /* Every line an output driving high, then an input again */
+            gio_writel(qts, gio, bank, GIO_IODIR, 0);
+            gio_writel(qts, gio, bank, GIO_DATA, UINT32_MAX);
+            g_assert_cmphex(gio_readl(qts, gio, bank, GIO_DATA), ==, valid);
+            gio_writel(qts, gio, bank, GIO_IODIR, UINT32_MAX);
+
+            /* Low levels, then falling edges, latched every line */
+            g_assert_cmphex(gio_readl(qts, gio, bank, GIO_STAT), ==, valid);
+            gio_writel(qts, gio, bank, GIO_STAT, UINT32_MAX);
+            g_assert_cmphex(gio_readl(qts, gio, bank, GIO_STAT), ==, 0);
+
+            /* The inputs past the last line lead nowhere */
+            for (int bit = gio->widths[bank]; bit < GIO_BANK_LINES; bit++) {
+                gio_set_input(qts, gio, bank * GIO_BANK_LINES + bit, 1);
+            }
+            g_assert_cmphex(gio_readl(qts, gio, bank, GIO_DATA), ==, 0);
+            g_assert_cmphex(gio_readl(qts, gio, bank, GIO_STAT), ==, 0);
+        }
+    }
+    qtest_quit(qts);
+}
+
+/*
+ * DATA reads the level of the lines: an input's from outside, an
+ * output's own unless it is open-drain and released. The same levels
+ * come out of the block's GPIO outputs.
+ */
+static void test_gio_data(void)
+{
+    QTestState *qts = qtest_init("-machine raspi5b");
+    const Gio *gio = GIO;
+    const int line = GIO_BANK_LINES + 3;        /* bank 1, bit 3 */
+
+    qtest_irq_intercept_out(qts, "/machine/soc/gio");
+
+    gio_set_input(qts, gio, line, 1);
+    g_assert_cmphex(gio_readl(qts, gio, 1, GIO_DATA), ==, BIT(3));
+    g_assert_true(qtest_get_irq(qts, line));
+
+    /* An output drives low whatever comes in, and high */
+    gio_writel(qts, gio, 1, GIO_IODIR, gio_valid(gio, 1) & ~BIT(3));
+    g_assert_cmphex(gio_readl(qts, gio, 1, GIO_DATA), ==, 0);
+    g_assert_false(qtest_get_irq(qts, line));
+    gio_writel(qts, gio, 1, GIO_DATA, BIT(3));
+    gio_set_input(qts, gio, line, 0);
+    g_assert_cmphex(gio_readl(qts, gio, 1, GIO_DATA), ==, BIT(3));
+    g_assert_true(qtest_get_irq(qts, line));
+
+    /* Open-drain: high releases the line to its input level */
+    gio_writel(qts, gio, 1, GIO_ODEN, BIT(3));
+    g_assert_cmphex(gio_readl(qts, gio, 1, GIO_DATA), ==, 0);
+    g_assert_false(qtest_get_irq(qts, line));
+    gio_set_input(qts, gio, line, 1);
+    g_assert_cmphex(gio_readl(qts, gio, 1, GIO_DATA), ==, BIT(3));
+    gio_writel(qts, gio, 1, GIO_DATA, 0);
+    g_assert_cmphex(gio_readl(qts, gio, 1, GIO_DATA), ==, 0);
+    g_assert_false(qtest_get_irq(qts, line));
+
+    /* Back to an input: the level from outside again */
+    gio_writel(qts, gio, 1, GIO_IODIR, gio_valid(gio, 1));
+    g_assert_cmphex(gio_readl(qts, gio, 1, GIO_DATA), ==, BIT(3));
+    g_assert_true(qtest_get_irq(qts, line));
+    /* Other lines stayed where they were */
+    g_assert_cmphex(gio_readl(qts, gio, 0, GIO_DATA), ==, 0);
+
+    qtest_quit(qts);
+}
+
+/*
+ * Edge detection: falling with EC clear, rising with it set, both with EI
+ * set. An edge latches its STAT bit until written with 1, masked or not,
+ * and interrupts through main_irq while MASK enables it. Outputs are
+ * watched too.
+ */
+static void test_gio_edges(void)
+{
+    QTestState *qts = qtest_init("-machine raspi5b");
+    const Gio *gio = GIO;
+
+    gio_unmask_main_irq(qts);
+
+    /* Falling */
+    gio_writel(qts, gio, 0, GIO_MASK, BIT(7));
+    gio_set_input(qts, gio, 7, 1);
+    g_assert_cmphex(gio_readl(qts, gio, 0, GIO_STAT), ==, 0);
+    g_assert_false(gio_irq(qts));
+    gio_set_input(qts, gio, 7, 0);
+    g_assert_cmphex(gio_readl(qts, gio, 0, GIO_STAT), ==, BIT(7));
+    g_assert_true(gio_irq(qts));
+    gio_writel(qts, gio, 0, GIO_STAT, BIT(7));
+    g_assert_cmphex(gio_readl(qts, gio, 0, GIO_STAT), ==, 0);
+    g_assert_false(gio_irq(qts));
+
+    /* Rising */
+    gio_writel(qts, gio, 0, GIO_EC, BIT(7));
+    gio_set_input(qts, gio, 7, 1);
+    g_assert_cmphex(gio_readl(qts, gio, 0, GIO_STAT), ==, BIT(7));
+    gio_writel(qts, gio, 0, GIO_STAT, BIT(7));
+    gio_set_input(qts, gio, 7, 0);
+    g_assert_cmphex(gio_readl(qts, gio, 0, GIO_STAT), ==, 0);
+
+    /* Both */
+    gio_writel(qts, gio, 0, GIO_EI, BIT(7));
+    gio_set_input(qts, gio, 7, 1);
+    g_assert_cmphex(gio_readl(qts, gio, 0, GIO_STAT), ==, BIT(7));
+    gio_writel(qts, gio, 0, GIO_STAT, BIT(7));
+    gio_set_input(qts, gio, 7, 0);
+    g_assert_cmphex(gio_readl(qts, gio, 0, GIO_STAT), ==, BIT(7));
+    gio_writel(qts, gio, 0, GIO_STAT, BIT(7));
+    g_assert_false(gio_irq(qts));
+
+    /* Masked: latched all the same, and interrupts once enabled */
+    gio_writel(qts, gio, 0, GIO_MASK, 0);
+    gio_set_input(qts, gio, 7, 1);
+    g_assert_cmphex(gio_readl(qts, gio, 0, GIO_STAT), ==, BIT(7));
+    g_assert_false(gio_irq(qts));
+    gio_writel(qts, gio, 0, GIO_MASK, BIT(7));
+    g_assert_true(gio_irq(qts));
+    gio_writel(qts, gio, 0, GIO_STAT, BIT(7));
+    g_assert_false(gio_irq(qts));
+
+    /* An output's own edge, in the other bank: one interrupt for both */
+    gio_writel(qts, gio, 1, GIO_EC, BIT(21));
+    gio_writel(qts, gio, 1, GIO_MASK, BIT(21));
+    gio_writel(qts, gio, 1, GIO_IODIR, gio_valid(gio, 1) & ~BIT(21));
+    g_assert_false(gio_irq(qts));
+    gio_writel(qts, gio, 1, GIO_DATA, BIT(21));
+    g_assert_cmphex(gio_readl(qts, gio, 1, GIO_STAT), ==, BIT(21));
+    g_assert_true(gio_irq(qts));
+    gio_set_input(qts, gio, 7, 0);
+    gio_set_input(qts, gio, 7, 1);
+    gio_writel(qts, gio, 1, GIO_STAT, BIT(21));
+    g_assert_true(gio_irq(qts));
+    gio_writel(qts, gio, 0, GIO_STAT, BIT(7));
+    g_assert_false(gio_irq(qts));
+
+    qtest_quit(qts);
+}
+
+/*
+ * Level detection: STAT is set for as long as the line is at its active
+ * level, high with EC set, low with it clear, so writing it with 1 only
+ * clears it once the line has left that level
+ */
+static void test_gio_levels(void)
+{
+    QTestState *qts = qtest_init("-machine raspi5b");
+    const Gio *gio = GIO;
+
+    gio_unmask_main_irq(qts);
+    gio_writel(qts, gio, 0, GIO_MASK, BIT(9) | BIT(10));
+
+    /* High */
+    gio_writel(qts, gio, 0, GIO_EC, BIT(9));
+    gio_writel(qts, gio, 0, GIO_LEVEL, BIT(9));
+    g_assert_cmphex(gio_readl(qts, gio, 0, GIO_STAT), ==, 0);
+    gio_set_input(qts, gio, 9, 1);
+    g_assert_cmphex(gio_readl(qts, gio, 0, GIO_STAT), ==, BIT(9));
+    g_assert_true(gio_irq(qts));
+    gio_writel(qts, gio, 0, GIO_STAT, BIT(9));
+    g_assert_cmphex(gio_readl(qts, gio, 0, GIO_STAT), ==, BIT(9));
+    gio_set_input(qts, gio, 9, 0);
+    g_assert_cmphex(gio_readl(qts, gio, 0, GIO_STAT), ==, BIT(9));
+    gio_writel(qts, gio, 0, GIO_STAT, BIT(9));
+    g_assert_cmphex(gio_readl(qts, gio, 0, GIO_STAT), ==, 0);
+    g_assert_false(gio_irq(qts));
+
+    /* Low: a line already low is active as soon as it is configured */
+    gio_writel(qts, gio, 0, GIO_LEVEL, BIT(9) | BIT(10));
+    g_assert_cmphex(gio_readl(qts, gio, 0, GIO_STAT), ==, BIT(10));
+    g_assert_true(gio_irq(qts));
+    gio_set_input(qts, gio, 10, 1);
+    gio_writel(qts, gio, 0, GIO_STAT, BIT(10));
+    g_assert_cmphex(gio_readl(qts, gio, 0, GIO_STAT), ==, 0);
+    g_assert_false(gio_irq(qts));
+
+    qtest_quit(qts);
+}
+
+/* GIO AON latches like GIO, but its interrupt goes nowhere */
+static void test_gio_aon(void)
+{
+    QTestState *qts = qtest_init("-machine raspi5b");
+    const Gio *gio = GIO_AON;
+
+    for (int i = 0; i < ARRAY_SIZE(l2_intcs); i++) {
+        l2_writel(qts, &l2_intcs[i], l2_intcs[i].edge ? L2_EDGE_MASK_CLEAR
+                                                     : L2_LEVEL_MASK_CLEAR,
+                  UINT32_MAX);
+    }
+    gio_writel(qts, gio, 0, GIO_EC, BIT(5));
+    gio_writel(qts, gio, 0, GIO_MASK, BIT(5));
+    gio_set_input(qts, gio, 5, 1);
+    g_assert_cmphex(gio_readl(qts, gio, 0, GIO_DATA), ==, BIT(5));
+    g_assert_cmphex(gio_readl(qts, gio, 0, GIO_STAT), ==, BIT(5));
+    for (int i = 0; i < ARRAY_SIZE(l2_intcs); i++) {
+        g_assert_cmphex(l2_readl(qts, &l2_intcs[i], 0), ==, 0);
+        g_assert_false(gic_spi_pending(qts, l2_intcs[i].spi));
+    }
+
+    qtest_quit(qts);
+}
+
+/*
+ * Reset brings back the reset values without latching the edges it
+ * makes: the lines keep the levels driven into them
+ */
+static void test_gio_reset(void)
+{
+    QTestState *qts = qtest_init("-machine raspi5b");
+    const Gio *gio = GIO;
+
+    qtest_irq_intercept_out(qts, "/machine/soc/gio");
+    for (int i = 0; i < ARRAY_SIZE(gios); i++) {
+        for (int bank = 0; bank < ARRAY_SIZE(gios[i].widths); bank++) {
+            static const uint32_t regs[] = {
+                GIO_EC, GIO_EI, GIO_MASK, GIO_LEVEL, GIO_ODEN, GIO_DATA,
+            };
+
+            for (int r = 0; r < ARRAY_SIZE(regs); r++) {
+                gio_writel(qts, &gios[i], bank, regs[r], BIT(1));
+            }
+            gio_writel(qts, &gios[i], bank, GIO_IODIR, 0);
+        }
+    }
+    gio_set_input(qts, gio, 2, 1);
+    gio_writel(qts, gio, 0, GIO_EI, BIT(2) | BIT(3));
+    gio_writel(qts, gio, 0, GIO_IODIR, BIT(2));
+    gio_writel(qts, gio, 0, GIO_DATA, BIT(3));
+    g_assert_cmphex(gio_readl(qts, gio, 0, GIO_DATA), ==, BIT(2) | BIT(3));
+    g_assert_true(qtest_get_irq(qts, 3));
+
+    qtest_system_reset(qts);
+
+    gio_check_reset(qts);
+    g_assert_cmphex(gio_readl(qts, gio, 0, GIO_DATA), ==, BIT(2));
+    g_assert_true(qtest_get_irq(qts, 2));
+    g_assert_false(qtest_get_irq(qts, 3));
+
+    qtest_quit(qts);
+}
+
+/* Registers, driven levels and latched status survive migration */
+static void test_gio_migrate(void)
+{
+    g_autofree char *file = g_strdup_printf("%s/raspi5b-gio-%d.mig",
+                                            g_get_tmp_dir(), getpid());
+    g_autofree char *out = g_strdup_printf("exec:cat > %s", file);
+    g_autofree char *in = g_strdup_printf("exec:cat %s", file);
+    const char *args = "-machine raspi5b -m 1G";
+    const Gio *gio = GIO;
+    QTestState *src, *dst;
+
+    src = qtest_init(args);
+    gio_unmask_main_irq(src);
+    gio_writel(src, gio, 0, GIO_EC, BIT(4));
+    gio_writel(src, gio, 0, GIO_MASK, BIT(4));
+    gio_set_input(src, gio, 4, 1);
+    gio_writel(src, gio, 1, GIO_IODIR, gio_valid(gio, 1) & ~BIT(0));
+    gio_writel(src, gio, 1, GIO_DATA, BIT(0));
+    qtest_qmp_assert_success(src, "{ 'execute': 'migrate',"
+                             "  'arguments': { 'uri': %s } }", out);
+    wait_for_migration(src);
+    qtest_quit(src);
+
+    dst = qtest_initf("%s -incoming defer", args);
+    qtest_qmp_assert_success(dst, "{ 'execute': 'migrate-incoming',"
+                             "  'arguments': { 'uri': %s } }", in);
+    wait_for_migration(dst);
+
+    g_assert_cmphex(gio_readl(dst, gio, 0, GIO_STAT), ==, BIT(4));
+    g_assert_cmphex(gio_readl(dst, gio, 0, GIO_DATA), ==, BIT(4));
+    g_assert_cmphex(gio_readl(dst, gio, 1, GIO_DATA), ==, BIT(0));
+    g_assert_true(gio_irq(dst));
+    /* The input is still high: no new edge until it falls and rises */
+    gio_writel(dst, gio, 0, GIO_STAT, BIT(4));
+    gio_set_input(dst, gio, 4, 1);
+    g_assert_cmphex(gio_readl(dst, gio, 0, GIO_STAT), ==, 0);
+    g_assert_false(gio_irq(dst));
+    gio_set_input(dst, gio, 4, 0);
+    gio_set_input(dst, gio, 4, 1);
+    g_assert_cmphex(gio_readl(dst, gio, 0, GIO_STAT), ==, BIT(4));
+
+    qtest_quit(dst);
+    unlink(file);
+}
+
 static void test_unimplemented_regions(void)
 {
     QTestState *qts = qtest_init("-machine raspi5b");
@@ -1504,6 +1917,14 @@ int main(int argc, char **argv)
                    test_l2_intc_software_set);
     qtest_add_func("/raspi5b/l2-intc/reset", test_l2_intc_reset);
     qtest_add_func("/raspi5b/l2-intc/migrate", test_l2_intc_migrate);
+    qtest_add_func("/raspi5b/gpio/reset-values", test_gio_reset_values);
+    qtest_add_func("/raspi5b/gpio/widths", test_gio_widths);
+    qtest_add_func("/raspi5b/gpio/data", test_gio_data);
+    qtest_add_func("/raspi5b/gpio/edges", test_gio_edges);
+    qtest_add_func("/raspi5b/gpio/levels", test_gio_levels);
+    qtest_add_func("/raspi5b/gpio/aon", test_gio_aon);
+    qtest_add_func("/raspi5b/gpio/reset", test_gio_reset);
+    qtest_add_func("/raspi5b/gpio/migrate", test_gio_migrate);
     qtest_add_func("/raspi5b/pm/registers", test_pm_registers);
     qtest_add_func("/raspi5b/pm/watchdog-countdown",
                    test_pm_watchdog_countdown);

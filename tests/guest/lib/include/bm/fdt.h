@@ -7,9 +7,9 @@
  *
  * Just enough to find devices: nodes by path, alias or compatible string,
  * properties, "reg" entries translated to CPU physical addresses through
- * every parent's "ranges", and GIC interrupt specifiers. Node handles are
- * offsets of FDT_BEGIN_NODE tokens in the structure block; negative
- * values mean "not found".
+ * every parent's "ranges", interrupt parents and GIC interrupt
+ * specifiers. Node handles are offsets of FDT_BEGIN_NODE tokens in the
+ * structure block; negative values mean "not found".
  */
 
 #ifndef BM_FDT_H
@@ -50,6 +50,9 @@ bool fdt_prop_u64(int node, const char *name, uint64_t *val);
  * through the "ranges" of every ancestor
  */
 bool fdt_reg(int node, unsigned index, uint64_t *addr, uint64_t *size);
+
+/* The node's interrupt parent: "interrupt-parent" here or on an ancestor */
+int fdt_interrupt_parent(int node);
 
 /*
  * GIC INTID of the @index-th "interrupts" specifier, for nodes whose

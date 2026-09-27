@@ -30,16 +30,17 @@ Pi OS booting from an SD card, is in progress.
 | Watchdog and reset status (PM block) | done |
 | RNG200 random number generator | done |
 | Broadcom L2 interrupt controllers (7, both register layouts) | done |
+| BCM2712 GPIO blocks (GIO: 32 + 22 lines, AON: 17 + 6), edge and level interrupts | done |
 | System reset (PSCI, watchdog, monitor) and power-off | done |
 | Firmware boot contract: EL2 entry, PSCI over SMC (`secure=off`); guest-owned EL3 (`secure=on`) | done |
 | Firmware loaded with `-bios` (`secure=on`) the way the Pi's firmware loads it: TF-A's `rpi5` BL31 runs the bare-metal suite on its own PSCI and boots Linux, directly or through U-Boot; the EDK2 port reaches the UEFI shell | done |
 | Complete BCM2712 memory map, unmodelled blocks logged with `-d unimp` | done |
 | Built-in device tree when no `-dtb` is given, validated against the Linux bindings | done |
 | The firmware's device-tree changes, made anew for each boot: model and serial number, the command line it builds, `/chosen` with the boot's reset status, partition and count, the power supply and seeds, the CMA pool and the bootloader configuration | done |
-| Bare-metal test suite (29 tests: interrupts, timers and SGIs on every core, PSCI, resets, mailbox, RNG, UART, L2 interrupt controllers, Secure/Non-secure GIC groups, the A76's MPIDR and IMPDEF registers) on 1–4 cores, EL2 and EL3 | done |
+| Bare-metal test suite (30 tests: interrupts, timers and SGIs on every core, PSCI, resets, mailbox, RNG, UART, L2 interrupt controllers, GPIO interrupts, Secure/Non-secure GIC groups, the A76's MPIDR and IMPDEF registers) on 1–4 cores, EL2 and EL3 | done |
 | Linux: stock Raspberry Pi OS kernel boots to the root-fs mount, on the built-in device tree or `bcm2712-rpi-5-b.dtb` | smoke-tested |
 | VideoCore mailbox and firmware property channel: BCM283x tag set, board and firmware identity | done; Pi 5 clock, power, RTC and GPIO tags planned (WS2.3b) |
-| SD, PCIe, RP1, GPIO, … | see [docs/PLAN.md](docs/PLAN.md) |
+| SD, PCIe, RP1 (with the 40-pin header's GPIO), … | see [docs/PLAN.md](docs/PLAN.md) |
 
 ## Repository layout
 
@@ -53,6 +54,7 @@ overlay/       new files, laid out exactly as in the QEMU tree
   docs/system/arm/raspi5b.rst
   hw/misc/bcm2711_rng200.c      RNG200 random number generator
   hw/intc/brcmstb_l2_intc.c     Broadcom L2 interrupt controller
+  hw/gpio/brcmstb_gpio.c        Broadcom GPIO controller
 patches/       changes to existing QEMU files (git format-patch series)
 series/        how patches and overlay files form the upstream series, cover letter
 scripts/       qemu-tree: applies the overlay and patches, creates/refreshes

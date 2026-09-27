@@ -87,6 +87,26 @@
             #interrupt-cells = <1>;
         };
 
+        main_irq: interrupt-controller@7d508400 {
+            compatible = "brcm,bcm7271-l2-intc";
+            reg = <0x7d508400 0x10>;
+            interrupts = <0 244 4>;
+            interrupt-controller;
+            #interrupt-cells = <1>;
+        };
+
+        gpio@7d508500 {
+            compatible = "brcm,brcmstb-gpio";
+            reg = <0x7d508500 0x40>;
+            interrupt-parent = <&main_irq>;
+            interrupts = <0>;
+            gpio-controller;
+            #gpio-cells = <2>;
+            interrupt-controller;
+            #interrupt-cells = <2>;
+            brcm,gpio-bank-widths = <32 4>;
+        };
+
         gicv2: interrupt-controller@7fff9000 {
             compatible = "arm,gic-400";
             reg = <0x7fff9000 0x1000>,

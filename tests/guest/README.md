@@ -157,5 +157,6 @@ others.
 | PM, reset | watchdog countdown and reset, three PSCI `SYSTEM_RESET`s and a watchdog reset that must restore the boot state |
 | RNG | a 1 KiB draw, Linux's recovery sequence |
 | L2 interrupt controllers | on each enabled `brcm,l2-intc`, a masked software-raised bit, then taken through the SPI and acked as Linux does |
+| GPIO | an output's own rising edge on GIO 12, latched while disabled, then taken through `main_irq` and its SPI and acked as Linux does; a falling edge ignored, the next rising one taken |
 | UART | a line from the peer, internal loopback polled and by interrupt |
 | Platform | device-tree discovery, PSCI version, an identification-register dump (`# probe: name=value`, sorted) |
