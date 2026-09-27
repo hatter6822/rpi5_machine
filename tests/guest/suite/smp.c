@@ -165,14 +165,19 @@ static void timers_body(unsigned core)
     static const unsigned intid[NUM_TIMERS] = { PPI_NS_PHYS, PPI_VIRT };
     uint64_t voff_saved = read_sysreg(cntvoff_el2);
     uint64_t voff = counter_now() + counter_freq();
-    uint64_t v, p;
+    uint64_t p0, v, p1;
 
-    /* CNTVCT = CNTPCT - CNTVOFF, modulo 2^64 */
+    /*
+     * CNTVCT = CNTPCT - CNTVOFF, modulo 2^64: the physical count it gives
+     * lies between the physical counts read before and after it, however
+     * long a busy host deschedules the vCPU in between
+     */
     write_sysreg(cntvoff_el2, voff);
+    p0 = timer_now(T_PHYS);
     v = timer_now(T_VIRT);
-    p = timer_now(T_PHYS);
-    if (p - v < voff || p - v > voff + us_to_ticks(1000)) {
-        CORE_FAIL(core, "CNTPCT - CNTVCT is not CNTVOFF", p - v);
+    p1 = timer_now(T_PHYS);
+    if (v + voff - p0 > p1 - p0) {
+        CORE_FAIL(core, "CNTPCT - CNTVCT is not CNTVOFF", p0 - v);
     }
 
     for (unsigned t = 0; t < NUM_TIMERS && !core_error[core]; t++) {
@@ -327,6 +332,31 @@ static void spi_handler(unsigned intid, void *arg)
     spi_taken[this_core()]++;
 }
 
+/*
+ * Raise the SPI and wait for @target to take it. The comparator matches
+ * when the counter's low 32 bits equal it, so a vCPU that a busy host
+ * deschedules between reading the counter and writing the comparator can
+ * arm it a wrap of the counter away: arm it again if the counter had
+ * reached the match by the time it was written.
+ */
+static bool spi_raise(unsigned target)
+{
+    for (unsigned tries = 0; tries < 3; tries++) {
+        uint32_t match = mmio_read32(bm_plat.systimer + ST_CLO) + 200;
+        uint32_t armed;
+
+        mmio_write32(bm_plat.systimer + ST_C(ST_ROUTED), match);
+        armed = mmio_read32(bm_plat.systimer + ST_CLO);
+        if (wait_until(spi_taken[target] == 1, 100000)) {
+            return true;
+        }
+        if ((int32_t)(armed - match) < 0) {
+            break;                      /* armed in time */
+        }
+    }
+    return false;
+}
+
 static void spi_body(unsigned core)
 {
     unsigned intid = bm_plat.systimer_intid[ST_ROUTED];
@@ -336,15 +366,14 @@ static void spi_body(unsigned core)
     if (!barrier(core, 1)) {
         CORE_FAIL(core, "timed out at the start", 0);
     } else if (core != 0) {
-        if (!wait_until(spi_stop, 1000000)) {
+        /* Core 0 takes up to 300 ms for each core */
+        if (!wait_until(spi_stop, 2000000)) {
             CORE_FAIL(core, "not stopped", 0);
         }
     } else {
         for (unsigned target = 0; target < bm_plat.num_cpus; target++) {
             gic_set_target(intid, 1u << target);
-            mmio_write32(bm_plat.systimer + ST_C(ST_ROUTED),
-                         mmio_read32(bm_plat.systimer + ST_CLO) + 200);
-            if (!wait_until(spi_taken[target] == 1, 100000)) {
+            if (!spi_raise(target)) {
                 CORE_FAIL(core, "the SPI did not reach its target", target);
                 break;
             }
