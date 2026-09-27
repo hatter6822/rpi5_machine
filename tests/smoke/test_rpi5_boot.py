@@ -77,6 +77,39 @@ def dtc(source):
                           capture_output=True, check=True).stdout
 
 
+def children(pid):
+    """The processes whose parent is process @pid"""
+    found = []
+    for entry in Path("/proc").iterdir():
+        if not entry.name.isdigit():
+            continue
+        try:
+            stat = (entry / "stat").read_text()
+        except OSError:
+            continue
+        # The command name, in parentheses, may hold anything
+        if int(stat.rsplit(")", 1)[1].split()[1]) == pid:
+            found.append(int(entry.name))
+    return found
+
+
+def running(pid):
+    """Whether process @pid runs: it exists, and is no zombie"""
+    try:
+        stat = Path(f"/proc/{pid}/stat").read_text()
+    except OSError:
+        return False
+    return stat.rsplit(")", 1)[1].split()[0] != "Z"
+
+
+def kill_group(pgid):
+    """SIGKILL whatever is left of process group @pgid"""
+    try:
+        os.killpg(pgid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+
+
 def cells(*values):
     return b"".join(struct.pack(">I", v) for v in values)
 
@@ -1340,27 +1373,31 @@ class RunTest(unittest.TestCase):
                       "--no-reboot asks\n", err)
         self.assertEqual(list(self.tmpdir.iterdir()), [])
 
-    def stop(self, send):
-        """Run the guest that never ends, and stop it with @send(the
-        rpi5-boot process) once QEMU runs: rpi5-boot's exit status"""
+    def start(self):
+        """Run the guest that never ends: the rpi5-boot process, once it
+        has started QEMU"""
         self.make_card(SPIN_KERNEL)
         proc = subprocess.Popen([sys.executable, str(SCRIPT), "-v",
                                  str(self.image)], stdin=subprocess.DEVNULL,
                                 stdout=subprocess.DEVNULL,
                                 stderr=subprocess.PIPE, env=self.env,
                                 start_new_session=True)
-        try:
-            # -v logs QEMU's command before running it
-            for line in proc.stderr:
-                if b"-action reboot=shutdown" in line:
-                    break
-            time.sleep(2)
-            send(proc)
-            proc.wait(timeout=RUN_TIMEOUT)
-        finally:
-            proc.kill()
-            proc.wait()
-            proc.stderr.close()
+        self.addCleanup(proc.stderr.close)
+        self.addCleanup(proc.wait)
+        self.addCleanup(proc.kill)
+        # -v logs QEMU's command before running it
+        for line in proc.stderr:
+            if b"-action reboot=shutdown" in line:
+                break
+        time.sleep(2)
+        return proc
+
+    def stop(self, send):
+        """Run the guest that never ends, and stop it with @send(the
+        rpi5-boot process) once QEMU runs: rpi5-boot's exit status"""
+        proc = self.start()
+        send(proc)
+        proc.wait(timeout=RUN_TIMEOUT)
         self.assertEqual(list(self.tmpdir.iterdir()), [])
         return proc.returncode
 
@@ -1372,6 +1409,21 @@ class RunTest(unittest.TestCase):
         self.assertIn(status, (0, 128 + signal.SIGTERM))
         status = self.stop(lambda proc: os.killpg(proc.pid, signal.SIGINT))
         self.assertIn(status, (0, 128 + signal.SIGINT))
+
+    @unittest.skipUnless(Path("/proc/self/stat").exists(), "needs /proc")
+    def test_killed(self):
+        """QEMU ends with rpi5-boot, even when a SIGKILL leaves rpi5-boot
+        no time to stop it, so that no QEMU goes on writing to the card"""
+        proc = self.start()
+        self.addCleanup(kill_group, proc.pid)
+        qemu = children(proc.pid)
+        self.assertEqual(len(qemu), 1)
+        proc.kill()
+        proc.wait(timeout=RUN_TIMEOUT)
+        deadline = time.monotonic() + RUN_TIMEOUT
+        while running(qemu[0]) and time.monotonic() < deadline:
+            time.sleep(0.1)
+        self.assertFalse(running(qemu[0]), "QEMU outlived rpi5-boot")
 
 
 @unittest.skipUnless(HAVE_MTOOLS and HAVE_DTC, "needs mtools and dtc")
@@ -1558,6 +1610,9 @@ class RebootTest(unittest.TestCase):
             self.assertEqual([args[i + 1] for i, arg in enumerate(args)
                               if arg == "-action"],
                              ["reboot=shutdown", "shutdown=pause"])
+            # and it ends with rpi5-boot
+            self.assertEqual(args[args.index("-run-with") + 1],
+                             "exit-with-parent=on")
 
     def test_state_lost(self):
         """A QEMU that ends at the reboot, before it is asked what the

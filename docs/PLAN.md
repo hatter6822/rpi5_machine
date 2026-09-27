@@ -1100,7 +1100,9 @@ socket pair: a reboot stops the guest there (`shutdown=pause`), and
 rpi5-boot reads what the reset leaves from the machine, ends QEMU, reads
 the card again for the next boot, as the bootloader does, and starts
 QEMU with it; Raspberry Pi OS's first boot rewrites `cmdline.txt` and
-reboots. The machine's `reset-status`, `reboot-flags` and `boot-count`
+reboots. QEMU also runs with `-run-with exit-with-parent=on`, so it
+ends with rpi5-boot however rpi5-boot ends, and a SIGKILL leaves no
+QEMU writing to the card. The machine's `reset-status`, `reboot-flags` and `boot-count`
 read what a reset leaves, and set it for the first boot, and
 `boot-partition` names the partition the files come from, which
 `/chosen/bootloader` reports; a boot without a device tree counts too
@@ -1123,7 +1125,8 @@ the release's overlays and builds `dtmerge` from a pinned commit of
 raspberrypi/utils. `tests/smoke/test_rpi5_boot.py` covers the tree code,
 overlays and parameters, `config.txt` and the files it chooses, the
 command line, partition tables, `--print`, QEMU's runs (a guest that
-powers off, one that reboots, stops by SIGTERM and by Ctrl-C), the
+powers off, one that reboots, stops by SIGTERM and by Ctrl-C, QEMU
+ending with a killed rpi5-boot), the
 reboot loop and what each reboot leaves, with `tests/guest/reboot`, a
 guest that reboots as its command line says: a tryboot through
 `tryboot.txt`, an A/B card's tryboot and the boot back, a reboot to a

@@ -1920,7 +1920,9 @@ def run_qemu(cmd, verbose):
     if QEMU did not say). QMP on a socket pair reports the event; the
     guest starts once it is listened for, and QEMU waits with the guest
     stopped after the event, for the machine to be read, until told to
-    quit. A SIGTERM or SIGHUP stops QEMU, and then rpi5-boot."""
+    quit. A SIGTERM or SIGHUP stops QEMU, and then rpi5-boot; and QEMU
+    ends with rpi5-boot however that ends, so that a SIGKILL leaves no
+    QEMU writing to the card."""
     ours, theirs = socket.socketpair()
     fd = theirs.fileno()
     if verbose:
@@ -1929,7 +1931,8 @@ def run_qemu(cmd, verbose):
         proc = subprocess.Popen(
             cmd + ["-S", "-chardev", f"socket,id={PROG},fd={fd}",
                    "-object", f"monitor-qmp,id={PROG},chardev={PROG}",
-                   "-action", "shutdown=pause"],
+                   "-action", "shutdown=pause",
+                   "-run-with", "exit-with-parent=on"],
             pass_fds=(fd,))
     except OSError as err:
         ours.close()
