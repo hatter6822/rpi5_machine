@@ -113,6 +113,7 @@ Missing devices
 * The power LED, which RP1 drives
 * Power domains (only V3D's is driven by Linux on this SoC)
 * Display (HVS, HDMI), V3D and ISP
+* The system DMA controller, whose channels no modelled device uses
 
 Boot and exception levels
 -------------------------

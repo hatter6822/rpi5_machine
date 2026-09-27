@@ -59,7 +59,7 @@ commit (or a short series) with its own tests.
 
 ## 2. Current state
 
-Delivered so far: M1 (WS0.1–WS0.3, WS0.5, WS0.6, WS2.1, WS2.2, WS2.3a, WS2.4, WS2.5, WS3.2, WS3.6, WS9.2), M2 (WS1.2, WS1.5, WS3.1, WS3.3, WS3.4) and, of M3, WS2.3b–WS2.3e, WS2.6, WS4.1–WS4.6 and WS5.1:
+Delivered so far: M1 (WS0.1–WS0.3, WS0.5, WS0.6, WS2.1, WS2.2, WS2.3a, WS2.4, WS2.5, WS3.2, WS3.6, WS9.2), M2 (WS1.2, WS1.5, WS3.1, WS3.3, WS3.4) and, of M3, WS2.3b–WS2.3e, WS2.6, WS4.1–WS4.6 and WS5.1, with WS5.2 deferred:
 
 | Area | State |
 | --- | --- |
@@ -1446,7 +1446,33 @@ an ext4 root from `-drive if=sd` and passes `fio --verify`; a card
 inserted or removed at runtime flips GIO AON 5 and Linux notices; the
 bare-metal suite reads the MBR through PIO.
 
-#### WS5.2 System DMA (M, deferrable)
+#### WS5.2 System DMA (M, deferred)
+*Deferred:* nothing M3 boots needs the controller, and the test that
+would show it done cannot run on the Pi 5's kernel. In the Pi 5's trees
+only SPI10 (`spi@7d004000`) and the two HDMI ports' audio name DMA
+channels, all of `dma40`, and none of them is modelled. `dma32`'s
+channel 0 goes to the legacy interface, from which `bcm2708_fb` takes
+it, but Raspberry Pi OS loads `vc4-kms-v3d`, whose Pi 5 overlay disables
+the `fb` node, so the framebuffer driver is not in the boot WS3.5
+composes. The Pi 5's kernel is built without `dmatest`
+(`# CONFIG_DMATEST is not set` in 6.18.50-v8-16k's configuration). And
+Linux programs channels 0–5 in two ways that cannot both match the
+silicon: `bcm2835-dma`'s BCM2712 path writes each control block address
+shifted right by 5 bits, as the 40-bit channels 6–11 take it, and puts
+bits 39:32 of the source and destination addresses in the control
+block's `STRIDE` word, while the legacy interface, and so `bcm2708_fb`,
+writes the unshifted bus address and uses `STRIDE` for 2D strides
+(`TODO(WS0.4)`: which one channel 0 follows). Circle, a bare-metal
+environment for the Pi, leaves channels 0–5 unsupported on the Pi 5 and
+uses 6–11 only. Both DMA nodes and the `fb` node stay disabled, and the
+display reaches Linux when WS8.1 gives it `simplefb`. Model the
+controller when a modelled device needs it: SPI10, HDMI audio (WS8.2),
+or `bcm2708_fb` once WS0.4 settles how channel 0 takes addresses. The
+40-bit channels are the part Linux and Circle agree on: `CS`, `CB`,
+`DEBUG`, `TI`, `SRC`, `SRCI`, `DEST`, `DESTI`, `LEN` and `NEXT_CB`,
+control block addresses in 32-byte units, bits 39:32 of each data
+address in its `SRCI` or `DESTI` word, and an SPI per channel from 86.
+
 The downstream DT's 40-bit DMA controller (`0x10_0001_0000`,
 `brcm,bcm2712-dma`) extends `bcm2835-dma` with 40-bit addresses and
 larger transfers. Model it if a consumer needs it (SPI/UART DMA on the
