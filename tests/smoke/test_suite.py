@@ -8,6 +8,7 @@ import collections
 import os
 import re
 import shutil
+import struct
 import subprocess
 import tempfile
 import threading
@@ -37,19 +38,38 @@ ALWAYS_SKIPPED = {"uart/echo"}
 # Device trees the suite runs with: the machine's own, a -dtb blob, none
 DT_MODES = ("builtin", "file", "none")
 
+# The card in the SD card slot: 1 MiB, as QEMU's cards are a power of 2 in
+# size, with a master boot record whose partitions sd/mbr lists
+SD_SIZE = 1 << 20
+SD_PARTITIONS = ((0x0c, 64, 960), (0x83, 1024, 1024))  # type, start, sectors
+
+
+def write_sd_image(path):
+    """Write the card's image, blank but for its master boot record."""
+    image = bytearray(SD_SIZE)
+    for i, (ptype, start, sectors) in enumerate(SD_PARTITIONS):
+        entry = 446 + 16 * i
+        image[entry + 4] = ptype
+        image[entry + 8:entry + 16] = struct.pack("<II", start, sectors)
+    image[510:512] = b"\x55\xaa"
+    path.write_bytes(image)
+
+
 # One boot of the suite: the results {name: (outcome, detail)} parsed from
 # the transcript, the transcript itself, QEMU's exit status, and whether
 # QEMU had to be killed at TIMEOUT
 Run = collections.namedtuple("Run", "results out status timed_out")
 
 
-def run_suite(*machine_args, dtb=None, secure=False, bios=None, answer=None):
+def run_suite(*machine_args, dtb=None, secure=False, bios=None, answer=None,
+              sd=True):
     """Boot the suite and return its Run.
 
     @dtb is a -dtb blob, None for the built-in tree, or "none" for no tree.
     @secure gives the suite EL3; @bios is firmware to own EL3 instead,
     which starts the suite as the firmware would a kernel.
     @answer is the line to send when uart/echo asks for one.
+    @sd puts a card, a fresh one each run, in the SD card slot.
     """
     machine = "raspi5b"
     if secure or bios:
@@ -64,6 +84,16 @@ def run_suite(*machine_args, dtb=None, secure=False, bios=None, answer=None):
         cmd += ["-bios", str(bios)]
     elif secure:
         cmd += ["-semihosting-config", "enable=on,target=native"]
+    with tempfile.TemporaryDirectory() as tmp:
+        if sd:
+            image = Path(tmp) / "sd.img"
+            write_sd_image(image)
+            cmd += ["-drive", f"if=sd,format=raw,file={image}"]
+        return run_cmd(cmd, answer)
+
+
+def run_cmd(cmd, answer):
+    """Run the suite's QEMU command line @cmd and return its Run."""
     proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                             stderr=subprocess.DEVNULL, text=True)
     timed_out = threading.Event()
@@ -189,6 +219,31 @@ class SuiteTest(SuiteChecks, unittest.TestCase):
         self.assertIn("no device tree", run.out)
         self.assertIn("uart 0x107d001000 (default)", run.out)
         self.assertIn("# pm 0x107d200000 (default)", run.out)
+
+    def test_sd_card(self):
+        """sd/mbr finds SDIO1 in both trees, and without one, and lists
+        the partitions of the card in its slot."""
+        for mode in DT_MODES:
+            with self.subTest(dt=mode):
+                run = run_suite(dtb=self.suite_dtb(mode))
+                self.assertExited(run)
+                self.assertEqual(run.results.get("sd/mbr"), ("PASS", None),
+                                 run.out)
+                source = "default" if mode == "none" else "dt"
+                self.assertIn(f"# sd/mbr: host 0x1000fff000 ({source}), "
+                              "SDSC card", run.out)
+                for i, (ptype, start, sectors) in enumerate(SD_PARTITIONS):
+                    self.assertIn(f"# sd/mbr: partition {i + 1}: type "
+                                  f"0x{ptype:02x}, {sectors} sectors from "
+                                  f"{start}\n", run.out)
+
+    def test_sd_no_card(self):
+        """sd/mbr skips with the slot empty, as it is by default."""
+        run = run_suite(sd=False)
+        self.check(run, {"timer/secure-physical", "gic/security-groups",
+                         "sd/mbr"})
+        self.assertEqual(run.results["sd/mbr"],
+                         ("SKIP", "no card in the slot"), run.out)
 
     def test_uart_echo(self):
         """The suite receives the line it asks for over UART10."""

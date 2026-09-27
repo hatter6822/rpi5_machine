@@ -142,7 +142,9 @@ none (`builtin-dtb=off`), and at EL3, and requires every test to pass or
 to be skipped for a stated reason. `uart/echo` prints
 `# uart/echo: send a line` and waits half a second for the peer to answer
 with one; the smoke test answers in one run and lets it skip in the
-others.
+others. Every run has a 1 MiB card in the SD card slot
+(`-drive if=sd`), with a master boot record for `sd/mbr` to read, but
+one, which checks that `sd/mbr` skips without a card.
 
 ## The suite
 
@@ -159,4 +161,5 @@ others.
 | L2 interrupt controllers | on each enabled `brcm,l2-intc`, a masked software-raised bit, then taken through the SPI and acked as Linux does |
 | GPIO | an output's own rising edge on GIO 12, latched while disabled, then taken through `main_irq` and its SPI and acked as Linux does; a falling edge ignored, the next rising one taken |
 | UART | a line from the peer, internal loopback polled and by interrupt |
+| SD | the card in SDIO1's slot brought up at 400 kHz and 3.3 V, its interrupts polled; its first block read at 25 MHz a word at a time through the buffer, and the partitions of its master boot record listed (`# sd/mbr: partition ...`); skipped without a card |
 | Platform | device-tree discovery, PSCI version, an identification-register dump (`# probe: name=value`, sorted) |

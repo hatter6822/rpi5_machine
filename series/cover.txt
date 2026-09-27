@@ -5,26 +5,28 @@ Broadcom BCM2712 SoC: four Cortex-A76 cores, a GIC-400, UART10 (a PL011)
 and UARTA (a 16550), the system timer, the watchdog and reset status
 block, the RNG200, the Broadcom level 2 interrupt controllers, the SoC's
 two GPIO blocks with their pin controllers, the HDMI ports' DDC I2C
-controllers, and the VideoCore mailbox with the firmware property
-channel. On the board, system_powerdown presses the power button on a
-GPIO line, the activity LED's changes are trace events, and a monitor's
-EDID answers on HDMI0's DDC bus. Every other block of the memory map is
-an unimplemented-device placeholder. The RP1 south bridge, behind PCIe,
-is not modelled yet, so there is no Ethernet, USB or 40-pin header.
+controllers, the two SD hosts, and the VideoCore mailbox with the
+firmware property channel. On the board, system_powerdown presses the
+power button on a GPIO line, the activity LED's changes are trace
+events, a monitor's EDID answers on HDMI0's DDC bus, and -drive if=sd
+puts a card in the SD card slot, whose card-detect switch drives a GPIO
+line. Every other block of the memory map is an unimplemented-device
+placeholder. The RP1 south bridge, behind PCIe, is not modelled yet, so
+there is no Ethernet, USB or 40-pin header.
 
-The target for now is bare-metal and microkernel bring-up. The machine
+Bare-metal code, the Pi's boot firmware and Linux run on it. The machine
 boots like the Raspberry Pi firmware does: the guest enters at EL2 with
 PSCI over SMC, or owns EL3 with secure=on. With secure=on, -bios loads
-firmware such as TF-A's BL31 as the Pi's firmware loads its armstub,
-and hands it the kernel and device tree the same way. Without -dtb the
+firmware such as TF-A's BL31 as the Pi's firmware loads its armstub, and
+hands it the kernel and device tree the same way. Without -dtb the
 machine generates a device tree, which validates against the kernel's
 bindings. Either tree gets the changes the firmware makes before it
 starts the OS, anew for each boot: the model and serial number, the
 command line it builds, what /chosen reports about the boot and the
-power supply, and seeds for KASLR and the RNG. The stock Raspberry Pi
-OS kernel boots to the root file system mount, on that tree or on the
-firmware's bcm2712-rpi-5-b.dtb, directly, started by TF-A, or through
-U-Boot.
+power supply, and seeds for KASLR and the RNG. The stock Raspberry Pi OS
+kernel mounts its root file system from an SD card, on that tree or on
+the firmware's bcm2712-rpi-5-b.dtb, started directly, by TF-A, or by
+U-Boot, which loads it from the card.
 
 The series is in four parts:
 
@@ -41,12 +43,15 @@ The series is in four parts:
   code, keeps every tag within the value buffer it declares, and
   answers the firmware and board identity tags Linux asks for.
 
-- New models for the RNG200 and for the Broadcom STB level 2 interrupt
-  controller, GPIO controller, pin controller and I2C controller, a
-  16550 change, three target/arm changes TF-A needs, and three fixes
-  for bugs found by the tests:
+- New models for the RNG200, for the Broadcom STB level 2 interrupt
+  controller, GPIO controller, pin controller and I2C controller, and
+  for the BCM2712's SD host controller, a 16550 change, an SDHCI change,
+  three target/arm changes TF-A needs, and four fixes for bugs found by
+  the tests:
   - a property for the depth of the 16550's FIFOs, as UARTA's hold 32
     bytes and Linux fills them;
+  - an SDHCI output that follows the card in the slot, for boards whose
+    card-detect switch is a GPIO line, as on the Pi 5;
   - the Cortex-A76's IMPLEMENTATION DEFINED registers, without which
     TF-A stops in its reset handler;
   - a CPU property that sets MPIDR_EL1.MT, by which TF-A numbers the
@@ -58,7 +63,12 @@ The series is in four parts:
   - a generic timer whose offset exceeds the count, such as the virtual
     timer with CNTVOFF_EL2 above CNTPCT, never fired;
   - the DDC's EDID device dropped out of a transfer in progress when the
-    machine migrated, so the transfer's remaining bytes read as 0xff.
+    machine migrated, so the transfer's remaining bytes read as 0xff;
+  - an SD card on a drive without a medium could not take one later, so
+    no card could go into a board's empty slot.
+  One more patch is a fix from master, which v11.1.1 lacks: SDMA now
+  resumes after stopping at a buffer boundary, which U-Boot's reads
+  need (725a8f107cc1). It leaves the series once rebased onto master.
 
 - The SoC, the board, a qtest and the documentation.
 
@@ -67,7 +77,9 @@ the -bios handoff. A bare-metal test suite runs on 1 to 4 cores, at EL2
 and EL3, with and without a device tree, and on TF-A's PSCI. It covers
 per-core timers and SGIs, SPI routing, PSCI, the mailbox, the watchdog
 and system resets, the RNG, the level 2 interrupt controllers, GPIO
-interrupts and the UART.
+interrupts, the UART and the SD card's master boot record. Out of tree,
+TF-A, U-Boot and the EDK2 port boot from an SD card, and Linux mounts
+its root file system from one.
 The suite lives out of tree, with the rest of the development history:
 https://github.com/hatter6822/rpi5_machine
 

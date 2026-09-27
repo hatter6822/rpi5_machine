@@ -50,8 +50,8 @@ Edit it in `qemu/`, then either
 
 ```
 scripts/qemu-tree new hw-misc-add-bcm2712-foo qemu-relative/path ...   # new patch
-scripts/qemu-tree refresh 0021-hw-arm-Add-the-Broadcom-BCM2712-SoC.patch
-scripts/qemu-tree refresh 0021-hw-arm-Add-the-Broadcom-BCM2712-SoC.patch MAINTAINERS
+scripts/qemu-tree refresh 0025-hw-arm-Add-the-Broadcom-BCM2712-SoC.patch
+scripts/qemu-tree refresh 0025-hw-arm-Add-the-Broadcom-BCM2712-SoC.patch MAINTAINERS
 ```
 
 `new` appends a patch to the series and opens git's editor for a commit
@@ -66,6 +66,13 @@ files that no later patch holds. The script needs bash 4 and GNU coreutils (`rea
 
 `make status` lists edits in `qemu/` that belong to no patch or overlay file;
 they are not tracked by this repository and will be lost by `make unapply`.
+
+A fix already in QEMU's `master` that the pinned release lacks goes in as
+a backport: the upstream commit as `git format-patch` writes it, with its
+author, date and tags, and a `(cherry picked from commit ...)` line, in
+the series before the patches that need it. Refresh it like any other.
+It leaves the series when the series is rebased onto `master` to be
+submitted, and when the pin moves to a release that has it.
 
 ### Moving to a new QEMU release
 

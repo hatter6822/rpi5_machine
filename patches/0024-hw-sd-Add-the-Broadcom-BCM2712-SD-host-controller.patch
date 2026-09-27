@@ -1,0 +1,60 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: A7om <hatter6822@gmail.com>
+Date: Sat, 26 Sep 2026 00:00:00 +0000
+Subject: [PATCH] hw/sd: Add the Broadcom BCM2712 SD host controller
+
+The BCM2712 of the Raspberry Pi 5 has two SD/eMMC host controllers,
+which Linux drives with sdhci-brcmstb.c: SDIO1 for the SD card, or a
+Compute Module 5's eMMC, and SDIO2 for the Wi-Fi radio. Each is an SD
+Host Controller 3.00, with a command queueing engine, followed by a
+block of Broadcom configuration registers.
+
+Model the host with QEMU's SDHCI, advertising 64-bit ADMA2 and the UHS-I
+modes, and the configuration registers as storage, which software reads
+back without effect. The command queueing engine is left out: Linux
+uses it only with cards that queue commands, which QEMU's cards do not.
+---
+ hw/sd/Kconfig      | 4 ++++
+ hw/sd/meson.build  | 1 +
+ hw/sd/trace-events | 4 ++++
+ 3 files changed, 9 insertions(+)
+
+diff --git a/hw/sd/Kconfig b/hw/sd/Kconfig
+index 01d16f7..2c63eef 100644
+--- a/hw/sd/Kconfig
++++ b/hw/sd/Kconfig
+@@ -27,3 +27,7 @@ config CADENCE_SDHCI
+ config BCM2835_SDHOST
+     bool
+     select SD
++
++config BCM2712_SDHCI
++    bool
++    select SDHCI
+diff --git a/hw/sd/meson.build b/hw/sd/meson.build
+index 7ad5f52..b7b1bbc 100644
+--- a/hw/sd/meson.build
++++ b/hw/sd/meson.build
+@@ -6,6 +6,7 @@ system_ss.add(when: 'CONFIG_SSI_SD', if_true: files('ssi-sd.c'))
+ 
+ system_ss.add(when: 'CONFIG_OMAP', if_true: files('omap_mmc.c'))
+ system_ss.add(when: 'CONFIG_BCM2835_SDHOST', if_true: files('bcm2835_sdhost.c'))
++system_ss.add(when: 'CONFIG_BCM2712_SDHCI', if_true: files('bcm2712_sdhci.c'))
+ system_ss.add(when: 'CONFIG_ASPEED_SOC', if_true: files('aspeed_sdhci.c'))
+ system_ss.add(when: 'CONFIG_ALLWINNER_H3', if_true: files('allwinner-sdhost.c'))
+ system_ss.add(when: 'CONFIG_NPCM7XX', if_true: files('npcm7xx_sdhci.c'))
+diff --git a/hw/sd/trace-events b/hw/sd/trace-events
+index c6811f3..69cea5d 100644
+--- a/hw/sd/trace-events
++++ b/hw/sd/trace-events
+@@ -72,6 +72,10 @@ pl181_fifo_pop(uint32_t data) "FIFO pop 0x%08" PRIx32
+ pl181_fifo_transfer_complete(void) "FIFO transfer complete"
+ pl181_data_engine_idle(void) "data engine idle"
+ 
++# bcm2712_sdhci.c
++bcm2712_sdhci_cfg_read(const char *id, uint64_t offset, uint32_t value) "%s: offset 0x%03" PRIx64 " value 0x%08" PRIx32
++bcm2712_sdhci_cfg_write(const char *id, uint64_t offset, uint64_t value) "%s: offset 0x%03" PRIx64 " value 0x%08" PRIx64
++
+ # aspeed_sdhci.c
+ aspeed_sdhci_read(uint64_t addr, uint32_t size, uint64_t data) "@0x%" PRIx64 " size %u: 0x%" PRIx64
+ aspeed_sdhci_write(uint64_t addr, uint32_t size, uint64_t data) "@0x%" PRIx64 " size %u: 0x%" PRIx64

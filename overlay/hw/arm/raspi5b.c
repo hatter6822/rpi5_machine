@@ -30,14 +30,17 @@
 #include "hw/arm/boot.h"
 #include "hw/arm/machines-qom.h"
 #include "hw/core/boards.h"
+#include "hw/core/irq.h"
 #include "hw/core/loader.h"
 #include "hw/core/qdev-properties.h"
 #include "hw/core/registerfields.h"
 #include "hw/display/i2c-ddc.h"
 #include "hw/misc/led.h"
+#include "hw/sd/sd.h"
 #include "migration/vmstate.h"
 #include "standard-headers/linux/input.h"
 #include "system/address-spaces.h"
+#include "system/blockdev.h"
 #include "system/device_tree.h"
 #include "system/reset.h"
 #include "system/runstate.h"
@@ -85,9 +88,14 @@ struct Raspi5bMachineState {
  * The board's use of the SoC's GPIO lines, from the firmware's device
  * tree. The power button pulls GIO 20 (PWR_GPIO) low while pressed; AON
  * GPIO 9 lights the green activity LED while driven low. Both lines are
- * pulled up.
+ * pulled up. So is AON GPIO 5 (SD_CDET_N), which the SD card slot's
+ * switch pulls low while a card is in; AON GPIO 4 switches the card's
+ * supply on, and AON GPIO 3 its signalling from 3.3 V to 1.8 V.
  */
 #define RASPI5B_GIO_PWR_BUTTON          20
+#define RASPI5B_AON_GPIO_SD_IO_1V8      3
+#define RASPI5B_AON_GPIO_SD_VCC         4
+#define RASPI5B_AON_GPIO_SD_CDET_N      5
 #define RASPI5B_AON_GPIO_ACT_LED        9
 
 /*
@@ -103,7 +111,12 @@ struct Raspi5bMachineState {
 #define RASPI5B_DDC_EDID_ADDR           0x50
 
 /* include/dt-bindings/gpio/gpio.h */
+#define RASPI5B_FDT_GPIO_ACTIVE_HIGH    0
 #define RASPI5B_FDT_GPIO_ACTIVE_LOW     1
+
+/* The SD card's supply and the signalling voltages, in microvolts */
+#define RASPI5B_FDT_SD_3V3              3300000
+#define RASPI5B_FDT_SD_1V8              1800000
 
 /*
  * With -bios the machine loads what the firmware runs at EL3 (config.txt's
@@ -216,7 +229,6 @@ static uint32_t raspi5b_board_rev(uint64_t ram_size)
 static const char *const raspi5b_unmodelled_compatibles[] = {
     "brcm,bcm2712-pcie",
     "brcm,bcm2712-mip",
-    "brcm,bcm2712-sdhci",
     "brcm,2712-v3d",
     "brcm,bcm2712-vc6",
     "brcm,bcm2712-hvs",
@@ -245,8 +257,12 @@ static const char *const raspi5b_unmodelled_compatibles[] = {
     "raspberrypi,bcm2835-power",
     "raspberrypi,rpi-rtc",
     "raspberrypi,rp1-firmware",
-    /* Behind modelled devices: the Bluetooth radio on UARTA */
+    /*
+     * Behind modelled devices: the Bluetooth radio on UARTA, the Wi-Fi
+     * radio on SDIO2
+     */
     "brcm,bcm43438-bt",
+    "brcm,bcm4329-fmac",
 };
 
 /*
@@ -365,6 +381,94 @@ static void raspi5b_fdt_gpio_users(void *fdt)
 }
 
 /*
+ * The SD card slot on SDIO1, as the firmware's tree has it: the pull-ups
+ * of the card's lines and its card detect switch, the regulators of its
+ * supply and signalling voltage, and the UHS-I modes, which need 1.8 V
+ * signalling that QEMU's cards do not offer.
+ */
+static void raspi5b_fdt_sd_slot(void *fdt)
+{
+    static const char sd_pins[] =
+        "emmc_cmd\0emmc_dat0\0emmc_dat1\0emmc_dat2\0emmc_dat3";
+    g_autofree char *gio_aon = bcm2712_fdt_node_path(fdt, BCM2712_GIO_AON);
+    g_autofree char *pinctrl = bcm2712_fdt_node_path(fdt, BCM2712_PINCTRL);
+    g_autofree char *pinctrl_aon = bcm2712_fdt_node_path(fdt,
+                                                         BCM2712_PINCTRL_AON);
+    g_autofree char *sdio1 = bcm2712_fdt_node_path(fdt, BCM2712_SDIO1);
+    g_autofree char *sd_state = g_strdup_printf(
+        "%s/emmc-sd-default-state", pinctrl);
+    g_autofree char *cd_state = g_strdup_printf(
+        "%s/emmc-aon-cd-default-state", pinctrl_aon);
+    g_autofree char *cd_pin = g_strdup_printf(
+        "aon_gpio%d", RASPI5B_AON_GPIO_SD_CDET_N);
+    uint32_t gio_aon_phandle = qemu_fdt_get_phandle(fdt, gio_aon);
+    uint32_t sd_state_phandle = qemu_fdt_alloc_phandle(fdt);
+    uint32_t cd_state_phandle = qemu_fdt_alloc_phandle(fdt);
+    uint32_t io_reg_phandle = qemu_fdt_alloc_phandle(fdt);
+    uint32_t vcc_reg_phandle = qemu_fdt_alloc_phandle(fdt);
+    const char *io_reg = "/sd-io-1v8-reg";
+    const char *vcc_reg = "/sd-vcc-reg";
+
+    qemu_fdt_add_subnode(fdt, sd_state);
+    qemu_fdt_setprop(fdt, sd_state, "pins", sd_pins, sizeof(sd_pins));
+    qemu_fdt_setprop(fdt, sd_state, "bias-pull-up", NULL, 0);
+    qemu_fdt_setprop_cell(fdt, sd_state, "phandle", sd_state_phandle);
+
+    qemu_fdt_add_subnode(fdt, cd_state);
+    qemu_fdt_setprop_string(fdt, cd_state, "function", "sd_card_g");
+    qemu_fdt_setprop_string(fdt, cd_state, "pins", cd_pin);
+    qemu_fdt_setprop(fdt, cd_state, "bias-pull-up", NULL, 0);
+    qemu_fdt_setprop_cell(fdt, cd_state, "phandle", cd_state_phandle);
+
+    /* In reverse, since libfdt adds each subnode first */
+    qemu_fdt_add_subnode(fdt, vcc_reg);
+    qemu_fdt_setprop_string(fdt, vcc_reg, "compatible", "regulator-fixed");
+    qemu_fdt_setprop_string(fdt, vcc_reg, "regulator-name", "vcc-sd");
+    qemu_fdt_setprop_cell(fdt, vcc_reg, "regulator-min-microvolt",
+                          RASPI5B_FDT_SD_3V3);
+    qemu_fdt_setprop_cell(fdt, vcc_reg, "regulator-max-microvolt",
+                          RASPI5B_FDT_SD_3V3);
+    qemu_fdt_setprop(fdt, vcc_reg, "regulator-boot-on", NULL, 0);
+    qemu_fdt_setprop(fdt, vcc_reg, "enable-active-high", NULL, 0);
+    qemu_fdt_setprop_cells(fdt, vcc_reg, "gpios", gio_aon_phandle,
+                           RASPI5B_AON_GPIO_SD_VCC,
+                           RASPI5B_FDT_GPIO_ACTIVE_HIGH);
+    qemu_fdt_setprop_cell(fdt, vcc_reg, "phandle", vcc_reg_phandle);
+
+    qemu_fdt_add_subnode(fdt, io_reg);
+    qemu_fdt_setprop_string(fdt, io_reg, "compatible", "regulator-gpio");
+    qemu_fdt_setprop_string(fdt, io_reg, "regulator-name", "vdd-sd-io");
+    qemu_fdt_setprop_cell(fdt, io_reg, "regulator-min-microvolt",
+                          RASPI5B_FDT_SD_1V8);
+    qemu_fdt_setprop_cell(fdt, io_reg, "regulator-max-microvolt",
+                          RASPI5B_FDT_SD_3V3);
+    qemu_fdt_setprop(fdt, io_reg, "regulator-boot-on", NULL, 0);
+    qemu_fdt_setprop(fdt, io_reg, "regulator-always-on", NULL, 0);
+    qemu_fdt_setprop_cell(fdt, io_reg, "regulator-settling-time-us", 5000);
+    qemu_fdt_setprop_cells(fdt, io_reg, "gpios", gio_aon_phandle,
+                           RASPI5B_AON_GPIO_SD_IO_1V8,
+                           RASPI5B_FDT_GPIO_ACTIVE_HIGH);
+    qemu_fdt_setprop_cells(fdt, io_reg, "states", RASPI5B_FDT_SD_1V8, 1,
+                           RASPI5B_FDT_SD_3V3, 0);
+    qemu_fdt_setprop_cell(fdt, io_reg, "phandle", io_reg_phandle);
+
+    qemu_fdt_setprop_cells(fdt, sdio1, "pinctrl-0", sd_state_phandle,
+                           cd_state_phandle);
+    qemu_fdt_setprop_string(fdt, sdio1, "pinctrl-names", "default");
+    qemu_fdt_setprop_cell(fdt, sdio1, "vqmmc-supply", io_reg_phandle);
+    qemu_fdt_setprop_cell(fdt, sdio1, "vmmc-supply", vcc_reg_phandle);
+    qemu_fdt_setprop_cell(fdt, sdio1, "bus-width", 4);
+    qemu_fdt_setprop(fdt, sdio1, "sd-uhs-sdr50", NULL, 0);
+    qemu_fdt_setprop(fdt, sdio1, "sd-uhs-ddr50", NULL, 0);
+    qemu_fdt_setprop(fdt, sdio1, "sd-uhs-sdr104", NULL, 0);
+    qemu_fdt_setprop_cells(fdt, sdio1, "cd-gpios", gio_aon_phandle,
+                           RASPI5B_AON_GPIO_SD_CDET_N,
+                           RASPI5B_FDT_GPIO_ACTIVE_LOW);
+
+    qemu_fdt_setprop_string(fdt, "/aliases", "mmc0", sdio1);
+}
+
+/*
  * Room left in the built-in tree for what arm_load_dtb() and
  * raspi5b_modify_dtb() add: memory, PSCI, /chosen with the command line,
  * /system. load_device_tree() leaves at least as much for a -dtb blob.
@@ -393,6 +497,7 @@ static void *raspi5b_get_dtb(const struct arm_boot_info *info, int *size)
 
     bcm2712_fdt_populate(&s->soc, fdt);
     raspi5b_fdt_gpio_users(fdt);
+    raspi5b_fdt_sd_slot(fdt);
 
     qemu_fdt_add_subnode(fdt, "/chosen");
     qemu_fdt_setprop_string(fdt, "/chosen", "stdout-path",
@@ -981,9 +1086,10 @@ static void raspi5b_powerdown_req(Notifier *n, void *opaque)
 }
 
 /*
- * Connect the power button and the activity LED to their GPIO lines, and
- * hold the lines at the level of their pull-ups: the button released,
- * the LED dark
+ * Connect the power button, the activity LED and the SD card slot's card
+ * detect switch to their GPIO lines, and hold the first two at the level
+ * of their pull-ups: the button released, the LED dark. SDIO1 drives the
+ * switch's line from its reset on, low while a card is in the slot.
  */
 static void raspi5b_wire_gpio(Raspi5bMachineState *s)
 {
@@ -1003,6 +1109,32 @@ static void raspi5b_wire_gpio(Raspi5bMachineState *s)
     qdev_connect_gpio_out(gio_aon, RASPI5B_AON_GPIO_ACT_LED,
                           qdev_get_gpio_in(DEVICE(act_led), 0));
     qemu_set_irq(qdev_get_gpio_in(gio_aon, RASPI5B_AON_GPIO_ACT_LED), 1);
+
+    qdev_connect_gpio_out_named(DEVICE(&s->soc.sdio[0]), "card-inserted", 0,
+        qemu_irq_invert(qdev_get_gpio_in(gio_aon,
+                                          RASPI5B_AON_GPIO_SD_CDET_N)));
+}
+
+/*
+ * The card in the SD card slot, from -drive if=sd. Without one, QEMU's
+ * default drive stands in, a slot without a card until the monitor's
+ * "change sd0" inserts one; with -nodefaults, the slot stays empty.
+ */
+static void raspi5b_sd_card(Raspi5bMachineState *s)
+{
+    DriveInfo *di = drive_get(IF_SD, 0, 0);
+    BusState *bus = qdev_get_child_bus(DEVICE(&s->soc), "sd-bus");
+    DeviceState *card;
+
+    if (!di) {
+        return;
+    }
+    card = qdev_new(TYPE_SD_CARD);
+    /* For the monitor: the card is /machine/sd-card */
+    object_property_add_child(OBJECT(s), "sd-card", OBJECT(card));
+    qdev_prop_set_drive_err(card, "drive", blk_by_legacy_dinfo(di),
+                            &error_fatal);
+    qdev_realize_and_unref(card, bus, &error_fatal);
 }
 
 static void raspi5b_machine_init(MachineState *machine)
@@ -1048,6 +1180,7 @@ static void raspi5b_machine_init(MachineState *machine)
     qdev_prop_set_string(soc, "command-line", machine->kernel_cmdline);
     qdev_realize(soc, NULL, &error_fatal);
     raspi5b_wire_gpio(s);
+    raspi5b_sd_card(s);
     /* A monitor on HDMI0 */
     i2c_slave_create_simple(s->soc.ddc[0].bus, TYPE_I2CDDC,
                             RASPI5B_DDC_EDID_ADDR);
@@ -1149,6 +1282,9 @@ static void raspi5b_machine_class_init(ObjectClass *oc, const void *data)
     mc->no_parallel = 1;
     mc->no_floppy = 1;
     mc->no_cdrom = 1;
+    /* -drive goes in the SD card slot, which is empty by default */
+    mc->block_default_type = IF_SD;
+    mc->auto_create_sdcard = true;
 
     object_class_property_add_bool(oc, "secure", raspi5b_get_secure,
                                    raspi5b_set_secure);

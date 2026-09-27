@@ -177,6 +177,16 @@ static const struct {
     { BCM2712_DDC1, BCM2712_BSC_IRQ_DDC1 },
 };
 
+/* The SD/eMMC host controllers and their interrupts */
+static const struct {
+    const char *name;
+    BCM2712Device dev;
+    int spi;
+} bcm2712_sdios[BCM2712_NUM_SDIO] = {
+    { "sdio1", BCM2712_SDIO1, BCM2712_SPI_SDIO1 },
+    { "sdio2", BCM2712_SDIO2, BCM2712_SPI_SDIO2 },
+};
+
 /* GIC-400 register frames, relative to bcm2712_memmap[BCM2712_GIC] */
 #define GIC400_DIST_OFS             0x1000
 #define GIC400_CPU_OFS              0x2000
@@ -334,6 +344,13 @@ static void bcm2712_init(Object *obj)
 
         object_initialize_child(obj, name, &s->ddc[i], TYPE_BRCMSTB_I2C);
     }
+    for (int i = 0; i < BCM2712_NUM_SDIO; i++) {
+        object_initialize_child(obj, bcm2712_sdios[i].name, &s->sdio[i],
+                                TYPE_BCM2712_SDHCI);
+    }
+    /* The SD card slot */
+    object_property_add_alias(obj, "sd-bus", OBJECT(&s->sdio[0].sdhci),
+                              "sd-bus");
     object_initialize_child(obj, "systimer", &s->systimer,
                             TYPE_BCM2835_SYSTIMER);
     object_initialize_child(obj, "pm", &s->pm, TYPE_BCM2835_POWERMGT);
@@ -454,6 +471,24 @@ static bool bcm2712_realize_ddcs(BCM2712State *s, Error **errp)
         bcm2712_map(sbd, 0, bcm2712_ddcs[i].dev);
         sysbus_connect_irq(sbd, 0,
                            qdev_get_gpio_in(bsc_irq, bcm2712_ddcs[i].irq));
+    }
+    return true;
+}
+
+/*
+ * The SD/eMMC host controllers. Their MMIO regions leave gaps, the
+ * command queueing engines among them, to the placeholders beneath.
+ */
+static bool bcm2712_realize_sdios(BCM2712State *s, Error **errp)
+{
+    for (int i = 0; i < BCM2712_NUM_SDIO; i++) {
+        SysBusDevice *sbd = SYS_BUS_DEVICE(&s->sdio[i]);
+
+        if (!sysbus_realize(sbd, errp)) {
+            return false;
+        }
+        bcm2712_map(sbd, 0, bcm2712_sdios[i].dev);
+        sysbus_connect_irq(sbd, 0, bcm2712_spi(s, bcm2712_sdios[i].spi));
     }
     return true;
 }
@@ -639,7 +674,7 @@ static void bcm2712_realize(DeviceState *dev, Error **errp)
         !bcm2712_realize_gpios(s, errp) ||
         !bcm2712_realize_pinctrl(&s->pinctrl, BCM2712_PINCTRL, errp) ||
         !bcm2712_realize_pinctrl(&s->pinctrl_aon, BCM2712_PINCTRL_AON, errp) ||
-        !bcm2712_realize_ddcs(s, errp) ||
+        !bcm2712_realize_ddcs(s, errp) || !bcm2712_realize_sdios(s, errp) ||
         !bcm2712_realize_systimer(s, errp) || !bcm2712_realize_pm(s, errp) ||
         !bcm2712_realize_rng(s, errp) || !bcm2712_realize_vc(s, errp) ||
         !bcm2712_realize_uarts(s, errp)) {
@@ -689,6 +724,10 @@ static void bcm2712_realize(DeviceState *dev, Error **errp)
 #define BCM2712_FDT_CLK_OSC         54000000
 #define BCM2712_FDT_CLK_VPU         750000000
 #define BCM2712_FDT_CLK_UART        9216000
+#define BCM2712_FDT_CLK_EMMC2       200000000   /* the SD hosts' base clock */
+
+/* The SD hosts' "host" registers in the tree: SDHCI and command queueing */
+#define BCM2712_FDT_SDHCI_HOST_SIZE 0x260
 
 /* The firmware's default CMA pool */
 #define BCM2712_FDT_CMA_SIZE        (64 * MiB)
@@ -922,6 +961,43 @@ static void bcm2712_fdt_ddcs(void *fdt, const uint32_t *l2_phandles)
     }
 }
 
+/*
+ * The SD/eMMC host controllers, as bcm2712.dtsi has them, in reverse since
+ * libfdt adds each subnode first. SDIO2 serves the board's Wi-Fi radio,
+ * so it is the board's to enable.
+ */
+static void bcm2712_fdt_sdios(void *fdt, uint32_t clk_emmc2)
+{
+    static const char compat[] = "brcm,bcm2712-sdhci\0brcm,sdhci-brcmstb";
+    static const char reg_names[] = "host\0cfg";
+
+    for (int i = BCM2712_NUM_SDIO - 1; i >= 0; i--) {
+        uint32_t addr = bcm2712_fdt_bus_addr(
+            bcm2712_memmap[bcm2712_sdios[i].dev].base);
+        g_autofree char *path = bcm2712_fdt_soc_node(fdt, "mmc",
+            bcm2712_sdios[i].dev, compat, sizeof(compat));
+
+        qemu_fdt_setprop_cells(fdt, path, "reg",
+                               addr, BCM2712_FDT_SDHCI_HOST_SIZE,
+                               addr + BCM2712_SDHCI_CFG_OFFSET,
+                               BCM2712_SDHCI_CFG_SIZE);
+        qemu_fdt_setprop(fdt, path, "reg-names", reg_names,
+                         sizeof(reg_names));
+        qemu_fdt_setprop_cells(fdt, path, "interrupts", GIC_FDT_IRQ_TYPE_SPI,
+                               bcm2712_sdios[i].spi,
+                               GIC_FDT_IRQ_FLAGS_LEVEL_HI);
+        qemu_fdt_setprop_cell(fdt, path, "clocks", clk_emmc2);
+        qemu_fdt_setprop_string(fdt, path, "clock-names", "sw_sdio");
+        qemu_fdt_setprop(fdt, path, "mmc-ddr-3_3v", NULL, 0);
+        if (bcm2712_sdios[i].dev == BCM2712_SDIO2) {
+            /* The silicon's re-tuning modes, which the model lacks */
+            qemu_fdt_setprop_cells(fdt, path, "sdhci-caps-mask", 0xc000, 0);
+            qemu_fdt_setprop_cells(fdt, path, "sdhci-caps", 0, 0);
+            qemu_fdt_setprop_string(fdt, path, "status", "disabled");
+        }
+    }
+}
+
 char *bcm2712_fdt_node_path(void *fdt, BCM2712Device dev)
 {
     g_autofree char *unit = g_strdup_printf("@%x",
@@ -950,7 +1026,7 @@ void bcm2712_fdt_populate(BCM2712State *s, void *fdt)
         "raspberrypi,bcm2835-firmware\0simple-mfd";
     uint32_t cpu_phandles[BCM2712_NUM_CPUS];
     uint32_t l2_phandles[BCM2712_NUM_L2_INTCS];
-    uint32_t gic, clk_sw_baud, clk_uart, clk_vpu, mbox;
+    uint32_t gic, clk_sw_baud, clk_emmc2, clk_uart, clk_vpu, mbox;
     g_autofree char *systimer = NULL, *mailbox = NULL, *uart = NULL;
     g_autofree char *uarta = NULL, *pm = NULL, *rng = NULL;
     const char *firmware = BCM2712_FDT_SOC_PATH "/firmware";
@@ -970,6 +1046,8 @@ void bcm2712_fdt_populate(BCM2712State *s, void *fdt)
     qemu_fdt_add_subnode(fdt, "/clocks");
     clk_sw_baud = bcm2712_fdt_clock(fdt, "clk-sw-baud", "sw-baud",
                                     BCM2712_UARTA_CLK_HZ);
+    clk_emmc2 = bcm2712_fdt_clock(fdt, "clk-emmc2", "emmc2-clock",
+                                  BCM2712_FDT_CLK_EMMC2);
     clk_uart = bcm2712_fdt_clock(fdt, "clk-uart", "uart-clock",
                                  BCM2712_FDT_CLK_UART);
     clk_vpu = bcm2712_fdt_clock(fdt, "clk-vpu", "vpu-clock",
@@ -1048,6 +1126,8 @@ void bcm2712_fdt_populate(BCM2712State *s, void *fdt)
                            GIC_FDT_IRQ_TYPE_SPI, spi + 3,
                            GIC_FDT_IRQ_FLAGS_LEVEL_HI);
     qemu_fdt_setprop_cell(fdt, systimer, "clock-frequency", 1000000);
+
+    bcm2712_fdt_sdios(fdt, clk_emmc2);
 
     /*
      * The firmware interface, behind the mailbox, as in the firmware's

@@ -59,23 +59,25 @@ commit (or a short series) with its own tests.
 
 ## 2. Current state
 
-Delivered so far: M1 (WS0.1–WS0.3, WS0.5, WS0.6, WS2.1, WS2.2, WS2.3a, WS2.4, WS2.5, WS3.2, WS3.6, WS9.2), M2 (WS1.2, WS1.5, WS3.1, WS3.3, WS3.4) and, of M3, WS4.1–WS4.6:
+Delivered so far: M1 (WS0.1–WS0.3, WS0.5, WS0.6, WS2.1, WS2.2, WS2.3a, WS2.4, WS2.5, WS3.2, WS3.6, WS9.2), M2 (WS1.2, WS1.5, WS3.1, WS3.3, WS3.4) and, of M3, WS4.1–WS4.6 and WS5.1:
 
 | Area | State |
 | --- | --- |
 | Repository | pinned QEMU v11.1.1 submodule, overlay + patch series (patches may share files, like an upstream series) managed by `scripts/qemu-tree`, which also exports the upstream series (WS0.5: a commit per patch and a cover letter, checked with `git am`, checkpatch and a build of every commit), CI with ccache |
 | Kconfig (WS0.6) | every BCM283x device model has its own symbol, so `bcm2712` can select just the models it reuses; a `raspi5b`-only build is tested (`make check-minimal`) |
-| SoC (`bcm2712`) | 1–4 Cortex-A76 (`MPIDR.Aff1` = core with `MPIDR.MT` set (WS1.2), CNTFRQ 54 MHz, optional EL3, the IMPDEF registers firmware writes (WS1.5), warm reset through `RMR_EL3` (WS3.3)), GIC-400 with 288 SPIs, 5 priority bits and all timer/maintenance PPIs, UART10 (PL011), UARTA (a 16550 with 32-byte FIFOs, WS4.5), system timer (WS2.1), watchdog and reset status (WS2.4), RNG200 (WS2.5), the seven brcmstb level 2 interrupt controllers (WS4.1), the two brcmstb GPIO blocks (WS4.2) and their pin controllers (WS4.3), the HDMI ports' two DDC I²C controllers (WS4.4), VideoCore mailbox with the BCM283x property and framebuffer channels (WS2.2) and every identity tag answered (WS2.3a), complete memory map with T0 placeholders and two catch-all windows |
-| Board (`raspi5b`) | 1/2/4/8/16 GiB RAM, board revision code, serial number (`serial=`), PSCI over SMC with EL2 entry (default) or guest-owned EL3 (`secure=on`), firmware such as TF-A's BL31 loaded with `-bios` and handed the kernel, initrd and device tree as the Pi's firmware does (WS3.3), system reset and power-off through PSCI, the watchdog and the monitor (WS3.6), a built-in device tree when no `-dtb` is given (WS3.2; `builtin-dtb=off` passes none), the power button on GIO 20, which `system_powerdown` presses, and the ACT LED on GIO AON 9 (WS4.6), a monitor's EDID on HDMI0's DDC bus (WS4.4), and in whichever tree the guest gets the firmware's changes, made anew for each boot (WS3.1): model, serial number, the command line it builds, `/chosen` with the boot's reset status, partition and count, a 5 A supply and seeds, the CMA size, the bootloader configuration, the Ethernet address, unmodelled devices disabled |
-| Tests | qtest (UART IDs, GIC geometry, priority bits and security, RAM, placeholders, system timer, watchdog, mailbox, identity tags, RNG, L2 interrupt controllers, GPIO, pin control, the DDC I²C controllers and the EDID, UARTA, the power button and ACT LED), the built-in tree validated against the Linux v6.18 bindings (`make check-dt`), the device-tree fix-ups (each one, the built-in tree against a checked-in dump, the values of each boot across resets and migration), bare-metal smoke guest (EL, MPIDR, CNTFRQ, PSCI CPU_ON on all cores, SYSTEM_OFF, EL3 mode), and the bare-metal suite (WS9.2, 30 tests: GIC and the Secure/Non-secure group split, each core's MPIDR, every timer on every core, SGIs between all core pairs, SPI routing, PSCI, the system timer, the mailbox and identity tags, the RNG, a software-raised interrupt through each edge-layout L2 controller, a GPIO output's own edge through GIO's, UART receive and loopback, a watchdog reset and four system resets checked against the boot state, an ID-register dump, the A76's IMPDEF registers; 1–4 cores, with the built-in tree, a `-dtb` one and none, EL2 and EL3), the `-bios` handoff (qtest), and real firmware (`make check-firmware`, all pinned: the smoke guest and the suite on TF-A's `rpi5` BL31, Linux on TF-A and through U-Boot, the EDK2 port to its shell, and the changes to the firmware's tree against a checked-in list) |
-| Linux and firmware | the stock Raspberry Pi OS kernel (6.18) boots on 4 CPUs to the root-fs mount, without warnings ("firmware out-of-date" included), with KASLR, registering every L2 interrupt controller its tree enables, listing both GPIO blocks with their banks and applying pin states through both pin controllers, reading the EDID through the DDC I²C controller, with `ttyS0` on UARTA looping bytes back and exchanging them with the host, with `gpio-keys` reporting `system_powerdown` as `KEY_POWER` (and on the built-in tree the ACT LED following sysfs), with the firmware's `bcm2712-rpi-5-b.dtb` and on the built-in tree (1, 2 and 8 GiB), directly, on TF-A's BL31 or through U-Boot on it (WS3.4); the EDK2 port reaches the UEFI shell |
+| SoC (`bcm2712`) | 1–4 Cortex-A76 (`MPIDR.Aff1` = core with `MPIDR.MT` set (WS1.2), CNTFRQ 54 MHz, optional EL3, the IMPDEF registers firmware writes (WS1.5), warm reset through `RMR_EL3` (WS3.3)), GIC-400 with 288 SPIs, 5 priority bits and all timer/maintenance PPIs, UART10 (PL011), UARTA (a 16550 with 32-byte FIFOs, WS4.5), system timer (WS2.1), watchdog and reset status (WS2.4), RNG200 (WS2.5), the seven brcmstb level 2 interrupt controllers (WS4.1), the two brcmstb GPIO blocks (WS4.2) and their pin controllers (WS4.3), the HDMI ports' two DDC I²C controllers (WS4.4), the two SD hosts with SDMA and ADMA2 (WS5.1), VideoCore mailbox with the BCM283x property and framebuffer channels (WS2.2) and every identity tag answered (WS2.3a), complete memory map with T0 placeholders and two catch-all windows |
+| Board (`raspi5b`) | 1/2/4/8/16 GiB RAM, board revision code, serial number (`serial=`), PSCI over SMC with EL2 entry (default) or guest-owned EL3 (`secure=on`), firmware such as TF-A's BL31 loaded with `-bios` and handed the kernel, initrd and device tree as the Pi's firmware does (WS3.3), system reset and power-off through PSCI, the watchdog and the monitor (WS3.6), a built-in device tree when no `-dtb` is given (WS3.2; `builtin-dtb=off` passes none), the power button on GIO 20, which `system_powerdown` presses, and the ACT LED on GIO AON 9 (WS4.6), a monitor's EDID on HDMI0's DDC bus (WS4.4), the SD card slot on SDIO1, filled by `-drive if=sd` and changed at run time, with its card-detect switch on GIO AON 5 (WS5.1), and in whichever tree the guest gets the firmware's changes, made anew for each boot (WS3.1): model, serial number, the command line it builds, `/chosen` with the boot's reset status, partition and count, a 5 A supply and seeds, the CMA size, the bootloader configuration, the Ethernet address, unmodelled devices disabled |
+| Tests | qtest (UART IDs, GIC geometry, priority bits and security, RAM, placeholders, system timer, watchdog, mailbox, identity tags, RNG, L2 interrupt controllers, GPIO, pin control, the DDC I²C controllers and the EDID, UARTA, the power button and ACT LED, the SD hosts with card detect, PIO, SDMA and ADMA2), the built-in tree validated against the Linux v6.18 bindings (`make check-dt`), the device-tree fix-ups (each one, the built-in tree against a checked-in dump, the values of each boot across resets and migration), bare-metal smoke guest (EL, MPIDR, CNTFRQ, PSCI CPU_ON on all cores, SYSTEM_OFF, EL3 mode), and the bare-metal suite (WS9.2, 31 tests: GIC and the Secure/Non-secure group split, each core's MPIDR, every timer on every core, SGIs between all core pairs, SPI routing, PSCI, the system timer, the mailbox and identity tags, the RNG, a software-raised interrupt through each edge-layout L2 controller, a GPIO output's own edge through GIO's, UART receive and loopback, the SD card's master boot record through PIO, a watchdog reset and four system resets checked against the boot state, an ID-register dump, the A76's IMPDEF registers; 1–4 cores, with the built-in tree, a `-dtb` one and none, EL2 and EL3), the `-bios` handoff (qtest), and real firmware (`make check-firmware`, all pinned: the smoke guest and the suite on TF-A's `rpi5` BL31, Linux on TF-A and through U-Boot, the EDK2 port to its shell, the same from an SD card (Linux's root file system, U-Boot by its `extlinux.conf`, EDK2's map of the card), and the changes to the firmware's tree against a checked-in list) |
+| Linux and firmware | the stock Raspberry Pi OS kernel (6.18) boots on 4 CPUs to the root-fs mount, without warnings ("firmware out-of-date" included), with KASLR, registering every L2 interrupt controller its tree enables, listing both GPIO blocks with their banks and applying pin states through both pin controllers, reading the EDID through the DDC I²C controller, with `ttyS0` on UARTA looping bytes back and exchanging them with the host, with `gpio-keys` reporting `system_powerdown` as `KEY_POWER` (and on the built-in tree the ACT LED following sysfs), mounting its ext4 root from an SD card and noticing cards inserted and removed at run time, with the firmware's `bcm2712-rpi-5-b.dtb` and on the built-in tree (1, 2 and 8 GiB), directly, on TF-A's BL31 or through U-Boot on it (WS3.4); the EDK2 port reaches the UEFI shell |
 
 Known provisional values, each marked in the code: 288 SPIs
 (`TODO(WS1.3)`), the VideoCore memory size and DMA channel mask
 (`TODO(WS0.4)`), the PMU interrupts taken from the vendor DT
 (`TODO(WS1.4)`), what the L2 controllers' write-only registers read, the
-reset values of the GPIO blocks, pin controllers and I²C controllers
-(`TODO(WS0.4)`), and the board revision's `REVISION` field (WS9.8).
+reset values of the GPIO blocks, pin controllers and I²C controllers,
+the SD hosts' capabilities and the reset values of their configuration
+registers (`TODO(WS0.4)`), and the board revision's `REVISION` field
+(WS9.8).
 
 ## 3. Milestones
 
@@ -1189,7 +1191,67 @@ raises the card-detect interrupt.
 
 ### WS5: Storage
 
-#### WS5.1 SD/eMMC host controllers (M)
+#### WS5.1 SD/eMMC host controllers (done)
+*Delivered:* a new model, `bcm2712-sdhci` (`hw/sd/bcm2712_sdhci.c`),
+wraps QEMU's `sysbus-sdhci` (version 3.00, UHS-I) in the `0x600`-byte
+window of each host, with the Broadcom configuration registers at
+`+0x400` as storage that resets to zero and migrates; the command
+queueing engine at `+0x200` reads zero from the SoC's placeholder. The
+SoC maps SDIO1 at `0x10_00ff_f000` on SPI 273 and SDIO2 at
+`0x10_0110_0000` on SPI 274, and gives SDIO1's bus as its own `sd-bus`.
+Departures from the steps: the capabilities offer SDMA and ADMA2 with
+64-bit addresses (a Pi 5's Linux reports "using ADMA 64-bit"), where
+step 1 said 64-bit DMA off; there is no separate `bcm2712-sdio-cfg`
+device, and the card-detect override in `SDIO_CFG_CTRL` has no effect,
+as Linux and U-Boot set it only to report a card in a slot that cannot
+lose one; and UHS-I is never negotiated, since QEMU's cards do not take
+1.8 V (no S18A in their OCR), so cards run in high-speed mode at 50 MHz
+and step 4's switching and tuning go unused. Patch 0023 gives QEMU's
+SDHCI a `card-inserted` output, which the board inverts onto GIO AON 5
+(`SD_CDET_N`); Linux polls that line every second, as GIO AON has no
+interrupt. The board takes `-drive if=sd,index=0` (`IF_SD` is its
+default block interface, and `auto_create_sdcard` gives it an empty
+`sd0` drive without one) and names the card `/machine/sd-card`, the
+`id` QMP's `blockdev-change-medium` and `eject` take. Two QEMU bugs
+surfaced. Since a362b19a39e4, a card realized on a drive without a
+medium took no permissions on it and registered no callbacks, so no
+card could go into the empty slot: upstream-first patch 0021 fixes it.
+QEMU also ignored the address write that resumes an SDMA transfer
+stopped at a buffer boundary, which timed U-Boot out on any read across
+512 KiB: upstream fixed it in 725a8f10 (September 2026, after v11.1.1),
+and patch 0022 backports it with its authorship and a cherry-pick line,
+to leave the series on the rebase onto `master`. The built-in tree gains
+`/clocks/clk-emmc2` (200 MHz), both hosts as `bcm2712.dtsi` has them
+(SDIO2 disabled, with its capability mask), the card slot on SDIO1 as
+`bcm2712-rpi-5-b.dts` has it (4-bit bus, UHS modes, `cd-gpios` on GIO
+AON 5 active low, the `vmmc` and `vqmmc` regulators switched by GIO AON
+4 and 3, pin states on both pin controllers) and the `mmc0` alias, but
+not `supports-cqe`. `brcm,bcm2712-sdhci` leaves the list of disabled
+compatibles and `brcm,bcm4329-fmac`, the Wi-Fi radio on SDIO2, joins
+it. qtests cover reset values and capabilities, the configuration
+registers, both SPIs, a command with no card, card detect through
+insertion, removal and a quick re-insertion, PIO reads and writes, SDMA
+stopping and resuming at 4 KiB boundaries, ADMA2 above 4 GiB, reset,
+and migration in the middle of a block; the bare-metal suite reads the
+card's master boot record through PIO (`sd/mbr`) in every configuration
+and skips with the slot empty; `make check-firmware` boots Linux with
+its root on a card, directly and through U-Boot and the card's
+`extlinux.conf`, and has EDK2 map the card. Linux 6.18 (the Raspberry
+Pi OS kernel) mounts an ext4 root from a 4 GiB card on both trees; 64
+MiB written through the file system and 64 MiB through `O_DIRECT` on a
+raw partition read back intact, the file again in the next boot, and
+`e2fsck` finds the file system clean. `fio` did not run: this
+environment has no aarch64 C library to build it with and no route to
+a package mirror, so lprobe's check stood in, writing sectors that name
+their own offset in chunks of varied sizes and reading them back in a
+scrambled order. A card inserted into the empty slot, removed and
+inserted again at run time flips GIO AON 5, and Linux notices each
+change within a second. U-Boot and EDK2 read and write the card as well.
+Data moves at about 3 MB/s, as QEMU's cards read and write a 512-byte
+block at a time through the block layer. Each of 12 deliberate breakages
+of the model, its SoC and board wiring and patches 0021 to 0023 fails at
+least one of these tests.
+
 **Depends:** WS4.2 for card detect.
 `brcm,bcm2712-sdhci` (Linux `sdhci-brcmstb.c`, `match_priv_2712`) is a
 standard SDHCI 3.0 host (`host`, `0x260`) plus a Broadcom `cfg` block

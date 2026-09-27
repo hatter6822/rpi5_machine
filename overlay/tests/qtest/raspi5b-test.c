@@ -1317,11 +1317,13 @@ typedef struct Gio {
 /* The board's use of the lines (raspi5b.c) */
 #define PWR_BUTTON_GIO          20      /* low while pressed */
 #define PWR_BUTTON_PRESS_NS     (200 * SCALE_MS)
+#define SD_CDET_AON_GPIO        5       /* low while a card is in */
 #define ACT_LED_AON_GPIO        9       /* lit while low */
 
 static const Gio gios[] = {
     { "gio",        0x107d508500ULL, { 32, 22 }, { BIT(PWR_BUTTON_GIO) } },
-    { "gio-aon",    0x107d517c00ULL, { 17, 6 }, { BIT(ACT_LED_AON_GPIO) } },
+    { "gio-aon",    0x107d517c00ULL, { 17, 6 },
+      { BIT(SD_CDET_AON_GPIO) | BIT(ACT_LED_AON_GPIO) } },
 };
 
 #define GIO             (&gios[0])
@@ -1618,12 +1620,12 @@ static void test_gio_aon(void)
                                                      : L2_LEVEL_MASK_CLEAR,
                   UINT32_MAX);
     }
-    gio_writel(qts, gio, 0, GIO_EC, BIT(5));
-    gio_writel(qts, gio, 0, GIO_MASK, BIT(5));
-    gio_set_input(qts, gio, 5, 1);
+    gio_writel(qts, gio, 0, GIO_EC, BIT(6));
+    gio_writel(qts, gio, 0, GIO_MASK, BIT(6));
+    gio_set_input(qts, gio, 6, 1);
     g_assert_cmphex(gio_readl(qts, gio, 0, GIO_DATA), ==,
-                    BIT(5) | gio->high[0]);
-    g_assert_cmphex(gio_readl(qts, gio, 0, GIO_STAT), ==, BIT(5));
+                    BIT(6) | gio->high[0]);
+    g_assert_cmphex(gio_readl(qts, gio, 0, GIO_STAT), ==, BIT(6));
     for (int i = 0; i < ARRAY_SIZE(l2_intcs); i++) {
         g_assert_cmphex(l2_readl(qts, &l2_intcs[i], 0), ==, 0);
         g_assert_false(gic_spi_pending(qts, l2_intcs[i].spi));
@@ -2685,6 +2687,771 @@ static void test_uarta_migrate(void)
 }
 
 /*
+ * The SD/eMMC host controllers (Linux sdhci-brcmstb.c): an SD Host
+ * Controller 3.00 at the base of each, Broadcom's configuration registers
+ * at 0x400. SDIO1 serves the SD card slot; SDIO2 the Wi-Fi radio, which
+ * is not modelled, so nothing is on its bus.
+ */
+typedef struct Sdio {
+    uint64_t base;
+    int spi;                    /* bcm2712.dtsi */
+} Sdio;
+
+static const Sdio sdios[] = {
+    { 0x1000fff000ULL, 273 },
+    { 0x1001100000ULL, 274 },
+};
+
+#define SDIO1                   (&sdios[0])
+#define SDIO2                   (&sdios[1])
+
+/* Linux drivers/mmc/host/sdhci.h */
+#define SDHCI_DMA_ADDRESS       0x00
+#define SDHCI_BLOCK_SIZE        0x04
+#define SDHCI_BLOCK_COUNT       0x06
+#define SDHCI_ARGUMENT          0x08
+#define SDHCI_TRANSFER_MODE     0x0c
+#define SDHCI_COMMAND           0x0e
+#define SDHCI_RESPONSE          0x10
+#define SDHCI_BUFFER            0x20
+#define SDHCI_PRESENT_STATE     0x24
+#define SDHCI_HOST_CONTROL      0x28
+#define SDHCI_POWER_CONTROL     0x29
+#define SDHCI_CLOCK_CONTROL     0x2c
+#define SDHCI_SOFTWARE_RESET    0x2f
+#define SDHCI_INT_STATUS        0x30
+#define SDHCI_INT_ENABLE        0x34
+#define SDHCI_SIGNAL_ENABLE     0x38
+#define SDHCI_CAPABILITIES      0x40
+#define SDHCI_CAPABILITIES_1    0x44
+#define SDHCI_ADMA_ADDRESS      0x58
+#define SDHCI_ADMA_ADDRESS_HI   0x5c
+#define SDHCI_HOST_VERSION      0xfe
+#define SDHCI_TRNS_DMA          BIT(0)
+#define SDHCI_TRNS_BLK_CNT_EN   BIT(1)
+#define SDHCI_TRNS_AUTO_CMD12   BIT(2)
+#define SDHCI_TRNS_READ         BIT(4)
+#define SDHCI_TRNS_MULTI        BIT(5)
+#define SDHCI_CMD_RESP_NONE     0x00
+#define SDHCI_CMD_RESP_LONG     0x01
+#define SDHCI_CMD_RESP_SHORT    0x02
+#define SDHCI_CMD_RESP_SHORT_BUSY 0x03
+#define SDHCI_CMD_CRC           BIT(3)
+#define SDHCI_CMD_INDEX         BIT(4)
+#define SDHCI_CMD_DATA          BIT(5)
+#define SDHCI_CMD_R1            (SDHCI_CMD_RESP_SHORT | SDHCI_CMD_CRC | \
+                                 SDHCI_CMD_INDEX)
+#define SDHCI_CMD_R1B           (SDHCI_CMD_RESP_SHORT_BUSY | SDHCI_CMD_CRC | \
+                                 SDHCI_CMD_INDEX)
+#define SDHCI_CARD_PRESENT      BIT(16)
+#define SDHCI_CTRL_ADMA64       0x18
+#define SDHCI_POWER_ON          0x01
+#define SDHCI_POWER_330         0x0e
+#define SDHCI_CLOCK_INT_EN      BIT(0)
+#define SDHCI_CLOCK_CARD_EN     BIT(2)
+#define SDHCI_RESET_ALL         BIT(0)
+#define SDHCI_INT_RESPONSE      BIT(0)
+#define SDHCI_INT_DATA_END      BIT(1)
+#define SDHCI_INT_DMA_END       BIT(3)
+#define SDHCI_INT_SPACE_AVAIL   BIT(4)
+#define SDHCI_INT_DATA_AVAIL    BIT(5)
+#define SDHCI_INT_CARD_INSERT   BIT(6)
+#define SDHCI_INT_CARD_REMOVE   BIT(7)
+#define SDHCI_INT_ERROR         BIT(15)
+#define SDHCI_INT_TIMEOUT       BIT(16)
+
+/*
+ * The capabilities: a 50 MHz timeout clock, a 200 MHz base clock,
+ * 512-byte blocks, 8-bit buses, ADMA2, high speed, SDMA, 3.3 V and 1.8 V,
+ * 64-bit addresses; SDR50 with tuning, SDR104 and DDR50
+ */
+#define SDIO_CAPS               0x156cc8b2
+#define SDIO_CAPS_1             0x00002007
+#define SDIO_VERSION            0x2402          /* SD Host Controller 3.00 */
+
+#define SDIO_CQE                0x200           /* not modelled */
+#define SDIO_CFG                0x400
+#define SDIO_CFG_SIZE           0x200
+
+/* ADMA2 descriptors with 64-bit addresses: 12 bytes before version 4 */
+#define ADMA2_VALID             BIT(0)
+#define ADMA2_END               BIT(1)
+#define ADMA2_TRAN              0x20
+#define ADMA2_DESC_SIZE         12
+
+/* SD Physical Layer Simplified Specification */
+#define SD_GO_IDLE_STATE        0
+#define SD_ALL_SEND_CID         2
+#define SD_SEND_RELATIVE_ADDR   3
+#define SD_SELECT_CARD          7
+#define SD_SEND_IF_COND         8
+#define SD_READ_SINGLE_BLOCK    17
+#define SD_READ_MULTIPLE_BLOCK  18
+#define SD_WRITE_SINGLE_BLOCK   24
+#define SD_WRITE_MULTIPLE_BLOCK 25
+#define SD_APP_OP_COND          41              /* after SD_APP_CMD */
+#define SD_APP_CMD              55
+#define SD_IF_COND_CHECK        0x1aa           /* 2.7-3.6 V, check pattern */
+#define SD_OCR_VDD_32_34        (BIT(20) | BIT(21))
+#define SD_OCR_HCS              BIT(30)
+#define SD_OCR_BUSY             BIT(31)         /* set once powered up */
+#define SD_BLOCK_SIZE           512
+
+/* A card image, of the power-of-two size QEMU's cards need */
+#define SD_IMAGE_SIZE           (1 * MiB)
+
+/* The monitor's name for the card in the slot (raspi5b.c) */
+#define SD_CARD_QOM_PATH        "/machine/sd-card"
+
+static uint32_t sdio_readl(QTestState *qts, const Sdio *sdio, uint32_t reg)
+{
+    return qtest_readl(qts, sdio->base + reg);
+}
+
+static void sdio_writel(QTestState *qts, const Sdio *sdio, uint32_t reg,
+                        uint32_t val)
+{
+    qtest_writel(qts, sdio->base + reg, val);
+}
+
+static void sdio_writew(QTestState *qts, const Sdio *sdio, uint32_t reg,
+                        uint16_t val)
+{
+    qtest_writew(qts, sdio->base + reg, val);
+}
+
+static void sdio_writeb(QTestState *qts, const Sdio *sdio, uint32_t reg,
+                        uint8_t val)
+{
+    qtest_writeb(qts, sdio->base + reg, val);
+}
+
+static bool sdio_card_present(QTestState *qts, const Sdio *sdio)
+{
+    return sdio_readl(qts, sdio, SDHCI_PRESENT_STATE) & SDHCI_CARD_PRESENT;
+}
+
+/* The card detect line, AON GPIO 5: high with the slot empty */
+static bool sd_cdet_high(QTestState *qts)
+{
+    return gio_readl(qts, GIO_AON, 0, GIO_DATA) & BIT(SD_CDET_AON_GPIO);
+}
+
+/* Every byte of the image tells its offset from its neighbours' */
+static uint8_t sd_image_byte(uint64_t offset)
+{
+    return offset * 7 + offset / SD_BLOCK_SIZE;
+}
+
+static char *sd_image(void)
+{
+    g_autofree uint8_t *data = g_malloc(SD_IMAGE_SIZE);
+    char *path;
+    int fd = g_file_open_tmp("raspi5b-sd-XXXXXX", &path, NULL);
+
+    g_assert_cmpint(fd, >=, 0);
+    for (uint64_t i = 0; i < SD_IMAGE_SIZE; i++) {
+        data[i] = sd_image_byte(i);
+    }
+    g_assert_cmpint(write(fd, data, SD_IMAGE_SIZE), ==, SD_IMAGE_SIZE);
+    close(fd);
+    return path;
+}
+
+static void sd_image_read(const char *path, uint64_t offset, void *buf,
+                          size_t len)
+{
+    int fd = open(path, O_RDONLY);
+
+    g_assert_cmpint(fd, >=, 0);
+    g_assert_cmpint(pread(fd, buf, len, offset), ==, len);
+    close(fd);
+}
+
+static void sdio_issue(QTestState *qts, const Sdio *sdio, int index,
+                       uint32_t arg, uint16_t flags)
+{
+    sdio_writel(qts, sdio, SDHCI_ARGUMENT, arg);
+    sdio_writew(qts, sdio, SDHCI_COMMAND, index << 8 | flags);
+}
+
+/*
+ * Send a command that the card answers, and acknowledge it (and the end
+ * of the busy wait an R1b response brings); returns the response's first
+ * word
+ */
+static uint32_t sdio_command(QTestState *qts, const Sdio *sdio, int index,
+                             uint32_t arg, uint16_t flags)
+{
+    sdio_issue(qts, sdio, index, arg, flags);
+    g_assert_cmphex(sdio_readl(qts, sdio, SDHCI_INT_STATUS) &
+                    (SDHCI_INT_RESPONSE | SDHCI_INT_ERROR), ==,
+                    SDHCI_INT_RESPONSE);
+    sdio_writel(qts, sdio, SDHCI_INT_STATUS, SDHCI_INT_RESPONSE |
+                (flags & SDHCI_CMD_DATA ? 0 : SDHCI_INT_DATA_END));
+    return sdio_readl(qts, sdio, SDHCI_RESPONSE);
+}
+
+/* The host powered and clocked, with every status enabled */
+static void sdio_start(QTestState *qts, const Sdio *sdio)
+{
+    sdio_writeb(qts, sdio, SDHCI_SOFTWARE_RESET, SDHCI_RESET_ALL);
+    sdio_writeb(qts, sdio, SDHCI_POWER_CONTROL,
+                SDHCI_POWER_330 | SDHCI_POWER_ON);
+    sdio_writew(qts, sdio, SDHCI_CLOCK_CONTROL,
+                SDHCI_CLOCK_INT_EN | SDHCI_CLOCK_CARD_EN);
+    sdio_writel(qts, sdio, SDHCI_INT_ENABLE, UINT32_MAX);
+}
+
+/* Identify and select the card in SDIO1's slot, as Linux does */
+static void sd_card_init(QTestState *qts)
+{
+    const Sdio *sdio = SDIO1;
+    uint32_t rca;
+
+    sdio_start(qts, sdio);
+    sdio_command(qts, sdio, SD_GO_IDLE_STATE, 0, SDHCI_CMD_RESP_NONE);
+    g_assert_cmphex(sdio_command(qts, sdio, SD_SEND_IF_COND,
+                                 SD_IF_COND_CHECK, SDHCI_CMD_R1), ==,
+                    SD_IF_COND_CHECK);
+    sdio_command(qts, sdio, SD_APP_CMD, 0, SDHCI_CMD_R1);
+    g_assert_cmphex(sdio_command(qts, sdio, SD_APP_OP_COND,
+                                 SD_OCR_HCS | SD_OCR_VDD_32_34,
+                                 SDHCI_CMD_RESP_SHORT) & SD_OCR_BUSY, ==,
+                    SD_OCR_BUSY);
+    sdio_command(qts, sdio, SD_ALL_SEND_CID, 0,
+                 SDHCI_CMD_RESP_LONG | SDHCI_CMD_CRC);
+    rca = sdio_command(qts, sdio, SD_SEND_RELATIVE_ADDR, 0,
+                       SDHCI_CMD_R1) >> 16;
+    sdio_command(qts, sdio, SD_SELECT_CARD, rca << 16, SDHCI_CMD_R1B);
+}
+
+/* Start reading @block from the card, a word at a time from the buffer */
+static void sd_read_start(QTestState *qts, uint32_t block)
+{
+    const Sdio *sdio = SDIO1;
+
+    sdio_writew(qts, sdio, SDHCI_BLOCK_SIZE, SD_BLOCK_SIZE);
+    sdio_writew(qts, sdio, SDHCI_BLOCK_COUNT, 1);
+    sdio_writew(qts, sdio, SDHCI_TRANSFER_MODE, SDHCI_TRNS_READ);
+    /* The card has under 2 GiB: it takes byte addresses */
+    sdio_command(qts, sdio, SD_READ_SINGLE_BLOCK, block * SD_BLOCK_SIZE,
+                 SDHCI_CMD_R1 | SDHCI_CMD_DATA);
+    g_assert_true(sdio_readl(qts, sdio, SDHCI_INT_STATUS) &
+                  SDHCI_INT_DATA_AVAIL);
+}
+
+static void sd_read_words(QTestState *qts, uint8_t *buf, size_t len)
+{
+    for (size_t i = 0; i < len; i += 4) {
+        stl_le_p(buf + i, sdio_readl(qts, SDIO1, SDHCI_BUFFER));
+    }
+}
+
+static void sd_transfer_end(QTestState *qts, const Sdio *sdio)
+{
+    g_assert_cmphex(sdio_readl(qts, sdio, SDHCI_INT_STATUS) &
+                    (SDHCI_INT_DATA_END | SDHCI_INT_ERROR), ==,
+                    SDHCI_INT_DATA_END);
+    sdio_writel(qts, sdio, SDHCI_INT_STATUS, UINT32_MAX);
+}
+
+static void sd_read_pio(QTestState *qts, uint32_t block, uint8_t *buf)
+{
+    sd_read_start(qts, block);
+    sd_read_words(qts, buf, SD_BLOCK_SIZE);
+    sd_transfer_end(qts, SDIO1);
+}
+
+static void sd_check_block(const uint8_t *buf, uint32_t block)
+{
+    for (int i = 0; i < SD_BLOCK_SIZE; i++) {
+        g_assert_cmphex(buf[i], ==,
+                        sd_image_byte((uint64_t)block * SD_BLOCK_SIZE + i));
+    }
+}
+
+static void sdio_check_reset(QTestState *qts, const Sdio *sdio, bool card)
+{
+    g_assert_cmphex(sdio_readl(qts, sdio, SDHCI_CAPABILITIES), ==,
+                    SDIO_CAPS);
+    g_assert_cmphex(sdio_readl(qts, sdio, SDHCI_CAPABILITIES_1), ==,
+                    SDIO_CAPS_1);
+    g_assert_cmphex(qtest_readw(qts, sdio->base + SDHCI_HOST_VERSION), ==,
+                    SDIO_VERSION);
+    g_assert_cmpint(sdio_card_present(qts, sdio), ==, card);
+    g_assert_cmphex(sdio_readl(qts, sdio, SDHCI_HOST_CONTROL), ==, 0);
+    g_assert_cmphex(sdio_readl(qts, sdio, SDHCI_CLOCK_CONTROL), ==, 0);
+    g_assert_cmphex(sdio_readl(qts, sdio, SDHCI_INT_STATUS), ==, 0);
+    g_assert_cmphex(sdio_readl(qts, sdio, SDHCI_INT_ENABLE), ==, 0);
+    g_assert_cmphex(sdio_readl(qts, sdio, SDHCI_SIGNAL_ENABLE), ==, 0);
+    for (int r = 0; r < SDIO_CFG_SIZE; r += 4) {
+        g_assert_cmphex(sdio_readl(qts, sdio, SDIO_CFG + r), ==, 0);
+    }
+    g_assert_false(gic_spi_pending(qts, sdio->spi));
+}
+
+/*
+ * SD Host Controllers 3.00 with the capabilities of a Pi 5's, SDIO1's
+ * slot empty; the gaps, the command queueing engine among them, read as
+ * zero
+ */
+static void test_sdio_reset_values(void)
+{
+    QTestState *qts = qtest_init("-machine raspi5b");
+
+    for (int i = 0; i < ARRAY_SIZE(sdios); i++) {
+        sdio_check_reset(qts, &sdios[i], false);
+        g_assert_cmphex(sdio_readl(qts, &sdios[i], 0x100), ==, 0);
+        g_assert_cmphex(sdio_readl(qts, &sdios[i], SDIO_CQE), ==, 0);
+    }
+    g_assert_true(sd_cdet_high(qts));
+
+    qtest_quit(qts);
+}
+
+/* The configuration registers keep what is written, each block its own */
+static void test_sdio_cfg(void)
+{
+    QTestState *qts = qtest_init("-machine raspi5b");
+
+    for (int i = 0; i < ARRAY_SIZE(sdios); i++) {
+        for (int r = 0; r < SDIO_CFG_SIZE; r += 4) {
+            sdio_writel(qts, &sdios[i], SDIO_CFG + r, (i + 1) << 28 | r);
+        }
+    }
+    for (int i = 0; i < ARRAY_SIZE(sdios); i++) {
+        for (int r = 0; r < SDIO_CFG_SIZE; r += 4) {
+            g_assert_cmphex(sdio_readl(qts, &sdios[i], SDIO_CFG + r), ==,
+                            (i + 1) << 28 | r);
+        }
+    }
+
+    qtest_quit(qts);
+}
+
+/* Each controller interrupts on its own SPI */
+static void test_sdio_interrupts(void)
+{
+    QTestState *qts = qtest_init("-machine raspi5b");
+
+    for (int i = 0; i < ARRAY_SIZE(sdios); i++) {
+        const Sdio *sdio = &sdios[i];
+
+        sdio_start(qts, sdio);
+        sdio_writel(qts, sdio, SDHCI_SIGNAL_ENABLE, SDHCI_INT_RESPONSE);
+        sdio_issue(qts, sdio, SD_GO_IDLE_STATE, 0, SDHCI_CMD_RESP_NONE);
+        g_assert_cmphex(sdio_readl(qts, sdio, SDHCI_INT_STATUS), ==,
+                        SDHCI_INT_RESPONSE);
+        g_assert_true(gic_spi_pending(qts, sdio->spi));
+        g_assert_false(gic_spi_pending(qts, sdios[!i].spi));
+        sdio_writel(qts, sdio, SDHCI_INT_STATUS, SDHCI_INT_RESPONSE);
+        g_assert_false(gic_spi_pending(qts, sdio->spi));
+    }
+
+    qtest_quit(qts);
+}
+
+/*
+ * Without a card, a command that expects a response times out; and with
+ * -nodefaults and no -drive, the slot has no card to take
+ */
+static void test_sdio_no_card(void)
+{
+    QTestState *qts = qtest_init("-machine raspi5b -nodefaults");
+
+    for (int i = 0; i < ARRAY_SIZE(sdios); i++) {
+        const Sdio *sdio = &sdios[i];
+
+        g_assert_false(sdio_card_present(qts, sdio));
+        sdio_start(qts, sdio);
+        sdio_issue(qts, sdio, SD_SEND_IF_COND, SD_IF_COND_CHECK,
+                   SDHCI_CMD_R1);
+        g_assert_cmphex(sdio_readl(qts, sdio, SDHCI_INT_STATUS), ==,
+                        SDHCI_INT_TIMEOUT | SDHCI_INT_ERROR |
+                        SDHCI_INT_RESPONSE);
+    }
+    g_assert_true(sd_cdet_high(qts));
+
+    qtest_quit(qts);
+}
+
+static void sd_change(QTestState *qts, const char *image)
+{
+    qtest_qmp_assert_success(qts, "{ 'execute': 'blockdev-change-medium',"
+                             "  'arguments': { 'id': %s, 'filename': %s,"
+                             "                 'format': 'raw' } }",
+                             SD_CARD_QOM_PATH, image);
+}
+
+static void sd_eject(QTestState *qts)
+{
+    qtest_qmp_assert_success(qts, "{ 'execute': 'eject',"
+                             "  'arguments': { 'id': %s } }",
+                             SD_CARD_QOM_PATH);
+}
+
+/*
+ * The card detect switch: the monitor inserts and ejects the card, and
+ * SDIO1 sees it come and go, with an interrupt, as does AON GPIO 5, low
+ * while a card is in, which Linux watches through cd-gpios
+ */
+static void test_sdio_card_detect(void)
+{
+    g_autofree char *image = sd_image();
+    QTestState *qts = qtest_init("-machine raspi5b");
+    const Sdio *sdio = SDIO1;
+    const uint32_t detect = SDHCI_INT_CARD_INSERT | SDHCI_INT_CARD_REMOVE;
+    uint8_t buf[SD_BLOCK_SIZE];
+
+    g_assert_false(sdio_card_present(qts, sdio));
+    g_assert_true(sd_cdet_high(qts));
+    sdio_writel(qts, sdio, SDHCI_INT_ENABLE, detect);
+    sdio_writel(qts, sdio, SDHCI_SIGNAL_ENABLE, detect);
+
+    sd_change(qts, image);
+    g_assert_true(sdio_card_present(qts, sdio));
+    g_assert_false(sd_cdet_high(qts));
+    g_assert_cmphex(sdio_readl(qts, sdio, SDHCI_INT_STATUS), ==,
+                    SDHCI_INT_CARD_INSERT);
+    g_assert_true(gic_spi_pending(qts, sdio->spi));
+    sdio_writel(qts, sdio, SDHCI_INT_STATUS, detect);
+    g_assert_false(gic_spi_pending(qts, sdio->spi));
+    sd_card_init(qts);
+    sd_read_pio(qts, 3, buf);
+    sd_check_block(buf, 3);
+    sdio_writel(qts, sdio, SDHCI_SIGNAL_ENABLE, detect);
+
+    sd_eject(qts);
+    g_assert_false(sdio_card_present(qts, sdio));
+    g_assert_true(sd_cdet_high(qts));
+    g_assert_cmphex(sdio_readl(qts, sdio, SDHCI_INT_STATUS) & detect, ==,
+                    SDHCI_INT_CARD_REMOVE);
+    g_assert_true(gic_spi_pending(qts, sdio->spi));
+
+    /*
+     * A card back in before the guest has seen the last one go: the line
+     * follows at once, the controller only once the removal is taken
+     */
+    sd_change(qts, image);
+    g_assert_false(sd_cdet_high(qts));
+    qtest_clock_step(qts, 2 * NANOSECONDS_PER_SECOND);
+    g_assert_false(sdio_card_present(qts, sdio));
+    sdio_writel(qts, sdio, SDHCI_INT_STATUS, detect);
+    g_assert_false(gic_spi_pending(qts, sdio->spi));
+    qtest_clock_step(qts, NANOSECONDS_PER_SECOND);
+    g_assert_true(sdio_card_present(qts, sdio));
+    g_assert_cmphex(sdio_readl(qts, sdio, SDHCI_INT_STATUS) & detect, ==,
+                    SDHCI_INT_CARD_INSERT);
+    g_assert_true(gic_spi_pending(qts, sdio->spi));
+
+    qtest_quit(qts);
+    unlink(image);
+}
+
+/* Blocks read and written a word at a time through the buffer */
+static void test_sdio_pio(void)
+{
+    g_autofree char *image = sd_image();
+    QTestState *qts = qtest_initf("-machine raspi5b "
+                                  "-drive if=sd,file=%s,format=raw", image);
+    const Sdio *sdio = SDIO1;
+    uint8_t buf[SD_BLOCK_SIZE], out[SD_BLOCK_SIZE];
+
+    g_assert_true(sdio_card_present(qts, sdio));
+    g_assert_false(sd_cdet_high(qts));
+    sd_card_init(qts);
+    sd_read_pio(qts, 0, buf);
+    sd_check_block(buf, 0);
+    sd_read_pio(qts, 1000, buf);
+    sd_check_block(buf, 1000);
+
+    for (int i = 0; i < SD_BLOCK_SIZE; i++) {
+        out[i] = ~sd_image_byte(i);
+    }
+    sdio_writew(qts, sdio, SDHCI_BLOCK_SIZE, SD_BLOCK_SIZE);
+    sdio_writew(qts, sdio, SDHCI_BLOCK_COUNT, 1);
+    sdio_writew(qts, sdio, SDHCI_TRANSFER_MODE, 0);
+    sdio_command(qts, sdio, SD_WRITE_SINGLE_BLOCK, 7 * SD_BLOCK_SIZE,
+                 SDHCI_CMD_R1 | SDHCI_CMD_DATA);
+    g_assert_true(sdio_readl(qts, sdio, SDHCI_INT_STATUS) &
+                  SDHCI_INT_SPACE_AVAIL);
+    for (int i = 0; i < SD_BLOCK_SIZE; i += 4) {
+        sdio_writel(qts, sdio, SDHCI_BUFFER, ldl_le_p(out + i));
+    }
+    sd_transfer_end(qts, sdio);
+    sd_image_read(image, 7 * SD_BLOCK_SIZE, buf, sizeof(buf));
+    g_assert_cmpmem(buf, sizeof(buf), out, sizeof(out));
+    sd_read_pio(qts, 6, buf);
+    sd_check_block(buf, 6);
+
+    qtest_quit(qts);
+    unlink(image);
+}
+
+/* Fill an ADMA2 table at @table: @count blocks, @stride bytes apart */
+static void adma2_table(QTestState *qts, uint64_t table, uint64_t addr,
+                        uint64_t stride, int count)
+{
+    for (int i = 0; i < count; i++) {
+        uint8_t desc[ADMA2_DESC_SIZE] = {
+            ADMA2_VALID | ADMA2_TRAN | (i == count - 1 ? ADMA2_END : 0),
+        };
+
+        stw_le_p(desc + 2, SD_BLOCK_SIZE);
+        stq_le_p(desc + 4, addr + i * stride);
+        qtest_memwrite(qts, table + i * ADMA2_DESC_SIZE, desc, sizeof(desc));
+    }
+}
+
+/* Transfer @count blocks at @block by ADMA2, with CMD12 sent at the end */
+static void adma2_transfer(QTestState *qts, uint64_t table, uint32_t block,
+                           int count, bool read)
+{
+    const Sdio *sdio = SDIO1;
+
+    sdio_writeb(qts, sdio, SDHCI_HOST_CONTROL, SDHCI_CTRL_ADMA64);
+    sdio_writel(qts, sdio, SDHCI_ADMA_ADDRESS, table);
+    sdio_writel(qts, sdio, SDHCI_ADMA_ADDRESS_HI, table >> 32);
+    sdio_writew(qts, sdio, SDHCI_BLOCK_SIZE, SD_BLOCK_SIZE);
+    sdio_writew(qts, sdio, SDHCI_BLOCK_COUNT, count);
+    sdio_writew(qts, sdio, SDHCI_TRANSFER_MODE,
+                SDHCI_TRNS_DMA | SDHCI_TRNS_BLK_CNT_EN |
+                SDHCI_TRNS_AUTO_CMD12 | SDHCI_TRNS_MULTI |
+                (read ? SDHCI_TRNS_READ : 0));
+    sdio_command(qts, sdio, read ? SD_READ_MULTIPLE_BLOCK
+                                 : SD_WRITE_MULTIPLE_BLOCK,
+                 block * SD_BLOCK_SIZE, SDHCI_CMD_R1 | SDHCI_CMD_DATA);
+    qtest_clock_step(qts, SCALE_MS);
+    g_assert_true(gic_spi_pending(qts, sdio->spi));
+    sd_transfer_end(qts, sdio);
+    g_assert_false(gic_spi_pending(qts, sdio->spi));
+}
+
+/*
+ * ADMA2 with 64-bit addresses, as Linux uses it: the table and the
+ * buffers above 4 GiB, a buffer to a block, the end of the transfer
+ * signalled on the controller's SPI
+ */
+static void test_sdio_adma2(void)
+{
+    g_autofree char *image = sd_image();
+    QTestState *qts = qtest_initf("-machine raspi5b -m 8G "
+                                  "-drive if=sd,file=%s,format=raw", image);
+    const uint64_t table = 5 * GiB + 0x40, bufs = 6 * GiB + 0x1000;
+    const uint64_t stride = 64 * KiB;
+    const int count = 3;
+    uint8_t buf[SD_BLOCK_SIZE], out[SD_BLOCK_SIZE];
+
+    sd_card_init(qts);
+    sdio_writel(qts, SDIO1, SDHCI_SIGNAL_ENABLE, SDHCI_INT_DATA_END);
+
+    adma2_table(qts, table, bufs, stride, count);
+    adma2_transfer(qts, table, 20, count, true);
+    for (int i = 0; i < count; i++) {
+        qtest_memread(qts, bufs + i * stride, buf, sizeof(buf));
+        sd_check_block(buf, 20 + i);
+    }
+
+    for (int i = 0; i < count; i++) {
+        for (int j = 0; j < SD_BLOCK_SIZE; j++) {
+            out[j] = i ^ j;
+        }
+        qtest_memwrite(qts, bufs + i * stride, out, sizeof(out));
+    }
+    adma2_transfer(qts, table, 40, count, false);
+    for (int i = 0; i < count; i++) {
+        for (int j = 0; j < SD_BLOCK_SIZE; j++) {
+            out[j] = i ^ j;
+        }
+        sd_image_read(image, (40 + i) * SD_BLOCK_SIZE, buf, sizeof(buf));
+        g_assert_cmpmem(buf, sizeof(buf), out, sizeof(out));
+    }
+    sd_read_pio(qts, 43, buf);
+    sd_check_block(buf, 43);
+
+    qtest_quit(qts);
+    unlink(image);
+}
+
+/*
+ * Transfer @count blocks at @block by SDMA to or from @addr, whose
+ * multiple of 4 KiB makes each 4 KiB boundary a stop
+ */
+static void sdma_transfer(QTestState *qts, uint32_t addr, uint32_t block,
+                          int count, bool read)
+{
+    const Sdio *sdio = SDIO1;
+    const int per_boundary = 4 * KiB / SD_BLOCK_SIZE;
+
+    sdio_writeb(qts, sdio, SDHCI_HOST_CONTROL, 0);         /* SDMA */
+    sdio_writel(qts, sdio, SDHCI_DMA_ADDRESS, addr);
+    /* A 4 KiB buffer boundary (0 in bits 14:12) */
+    sdio_writew(qts, sdio, SDHCI_BLOCK_SIZE, SD_BLOCK_SIZE);
+    sdio_writew(qts, sdio, SDHCI_BLOCK_COUNT, count);
+    sdio_writew(qts, sdio, SDHCI_TRANSFER_MODE,
+                SDHCI_TRNS_DMA | SDHCI_TRNS_BLK_CNT_EN |
+                SDHCI_TRNS_AUTO_CMD12 | SDHCI_TRNS_MULTI |
+                (read ? SDHCI_TRNS_READ : 0));
+    sdio_command(qts, sdio, read ? SD_READ_MULTIPLE_BLOCK
+                                 : SD_WRITE_MULTIPLE_BLOCK,
+                 block * SD_BLOCK_SIZE, SDHCI_CMD_R1 | SDHCI_CMD_DATA);
+    for (int done = per_boundary; done < count; done += per_boundary) {
+        /* Stopped at the boundary until the address to go on at comes */
+        g_assert_true(gic_spi_pending(qts, sdio->spi));
+        g_assert_cmphex(sdio_readl(qts, sdio, SDHCI_INT_STATUS), ==,
+                        SDHCI_INT_DMA_END);
+        g_assert_cmphex(sdio_readl(qts, sdio, SDHCI_DMA_ADDRESS), ==,
+                        addr + done * SD_BLOCK_SIZE);
+        g_assert_cmpuint(sdio_readl(qts, sdio, SDHCI_BLOCK_SIZE) >> 16, ==,
+                         count - done);
+        sdio_writel(qts, sdio, SDHCI_INT_STATUS, SDHCI_INT_DMA_END);
+        g_assert_false(gic_spi_pending(qts, sdio->spi));
+        sdio_writel(qts, sdio, SDHCI_DMA_ADDRESS,
+                    addr + done * SD_BLOCK_SIZE);
+    }
+    g_assert_true(gic_spi_pending(qts, sdio->spi));
+    sd_transfer_end(qts, sdio);
+    g_assert_false(gic_spi_pending(qts, sdio->spi));
+}
+
+/*
+ * SDMA, as U-Boot uses it: the transfer stops at each buffer boundary
+ * with a DMA interrupt, and goes on when the address to continue at is
+ * written
+ */
+static void test_sdio_sdma(void)
+{
+    g_autofree char *image = sd_image();
+    QTestState *qts = qtest_initf("-machine raspi5b "
+                                  "-drive if=sd,file=%s,format=raw", image);
+    const uint32_t addr = 512 * MiB;
+    const int count = 20;           /* 10 KiB: two stops, then a half */
+    uint8_t buf[SD_BLOCK_SIZE], out[SD_BLOCK_SIZE];
+
+    sd_card_init(qts);
+    sdio_writel(qts, SDIO1, SDHCI_SIGNAL_ENABLE,
+                SDHCI_INT_DMA_END | SDHCI_INT_DATA_END);
+
+    sdma_transfer(qts, addr, 60, count, true);
+    for (int i = 0; i < count; i++) {
+        qtest_memread(qts, addr + i * SD_BLOCK_SIZE, buf, sizeof(buf));
+        sd_check_block(buf, 60 + i);
+    }
+    /* Nothing past the last block */
+    qtest_memread(qts, addr + count * SD_BLOCK_SIZE, buf, sizeof(buf));
+    memset(out, 0, sizeof(out));
+    g_assert_cmpmem(buf, sizeof(buf), out, sizeof(out));
+
+    for (int i = 0; i < count; i++) {
+        for (int j = 0; j < SD_BLOCK_SIZE; j++) {
+            out[j] = i + j;
+        }
+        qtest_memwrite(qts, addr + i * SD_BLOCK_SIZE, out, sizeof(out));
+    }
+    sdma_transfer(qts, addr, 100, count, false);
+    for (int i = 0; i < count; i++) {
+        for (int j = 0; j < SD_BLOCK_SIZE; j++) {
+            out[j] = i + j;
+        }
+        sd_image_read(image, (100 + i) * SD_BLOCK_SIZE, buf, sizeof(buf));
+        g_assert_cmpmem(buf, sizeof(buf), out, sizeof(out));
+    }
+    sd_read_pio(qts, 120, buf);
+    sd_check_block(buf, 120);
+
+    qtest_quit(qts);
+    unlink(image);
+}
+
+/* A reset brings the controllers back to their reset values, the card in */
+static void test_sdio_reset(void)
+{
+    g_autofree char *image = sd_image();
+    QTestState *qts = qtest_initf("-machine raspi5b "
+                                  "-drive if=sd,file=%s,format=raw", image);
+    uint8_t buf[SD_BLOCK_SIZE];
+
+    sd_card_init(qts);
+    for (int i = 0; i < ARRAY_SIZE(sdios); i++) {
+        sdio_writel(qts, &sdios[i], SDIO_CFG, 0xc0000000);
+        sdio_writel(qts, &sdios[i], SDIO_CFG + SDIO_CFG_SIZE - 4, 1);
+    }
+    sdio_start(qts, SDIO2);
+    sdio_writel(qts, SDIO2, SDHCI_SIGNAL_ENABLE, SDHCI_INT_RESPONSE);
+    sdio_issue(qts, SDIO2, SD_GO_IDLE_STATE, 0, SDHCI_CMD_RESP_NONE);
+    g_assert_true(gic_spi_pending(qts, SDIO2->spi));
+
+    qtest_system_reset(qts);
+
+    sdio_check_reset(qts, SDIO1, true);
+    sdio_check_reset(qts, SDIO2, false);
+    g_assert_false(sd_cdet_high(qts));
+    /* The card starts over too, from its idle state */
+    sd_card_init(qts);
+    sd_read_pio(qts, 5, buf);
+    sd_check_block(buf, 5);
+
+    qtest_quit(qts);
+    unlink(image);
+}
+
+/*
+ * The registers survive a migration, and so do the card's state and a
+ * transfer halfway through the buffer
+ */
+static void test_sdio_migrate(void)
+{
+    g_autofree char *image = sd_image();
+    g_autofree char *file = g_strdup_printf("%s/raspi5b-sdio-%d.mig",
+                                            g_get_tmp_dir(), getpid());
+    g_autofree char *out = g_strdup_printf("exec:cat > %s", file);
+    g_autofree char *in = g_strdup_printf("exec:cat %s", file);
+    g_autofree char *args = g_strdup_printf(
+        "-machine raspi5b -m 1G -drive if=sd,file=%s,format=raw", image);
+    uint8_t buf[SD_BLOCK_SIZE];
+    QTestState *src, *dst;
+
+    src = qtest_init(args);
+    for (int i = 0; i < ARRAY_SIZE(sdios); i++) {
+        sdio_writel(src, &sdios[i], SDIO_CFG + 0x44, 2 + i);
+    }
+    sdio_start(src, SDIO2);
+    sdio_writel(src, SDIO2, SDHCI_SIGNAL_ENABLE, SDHCI_INT_RESPONSE);
+    sdio_issue(src, SDIO2, SD_GO_IDLE_STATE, 0, SDHCI_CMD_RESP_NONE);
+    sd_card_init(src);
+    sd_read_start(src, 9);
+    sd_read_words(src, buf, SD_BLOCK_SIZE / 2);
+    qtest_qmp_assert_success(src, "{ 'execute': 'migrate',"
+                             "  'arguments': { 'uri': %s } }", out);
+    wait_for_migration(src);
+    qtest_quit(src);
+
+    dst = qtest_initf("%s -incoming defer", args);
+    qtest_qmp_assert_success(dst, "{ 'execute': 'migrate-incoming',"
+                             "  'arguments': { 'uri': %s } }", in);
+    wait_for_migration(dst);
+    for (int i = 0; i < ARRAY_SIZE(sdios); i++) {
+        g_assert_cmphex(sdio_readl(dst, &sdios[i], SDIO_CFG + 0x44), ==,
+                        2 + i);
+    }
+    g_assert_cmphex(sdio_readl(dst, SDIO2, SDHCI_INT_STATUS), ==,
+                    SDHCI_INT_RESPONSE);
+    g_assert_true(gic_spi_pending(dst, SDIO2->spi));
+    g_assert_true(sdio_card_present(dst, SDIO1));
+    g_assert_false(sd_cdet_high(dst));
+    sd_read_words(dst, buf + SD_BLOCK_SIZE / 2, SD_BLOCK_SIZE / 2);
+    sd_transfer_end(dst, SDIO1);
+    sd_check_block(buf, 9);
+    sd_read_pio(dst, 10, buf);
+    sd_check_block(buf, 10);
+
+    qtest_quit(dst);
+    unlink(file);
+    unlink(image);
+}
+
+/*
  * The board: system_powerdown presses the power button, pulling GIO 20
  * low for 200 ms. Here with both edges enabled, as Linux gpio-keys has it.
  */
@@ -2825,8 +3592,7 @@ static void test_act_led(void)
     /* Released, the line goes back up */
     gio_writel(qts, gio, 0, GIO_IODIR, gio_valid(gio, 0));
     g_assert_true(qtest_get_irq(qts, 0));
-    g_assert_cmphex(gio_readl(qts, gio, 0, GIO_DATA), ==,
-                    BIT(ACT_LED_AON_GPIO));
+    g_assert_cmphex(gio_readl(qts, gio, 0, GIO_DATA), ==, gio->high[0]);
 
     qtest_quit(qts);
 }
@@ -3076,6 +3842,16 @@ int main(int argc, char **argv)
     qtest_add_func("/raspi5b/uarta/serial-port", test_uarta_serial_port);
     qtest_add_func("/raspi5b/uarta/reset", test_uarta_reset);
     qtest_add_func("/raspi5b/uarta/migrate", test_uarta_migrate);
+    qtest_add_func("/raspi5b/sdio/reset-values", test_sdio_reset_values);
+    qtest_add_func("/raspi5b/sdio/cfg", test_sdio_cfg);
+    qtest_add_func("/raspi5b/sdio/interrupts", test_sdio_interrupts);
+    qtest_add_func("/raspi5b/sdio/no-card", test_sdio_no_card);
+    qtest_add_func("/raspi5b/sdio/card-detect", test_sdio_card_detect);
+    qtest_add_func("/raspi5b/sdio/pio", test_sdio_pio);
+    qtest_add_func("/raspi5b/sdio/adma2", test_sdio_adma2);
+    qtest_add_func("/raspi5b/sdio/sdma", test_sdio_sdma);
+    qtest_add_func("/raspi5b/sdio/reset", test_sdio_reset);
+    qtest_add_func("/raspi5b/sdio/migrate", test_sdio_migrate);
     qtest_add_func("/raspi5b/board/power-button", test_power_button);
     qtest_add_func("/raspi5b/board/power-button-reset",
                    test_power_button_reset);

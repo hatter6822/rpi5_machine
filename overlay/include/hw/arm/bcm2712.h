@@ -23,6 +23,7 @@
 #include "hw/misc/bcm2835_powermgt.h"
 #include "hw/misc/bcm2835_property.h"
 #include "hw/nvram/bcm2835_otp.h"
+#include "hw/sd/bcm2712_sdhci.h"
 #include "hw/timer/bcm2835_systmr.h"
 #include "qemu/units.h"
 #include "qom/object.h"
@@ -186,6 +187,9 @@ enum {
 /* UARTA's baud clock, sw_baud in bcm2712.dtsi, in Hz */
 #define BCM2712_UARTA_CLK_HZ        96000000
 
+/* The SD/eMMC host controllers: SDIO1 for the SD card, SDIO2 for Wi-Fi */
+#define BCM2712_NUM_SDIO            2
+
 struct BCM2712State {
     /*< private >*/
     DeviceState parent_obj;
@@ -203,6 +207,7 @@ struct BCM2712State {
     BrcmstbPinctrlState pinctrl;
     BrcmstbPinctrlState pinctrl_aon;
     BrcmstbI2cState ddc[BCM2712_NUM_HDMI];  /* HDMI n's DDC bus */
+    BCM2712SDHCIState sdio[BCM2712_NUM_SDIO];   /* SDIO1, SDIO2 */
     BCM2835SystemTimerState systimer;
     BCM2835PowerMgtState pm;
     BCM2711Rng200State rng;

@@ -34,16 +34,17 @@ Pi OS booting from an SD card, is in progress.
 | BCM2712 GPIO blocks (GIO: 32 + 22 lines, AON: 17 + 6), edge and level interrupts, and their pin controllers, which keep the functions and pulls software selects | done |
 | The HDMI ports' DDC I2C controllers, with a monitor's EDID on HDMI0's bus | done |
 | The board's power button, which `system_powerdown` presses, and its ACT LED, whose changes are trace events | done |
+| SD hosts (SDIO1 with the SD card slot, SDIO2) with SDMA and ADMA2: `-drive if=sd` inserts a card, which the monitor can change and eject at run time, with the slot's card-detect line on GIO AON 5 | done |
 | System reset (PSCI, watchdog, monitor) and power-off | done |
 | Firmware boot contract: EL2 entry, PSCI over SMC (`secure=off`); guest-owned EL3 (`secure=on`) | done |
 | Firmware loaded with `-bios` (`secure=on`) the way the Pi's firmware loads it: TF-A's `rpi5` BL31 runs the bare-metal suite on its own PSCI and boots Linux, directly or through U-Boot; the EDK2 port reaches the UEFI shell | done |
 | Complete BCM2712 memory map, unmodelled blocks logged with `-d unimp` | done |
 | Built-in device tree when no `-dtb` is given, validated against the Linux bindings | done |
 | The firmware's device-tree changes, made anew for each boot: model and serial number, the command line it builds, `/chosen` with the boot's reset status, partition and count, the power supply and seeds, the CMA pool and the bootloader configuration | done |
-| Bare-metal test suite (30 tests: interrupts, timers and SGIs on every core, PSCI, resets, mailbox, RNG, UART, L2 interrupt controllers, GPIO interrupts, Secure/Non-secure GIC groups, the A76's MPIDR and IMPDEF registers) on 1–4 cores, EL2 and EL3 | done |
-| Linux: stock Raspberry Pi OS kernel boots to the root-fs mount, on the built-in device tree or `bcm2712-rpi-5-b.dtb` | smoke-tested |
+| Bare-metal test suite (31 tests: interrupts, timers and SGIs on every core, PSCI, resets, mailbox, RNG, UART, L2 interrupt controllers, GPIO interrupts, the SD card's master boot record, Secure/Non-secure GIC groups, the A76's MPIDR and IMPDEF registers) on 1–4 cores, EL2 and EL3 | done |
+| Linux: stock Raspberry Pi OS kernel mounts its root file system from an SD card, on the built-in device tree or `bcm2712-rpi-5-b.dtb`, started directly or by U-Boot from the card | smoke-tested |
 | VideoCore mailbox and firmware property channel: BCM283x tag set, board and firmware identity | done; Pi 5 clock, power, RTC and GPIO tags planned (WS2.3b) |
-| SD, PCIe, RP1 (with the 40-pin header's GPIO), … | see [docs/PLAN.md](docs/PLAN.md) |
+| PCIe, RP1 (with the 40-pin header's GPIO), … | see [docs/PLAN.md](docs/PLAN.md) |
 
 ## Repository layout
 
@@ -58,6 +59,9 @@ overlay/       new files, laid out exactly as in the QEMU tree
   hw/misc/bcm2711_rng200.c      RNG200 random number generator
   hw/intc/brcmstb_l2_intc.c     Broadcom L2 interrupt controller
   hw/gpio/brcmstb_gpio.c        Broadcom GPIO controller
+  hw/gpio/brcmstb_pinctrl.c     Broadcom pin controller
+  hw/i2c/brcmstb_i2c.c          Broadcom BSC I2C controller
+  hw/sd/bcm2712_sdhci.c         BCM2712 SD host controller
 patches/       changes to existing QEMU files (git format-patch series)
 series/        how patches and overlay files form the upstream series, cover letter
 scripts/       qemu-tree: applies the overlay and patches, creates/refreshes
@@ -93,7 +97,7 @@ $ sudo apt install build-essential python3-venv ninja-build \
 | `make export-series` | write the upstream patch series to `build-series/` and check it (applies, checkpatch; `SERIES_FLAGS=--build` builds every commit) |
 | `make check-minimal` | build a QEMU whose only board is `raspi5b` (in `build-minimal/`) and run the same tests on it |
 | `make check-dt` | validate the built-in device tree against the Linux bindings, fetched into `build-dt-schema/` the first time (needs `pip install dtschema` and network access) |
-| `make check-firmware` | boot real firmware with `-bios`: TF-A and U-Boot, built at pinned releases into `build-firmware/` the first time, with the EDK2 port and a Raspberry Pi OS kernel fetched there (needs `gcc-aarch64-linux-gnu`, U-Boot's host-tool dependencies `bison flex libssl-dev libgnutls28-dev`, and network access) |
+| `make check-firmware` | boot real firmware with `-bios`: TF-A and U-Boot, built at pinned releases into `build-firmware/` the first time, with the EDK2 port and a Raspberry Pi OS kernel fetched there, and boot them from an SD card too (needs `gcc-aarch64-linux-gnu`, U-Boot's host-tool dependencies `bison flex libssl-dev libgnutls28-dev`, `mkfs.ext4`, and network access) |
 | `make checkpatch` | run QEMU's `checkpatch.pl` over our sources and patches |
 | `make status` | show overlay/patch state and any unmanaged edits in `qemu/` |
 | `make unapply` | return `qemu/` to the pristine pinned commit |

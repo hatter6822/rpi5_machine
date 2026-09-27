@@ -3,37 +3,45 @@ From: A7om <hatter6822@gmail.com>
 Date: Sat, 26 Sep 2026 00:00:00 +0000
 Subject: [PATCH] hw/arm: Add the Raspberry Pi 5 Model B machine
 
-Add raspi5b, a board built on the BCM2712 SoC, with 1, 2, 4, 8 or
-16 GiB of RAM and the board revision code of the matching model.
+Add raspi5b, a board built on the BCM2712 SoC, with 1, 2, 4, 8 or 16 GiB
+of RAM and the board revision code of the matching model.
 
 It boots the way the Raspberry Pi firmware does. By default the guest
-enters at EL2, and QEMU's PSCI over SMC stands in for the TF-A BL31
-that the firmware installs. With secure=on the guest owns EL3 and the
-GIC Security Extensions instead, for secure firmware of its own. The
+enters at EL2, and QEMU's PSCI over SMC stands in for the TF-A BL31 that
+the firmware installs. With secure=on the guest owns EL3 and the GIC
+Security Extensions instead, for secure firmware of its own. The
 VideoCore keeps the top 4 MiB of the first GiB, which the device tree's
 memory node leaves out.
 
 When no -dtb is given, the machine generates a device tree for the
-modelled devices, with /chosen/stdout-path on UART10;
-builtin-dtb=off passes none. A -dtb from the Raspberry Pi firmware
-is fixed up: nodes of devices the model lacks are disabled, and
-/system/linux,revision gets the board revision. The serial= property
-sets the serial number the firmware reports.
+modelled devices, with /chosen/stdout-path on UART10; builtin-dtb=off
+passes none. A -dtb from the Raspberry Pi firmware is fixed up: nodes of
+devices the model lacks are disabled, and /system/linux,revision gets
+the board revision. The serial= property sets the serial number the
+firmware reports.
 
 system_powerdown presses the power button on GIO 20 for 200 ms, which
 Linux reports as KEY_POWER. The green activity LED on GIO AON 9 is an
 LED device, so its changes show as trace events. A monitor's EDID
 answers at 0x50 on HDMI0's DDC bus.
 
-The stock Raspberry Pi OS kernel boots to the root file system mount on
-either device tree.
+The SD card slot is on the first SD host, and -drive if=sd, the board's
+default interface, puts a card in it. Without one the slot is empty, and
+the monitor's change sd0 inserts a card later; the card is
+/machine/sd-card for QMP. The slot's card-detect switch pulls GIO AON 5
+low while a card is in. The generated tree describes the slot as the
+firmware's tree does, with its card-detect GPIO and the regulators of
+its supply and signalling voltage.
+
+The stock Raspberry Pi OS kernel mounts its root file system from an SD
+card on either device tree.
 ---
  hw/arm/Kconfig     | 8 ++++++++
  hw/arm/meson.build | 1 +
  2 files changed, 9 insertions(+)
 
 diff --git a/hw/arm/Kconfig b/hw/arm/Kconfig
-index eec70d9..64bd34b 100644
+index 644601c..bffa6ff 100644
 --- a/hw/arm/Kconfig
 +++ b/hw/arm/Kconfig
 @@ -384,6 +384,14 @@ config RASPI

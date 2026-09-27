@@ -9,8 +9,9 @@ and a 40-bit physical address map with peripherals above ``0x10_0000_0000``.
 Most board I/O (Ethernet, USB, GPIO, the 40-pin header) lives on the RP1
 south bridge behind PCIe, which is not modelled yet.
 
-The machine is under active development; it currently targets bare-metal
-and microkernel bring-up, with Linux support following.
+The machine is under active development. Bare-metal code, the Pi's boot
+firmware (TF-A, U-Boot, the EDK2 port) and Linux run on it, the latter
+with its root file system on an SD card.
 
 Implemented devices
 -------------------
@@ -63,6 +64,15 @@ Implemented devices
   ``led_set_intensity`` and ``led_change_intensity`` trace events. With
   the firmware's device tree, Linux's ``gpio-leds`` waits for the power
   LED, which RP1 drives, and so leaves the activity LED alone too
+* The two SD hosts: SDIO1 at ``0x10_00ff_f000`` (SPI 273), for the SD
+  card slot, and SDIO2 at ``0x10_0110_0000`` (SPI 274), wired to the
+  Wi-Fi radio, which is not modelled. Each is an SD Host Controller 3.00
+  with SDMA and ADMA2 with 64-bit addresses, followed by Broadcom
+  configuration registers that keep what software writes, to no effect.
+  Cards run at 3.3 V in high-speed mode: QEMU's cards do not switch to
+  1.8 V, so the UHS-I modes the controllers offer are never used. The
+  command queueing engine is not modelled. The card slot is described
+  under `SD card`_
 * UART10: the PL011 debug UART at ``0x10_7d00_1000``, connected to the
   first ``-serial`` backend
 * UARTA: the 16550 wired to the Bluetooth radio, at ``0x10_7d50_c000``,
@@ -87,9 +97,9 @@ Missing devices
 
 * Firmware property tags specific to the Pi 5 (clocks, power, RTC, GPIO
   expander); the BCM283x set is answered
-* SD/eMMC controllers, PCIe root complexes and the RP1 south bridge
-* The Bluetooth radio on UARTA
-* The power LED, which RP1 drives, and the SD card detect line
+* PCIe root complexes and the RP1 south bridge
+* The Bluetooth radio on UARTA and the Wi-Fi radio on SDIO2
+* The power LED, which RP1 drives
 * Power domains (only V3D's is driven by Linux on this SoC)
 * Display (HVS, HDMI), V3D and ISP
 
@@ -157,8 +167,10 @@ community EDK2 port for the Pi 5 carries its own TF-A in its
 ``RPI_EFI.fd`` and expects its device tree at ``0x1f_0000``, which its
 ``config.txt`` asks of the firmware: load it with ``-bios RPI_EFI.fd``,
 the device tree its release ships with ``-dtb``, and
-``dtb-address=0x1f0000``. Without SD card, USB or network models, U-Boot
-and EDK2 find nothing to boot on their own.
+``dtb-address=0x1f0000``. With no USB or network models, an SD card is
+the only place U-Boot and EDK2 can find something to boot on their own:
+U-Boot boots, for example, by the ``extlinux.conf`` it finds on one, and
+EDK2 maps the card's partitions.
 
 Firmware property interface
 ---------------------------
@@ -203,6 +215,28 @@ The monitor's ``system_powerdown`` presses the board's power button for
 ``gpio-keys`` reports it as ``KEY_POWER``, which systemd-logind takes as
 a request to power off.
 
+SD card
+-------
+
+``-drive if=sd,file=<image>,format=raw`` puts a card in the SD card slot,
+on SDIO1: ``mmc0`` in both device trees, whose partitions Linux names
+``/dev/mmcblk0p1`` and on. Writes go to the image; ``snapshot=on`` keeps
+it unchanged. Cards of up to 2 GiB are SDSC cards and take images whose
+size is a power of 2; larger ones are SDHC or SDXC cards, whose images
+need only be a multiple of 512 KiB. To pad an image that is neither:
+``qemu-img resize -f raw <image> <size>``.
+
+Without ``-drive if=sd``, the slot is empty. Cards go in and come out
+while the machine runs: ``change sd0 <image>`` in the monitor, or
+``blockdev-change-medium`` in QMP with ``"id": "/machine/sd-card"``,
+inserts one, and ``eject`` takes it out. The slot's card-detect switch drives GIO
+AON 5 (``SD_CDET_N``) low while a card is in, and the controller reports
+the card's arrival and removal as well. Linux checks the line every
+second, as neither device tree gives the always-on GPIO block an
+interrupt. With ``-nodefaults``, the slot has no drive and stays empty.
+
+QEMU's cards move data 512 bytes at a time, at a few MB/s.
+
 Device tree
 -----------
 
@@ -212,8 +246,10 @@ the PMU, the GIC, the system timer, the mailbox and the firmware interface,
 the PM block, the RNG, the level 2 interrupt controllers, the GPIO blocks
 and their pin controllers, the HDMI ports' DDC I2C controllers, the power
 button with the state of its pin (GPIO, pulled up), the activity LED,
-UART10 (``serial10``, the ``stdout-path``) and UARTA, the fixed clocks,
-and a CMA pool in the first GiB, where
+UART10 (``serial10``, the ``stdout-path``) and UARTA, the SD hosts (the
+card slot on SDIO1, ``mmc0``, with its card-detect line and the
+regulators GIO AON 4 and 3 switch for the card's supply and signalling;
+SDIO2 disabled), the fixed clocks, and a CMA pool in the first GiB, where
 the VideoCore can reach Linux's buffers. Node names and properties follow
 Linux's ``bcm2712.dtsi`` and the firmware's tree, and the result validates
 against the Linux bindings, but for what the firmware adds for the OS,
@@ -301,6 +337,13 @@ Linux on the firmware's device tree::
   $ qemu-system-aarch64 -M raspi5b -m 4G -nographic \
       -kernel Image -dtb bcm2712-rpi-5-b.dtb \
       -append "console=ttyAMA10,115200 earlycon=pl011,mmio32,0x107d001000"
+
+Linux with its root file system on the second partition of an SD card::
+
+  $ qemu-system-aarch64 -M raspi5b -m 4G -nographic \
+      -kernel Image -dtb bcm2712-rpi-5-b.dtb \
+      -drive if=sd,file=sd.img,format=raw \
+      -append "console=ttyAMA10,115200 root=/dev/mmcblk0p2 rootwait"
 
 Linux started by TF-A's BL31, as the firmware starts it::
 

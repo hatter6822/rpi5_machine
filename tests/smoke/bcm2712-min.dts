@@ -16,6 +16,7 @@
 
     aliases {
         serial10 = "/soc@107c000000/serial@7d001000";
+        mmc0 = "/soc@107c000000/mmc@fff000";
     };
 
     chosen {
@@ -46,6 +47,13 @@
         #address-cells = <1>;
         #size-cells = <1>;
         ranges = <0x00000000  0x10 0x00000000  0x80000000>;
+
+        mmc@fff000 {
+            compatible = "brcm,bcm2712-sdhci", "brcm,sdhci-brcmstb";
+            reg = <0xfff000 0x260>, <0xfff400 0x200>;
+            reg-names = "host", "cfg";
+            interrupts = <0 273 4>;
+        };
 
         timer@7c003000 {
             compatible = "brcm,bcm2835-system-timer";
