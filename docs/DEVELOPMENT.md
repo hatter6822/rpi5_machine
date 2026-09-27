@@ -112,7 +112,7 @@ We follow upstream QEMU conventions so the code can be submitted unchanged:
 | Bare-metal guests and test suite over UART ([format](../tests/guest/README.md)) | `tests/guest/`, `tests/smoke/` | `make check-smoke` |
 | Both, on a QEMU whose only board is `raspi5b` | `tests/configs/raspi5b-only.mak` | `make check-minimal` |
 | Built-in device tree against the Linux bindings (dt-schema) | `tests/smoke/test_dt_schema.py` | `make check-dt` |
-| Real firmware with `-bios`: TF-A's `rpi5` BL31 running the bare-metal guests, built at a pinned release by `scripts/firmware` | `tests/smoke/test_firmware.py` | `make check-firmware` |
+| Real firmware with `-bios`: TF-A's `rpi5` BL31 running the bare-metal guests; Linux through TF-A and through U-Boot; the EDK2 port to its shell. Pinned and built or fetched by `scripts/firmware` | `tests/smoke/test_firmware.py` | `make check-firmware` |
 | Linux / firmware boots, upstream | `overlay/tests/functional/aarch64/` (planned, WS9.3) | QEMU functional test runner |
 
 Each new device lands with a qtest for its registers and reset values. The
@@ -133,6 +133,10 @@ build/qemu-system-aarch64 -M raspi5b -m 4G -nographic \
 ```
 
 Without storage the boot currently ends at the root-fs mount (expected).
+
+`make firmware` puts the pinned kernel and device tree in `build-firmware/`,
+with TF-A's BL31, U-Boot and the EDK2 port; the machine documentation
+shows how to boot each of them.
 
 ### Debugging
 

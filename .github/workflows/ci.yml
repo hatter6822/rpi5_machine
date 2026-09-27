@@ -34,6 +34,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             ccache clang lld ninja-build python3-venv shellcheck \
             device-tree-compiler gcc-aarch64-linux-gnu \
+            bison flex libssl-dev libgnutls28-dev \
             libglib2.0-dev libpixman-1-dev libfdt-dev
 
       - name: Restore compiler cache

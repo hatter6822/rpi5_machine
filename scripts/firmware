@@ -2,21 +2,42 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 #
 # Build the firmware 'make check-firmware' boots on raspi5b, pinned: TF-A
-# from its release tag and commit, with the aarch64-linux-gnu- cross
-# compiler (CROSS_COMPILE overrides the prefix).
+# and U-Boot from their release tags and commits, with the
+# aarch64-linux-gnu- cross compiler (CROSS_COMPILE overrides the prefix),
+# and downloads checked against their SHA-256: the community EDK2 port for
+# the Pi 5, and a Raspberry Pi OS kernel and device tree from a release of
+# the Raspberry Pi firmware repository.
 #
 #   scripts/firmware DIR
 #
-# DIR receives bl31.bin, TF-A's rpi5 BL31. An output is made again only
-# when its pin changes (DIR/.pins records what each was made from). DIR
-# must be new, empty, or made by an earlier run, which leaves the marker
-# .check-firmware; 'make distclean' requires it too before removing DIR.
+# DIR receives
+#   bl31.bin                    TF-A's rpi5 BL31
+#   u-boot.bin                  U-Boot's rpi_arm64_defconfig
+#   RPI_EFI.fd                  EDK2: its own TF-A and UEFI in one armstub
+#   edk2/bcm2712-rpi-5-b.dtb    the device tree the EDK2 release ships
+#   kernel_2712.img             the Raspberry Pi OS kernel for the Pi 5
+#   bcm2712-rpi-5-b.dtb         and its device tree
+# An output is made again only when its pin changes (DIR/.pins records
+# what each was made from). DIR must be new, empty, or made by an earlier
+# run, which leaves the marker .check-firmware; 'make distclean' requires
+# it too before removing DIR.
 
 set -euo pipefail
 
 TFA_URL=https://github.com/ARM-software/arm-trusted-firmware.git
 TFA_TAG=v2.15.0
 TFA_COMMIT=da738d5eae93af342fdc4995dd3c05acb4c9d757
+
+UBOOT_URL=https://github.com/u-boot/u-boot.git
+UBOOT_TAG=v2026.07
+UBOOT_COMMIT=ece349ade2973e220f524ce59e59711cc919263f
+
+EDK2_URL=https://github.com/worproject/rpi5-uefi/releases/download/v0.3/RPi5_UEFI_Release_v0.3.zip
+EDK2_SHA256=2337df318845448ebcc8a6a587d15dccec44b54c665ece21250d2f6170732724
+
+RPI_FIRMWARE_URL=https://raw.githubusercontent.com/raspberrypi/firmware/1.20260915/boot
+KERNEL_SHA256=6efbcb3e7ba6687424dda8ba44ba151d6c76533a74cf3e1437156c85f68e9975
+DTB_SHA256=a5165cb562035f479ea9f5a81cedf7b6596ea32a0598608c4dc3b77ada909c60
 
 die() {
     echo "firmware: $*" >&2
@@ -59,6 +80,16 @@ checkout() {
         die "$2 $3 is not commit $4"
 }
 
+# fetch FILE URL SHA256: URL in DIR/src/FILE, which must hash to SHA256
+fetch() {
+    local file=$dir/src/$1
+
+    mkdir -p "$(dirname "$file")"
+    curl --fail --silent --show-error --location --retry 3 -o "$file" "$2"
+    [ "$(sha256sum "$file" | cut -d' ' -f1)" = "$3" ] ||
+        die "$2 does not have SHA-256 $3"
+}
+
 need_cross() {
     command -v "${cross}gcc" >/dev/null ||
         die "needs ${cross}gcc (Debian and Ubuntu: gcc-aarch64-linux-gnu)"
@@ -76,5 +107,45 @@ if ! made bl31.bin "$pin"; then
     cp "$dir/src/tf-a-build/rpi5/release/bl31.bin" "$dir/bl31.bin"
     record bl31.bin "$pin"
 fi
+
+# U-Boot as the Pi's firmware runs it (kernel=u-boot.bin), which TF-A
+# enters as its kernel. Its host tools need bison, flex, OpenSSL and
+# GnuTLS.
+pin="u-boot $UBOOT_TAG $UBOOT_COMMIT rpi_arm64_defconfig"
+if ! made u-boot.bin "$pin"; then
+    need_cross
+    checkout u-boot "$UBOOT_URL" "$UBOOT_TAG" "$UBOOT_COMMIT"
+    make -C "$dir/src/u-boot" O="$dir/src/u-boot-build" \
+        CROSS_COMPILE="$cross" rpi_arm64_defconfig
+    make -C "$dir/src/u-boot" O="$dir/src/u-boot-build" -j"$jobs" \
+        CROSS_COMPILE="$cross"
+    cp "$dir/src/u-boot-build/u-boot.bin" "$dir/u-boot.bin"
+    record u-boot.bin "$pin"
+fi
+
+# The EDK2 release: RPI_EFI.fd is the armstub its config.txt names, with
+# the device tree its config.txt places at 0x1f0000
+pin="edk2 $EDK2_URL $EDK2_SHA256"
+if ! made RPI_EFI.fd "$pin" || ! made edk2/bcm2712-rpi-5-b.dtb "$pin"; then
+    fetch edk2.zip "$EDK2_URL" "$EDK2_SHA256"
+    python3 -m zipfile -e "$dir/src/edk2.zip" "$dir/src/edk2"
+    mkdir -p "$dir/edk2"
+    cp "$dir/src/edk2/RPI_EFI.fd" "$dir/RPI_EFI.fd"
+    cp "$dir/src/edk2/bcm2712-rpi-5-b.dtb" "$dir/edk2/bcm2712-rpi-5-b.dtb"
+    record RPI_EFI.fd "$pin"
+    record edk2/bcm2712-rpi-5-b.dtb "$pin"
+fi
+
+# Raspberry Pi OS's kernel and device tree, as a release of the firmware
+# repository ships them
+for f in kernel_2712.img:$KERNEL_SHA256 bcm2712-rpi-5-b.dtb:$DTB_SHA256; do
+    name=${f%%:*}
+    pin="$RPI_FIRMWARE_URL/$name ${f#*:}"
+    if ! made "$name" "$pin"; then
+        fetch "$name" "$RPI_FIRMWARE_URL/$name" "${f#*:}"
+        cp "$dir/src/$name" "$dir/$name"
+        record "$name" "$pin"
+    fi
+done
 
 rm -rf "$dir/src"

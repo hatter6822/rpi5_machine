@@ -105,6 +105,15 @@ TF-A's ``rpi5`` port counts on all four cores: with fewer (``-smp``), PSCI
 release builds run; debug builds also read the cluster registers of the
 DynamIQ Shared Unit, which are not modelled.
 
+What runs on TF-A is the kernel it is given: Linux itself, or U-Boot
+built with ``rpi_arm64_defconfig``, as the firmware's ``kernel=``. The
+community EDK2 port for the Pi 5 carries its own TF-A in its
+``RPI_EFI.fd`` and expects its device tree at ``0x1f_0000``, which its
+``config.txt`` asks of the firmware: load it with ``-bios RPI_EFI.fd``,
+the device tree its release ships with ``-dtb``, and
+``dtb-address=0x1f0000``. Without SD card, USB or network models, U-Boot
+and EDK2 find nothing to boot on their own.
+
 Firmware property interface
 ---------------------------
 
@@ -186,3 +195,16 @@ Linux started by TF-A's BL31, as the firmware starts it::
   $ qemu-system-aarch64 -M raspi5b,secure=on -m 4G -nographic \
       -bios bl31.bin -kernel Image -dtb bcm2712-rpi-5-b.dtb \
       -append "console=ttyAMA10,115200"
+
+U-Boot on TF-A, with a kernel for ``booti`` in memory::
+
+  $ qemu-system-aarch64 -M raspi5b,secure=on -m 4G -nographic \
+      -bios bl31.bin -kernel u-boot.bin \
+      -device loader,file=Image,addr=0x10000000,force-raw=on \
+      -append "console=ttyAMA10,115200"
+  U-Boot> booti 0x10000000 - ${fdt_addr}
+
+The EDK2 port, whose shell F1 starts during its boot countdown::
+
+  $ qemu-system-aarch64 -M raspi5b,secure=on,dtb-address=0x1f0000 \
+      -nographic -bios RPI_EFI.fd -dtb bcm2712-rpi-5-b.dtb

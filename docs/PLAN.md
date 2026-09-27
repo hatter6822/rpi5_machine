@@ -59,7 +59,7 @@ commit (or a short series) with its own tests.
 
 ## 2. Current state
 
-Delivered so far: M1 (WS0.1–WS0.3, WS0.5, WS0.6, WS2.1, WS2.2, WS2.3a, WS2.4, WS2.5, WS3.2, WS3.6, WS9.2) and, towards M2, WS1.5, WS1.2 and WS3.3:
+Delivered so far: M1 (WS0.1–WS0.3, WS0.5, WS0.6, WS2.1, WS2.2, WS2.3a, WS2.4, WS2.5, WS3.2, WS3.6, WS9.2) and, towards M2, WS1.5, WS1.2, WS3.3 and WS3.4:
 
 | Area | State |
 | --- | --- |
@@ -67,8 +67,8 @@ Delivered so far: M1 (WS0.1–WS0.3, WS0.5, WS0.6, WS2.1, WS2.2, WS2.3a, WS2.4, 
 | Kconfig (WS0.6) | every BCM283x device model has its own symbol, so `bcm2712` can select just the models it reuses; a `raspi5b`-only build is tested (`make check-minimal`) |
 | SoC (`bcm2712`) | 1–4 Cortex-A76 (`MPIDR.Aff1` = core with `MPIDR.MT` set (WS1.2), CNTFRQ 54 MHz, optional EL3, the IMPDEF registers firmware writes (WS1.5), warm reset through `RMR_EL3` (WS3.3)), GIC-400 with 288 SPIs, 5 priority bits and all timer/maintenance PPIs, UART10 (PL011), system timer (WS2.1), watchdog and reset status (WS2.4), RNG200 (WS2.5), VideoCore mailbox with the BCM283x property and framebuffer channels (WS2.2) and every identity tag answered (WS2.3a), complete memory map with T0 placeholders and two catch-all windows |
 | Board (`raspi5b`) | 1/2/4/8/16 GiB RAM, board revision code, serial number (`serial=`), PSCI over SMC with EL2 entry (default) or guest-owned EL3 (`secure=on`), firmware such as TF-A's BL31 loaded with `-bios` and handed the kernel, initrd and device tree as the Pi's firmware does (WS3.3), system reset and power-off through PSCI, the watchdog and the monitor (WS3.6), a built-in device tree when no `-dtb` is given (WS3.2; `builtin-dtb=off` passes none), DTB fix-ups for unmodelled devices, `/system/linux,revision` |
-| Tests | qtest (UART IDs, GIC geometry, priority bits and security, RAM, placeholders, system timer, watchdog, mailbox, identity tags, RNG), the built-in tree validated against the Linux v6.18 bindings (`make check-dt`), bare-metal smoke guest (EL, MPIDR, CNTFRQ, PSCI CPU_ON on all cores, SYSTEM_OFF, EL3 mode), and the bare-metal suite (WS9.2, 28 tests: GIC and the Secure/Non-secure group split, each core's MPIDR, every timer on every core, SGIs between all core pairs, SPI routing, PSCI, the system timer, the mailbox and identity tags, the RNG, UART receive and loopback, a watchdog reset and four system resets checked against the boot state, an ID-register dump, the A76's IMPDEF registers; 1–4 cores, with the built-in tree, a `-dtb` one and none, EL2 and EL3), the `-bios` handoff (qtest), and real firmware (`make check-firmware`: the smoke guest and the suite on TF-A's `rpi5` BL31, built at a pinned release) |
-| Linux | the stock Raspberry Pi OS kernel (6.18) boots on 4 CPUs to the root-fs mount, without warnings, with the firmware's `bcm2712-rpi-5-b.dtb` and on the built-in tree (1, 2 and 8 GiB) |
+| Tests | qtest (UART IDs, GIC geometry, priority bits and security, RAM, placeholders, system timer, watchdog, mailbox, identity tags, RNG), the built-in tree validated against the Linux v6.18 bindings (`make check-dt`), bare-metal smoke guest (EL, MPIDR, CNTFRQ, PSCI CPU_ON on all cores, SYSTEM_OFF, EL3 mode), and the bare-metal suite (WS9.2, 28 tests: GIC and the Secure/Non-secure group split, each core's MPIDR, every timer on every core, SGIs between all core pairs, SPI routing, PSCI, the system timer, the mailbox and identity tags, the RNG, UART receive and loopback, a watchdog reset and four system resets checked against the boot state, an ID-register dump, the A76's IMPDEF registers; 1–4 cores, with the built-in tree, a `-dtb` one and none, EL2 and EL3), the `-bios` handoff (qtest), and real firmware (`make check-firmware`, all pinned: the smoke guest and the suite on TF-A's `rpi5` BL31, Linux on TF-A and through U-Boot, the EDK2 port to its shell) |
+| Linux and firmware | the stock Raspberry Pi OS kernel (6.18) boots on 4 CPUs to the root-fs mount, without warnings, with the firmware's `bcm2712-rpi-5-b.dtb` and on the built-in tree (1, 2 and 8 GiB), directly, on TF-A's BL31 or through U-Boot on it (WS3.4); the EDK2 port reaches the UEFI shell |
 
 Known provisional values, each marked in the code: 288 SPIs
 (`TODO(WS1.3)`), the VideoCore memory size and DMA channel mask
@@ -781,7 +781,28 @@ parks secondary cores until PSCI `CPU_ON`.
 **Done when:** `TODO(WS3.3)` is gone; TF-A `rpi5` BL31 boots the smoke
 guest, which passes its PSCI tests against TF-A's PSCI instead of QEMU's.
 
-#### WS3.4 TF-A, U-Boot and UEFI validation (M)
+#### WS3.4 TF-A, U-Boot and UEFI validation (done)
+*Delivered:* `make check-firmware` boots each chain as far as the missing
+storage lets it, in CI: TF-A v2.15.0's `rpi5` BL31 entering the Raspberry
+Pi OS kernel (6.18, from release 1.20260915 of the Raspberry Pi firmware
+repository) at EL2, on the built-in tree and on the firmware's
+`bcm2712-rpi-5-b.dtb`, until it waits for its root device; the same
+through U-Boot v2026.07 (`rpi_arm64_defconfig`, which finds no SD card,
+USB or network, so the test gives `booti` a kernel placed in memory);
+and the community EDK2 port's v0.3 release (its own TF-A v2.10 and UEFI
+in `RPI_EFI.fd`, its device tree at `0x1f_0000`) to the UEFI shell,
+which F1 starts in its boot countdown, running a command there.
+`scripts/firmware` builds TF-A and U-Boot at their release tags,
+commits checked, and fetches the rest by SHA-256. None of the expected
+gaps showed: the PM block's reset path, the PL011, the GIC's groups
+under EL3 and U-Boot's `CNTFRQ` all behave. What the chains touch that
+the model lacks, all planned elsewhere or harmless: TF-A writes the
+core timer's control and prescaler in the ARM control block
+(`0x10_7c28_0000`), which the catch-all window absorbs, the counter
+running at 54 MHz regardless; Linux sets a clock's state (WS2.3b); EDK2
+asks for the RTC (WS2.3d) and probes the SD controller (WS5.1) and
+PCIe (WS6.1).
+
 **Depends:** WS3.3; WS5.1 for storage-based boot.
 Boot upstream TF-A (`PLAT=rpi5`), U-Boot (`rpi_arm64_defconfig`) and the
 community EDK2 Pi 5 port; fix the model gaps they expose (expected: the
