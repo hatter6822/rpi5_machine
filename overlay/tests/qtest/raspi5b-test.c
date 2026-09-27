@@ -1096,6 +1096,16 @@ static void test_bios_header(void)
     assert_fdt_at(qts, 0x1f0000);
     qtest_quit(qts);
 
+    /* Right after the armstub, as EDK2 has it */
+    qts = qtest_initf("-machine raspi5b,secure=on,dtb-address=0x%x "
+                      "-bios %s", ARMSTUB_WORDS * 4, stub);
+    g_assert_cmphex(qtest_readl(qts, ARMSTUB_DTB_OFFSET), ==,
+                    ARMSTUB_WORDS * 4);
+    g_assert_cmphex(qtest_readl(qts, ARMSTUB_DTB_OFFSET - 4), ==,
+                    0xa5000000 | (ARMSTUB_DTB_OFFSET - 4));
+    assert_fdt_at(qts, ARMSTUB_WORDS * 4);
+    qtest_quit(qts);
+
     /* No device tree at all */
     qts = qtest_initf("-machine raspi5b,secure=on,builtin-dtb=off -bios %s",
                       stub);

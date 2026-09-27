@@ -88,8 +88,9 @@ stock Pi 5) and hands it the rest the way the firmware does:
 * ``-initrd`` goes at 128 MiB or above the kernel, whichever is higher,
   and the device tree at the next 2 MiB boundary, or at
   ``-machine dtb-address=<addr>``, the counterpart of
-  ``device_tree_address=``. All of it must fit in the first GiB, below
-  the VideoCore's memory;
+  ``device_tree_address=``, which must leave the tree clear of the
+  armstub, the kernel with its BSS, and the initrd. All of it must fit in
+  the first GiB, below the VideoCore's memory;
 * an image that starts with the header of TF-A's Raspberry Pi ports (the
   magic ``0x5afe570b`` at offset ``0xf0``) gets the magic cleared and the
   device tree and kernel addresses written at offsets ``0xf8`` and

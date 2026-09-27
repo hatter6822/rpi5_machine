@@ -21,6 +21,7 @@
 #include "qemu/error-report.h"
 #include "qemu/guest-random.h"
 #include "qemu/host-utils.h"
+#include "qemu/range.h"
 #include "qemu/units.h"
 #include "qapi/error.h"
 #include "qapi/visitor.h"
@@ -620,20 +621,21 @@ static void raspi5b_cpu_reset(void *opaque)
  * Load a 64-bit kernel where the firmware does: an ELF at its own
  * addresses, anything else, such as a Linux Image (gzipped or not), at
  * RASPI5B_KERNEL_ADDR plus the Image's text_offset. Returns the entry
- * point, and in *end the end of the memory the kernel uses, which for an
+ * point, and in *start and *end the memory the kernel uses, which for an
  * Image includes its BSS.
  */
 static hwaddr raspi5b_load_kernel(const char *filename, AddressSpace *as,
-                                  hwaddr *end)
+                                  hwaddr *start, hwaddr *end)
 {
     g_autofree uint8_t *buffer = NULL;
-    uint64_t entry, high, used;
+    uint64_t entry, low, high, used;
     hwaddr addr = RASPI5B_KERNEL_ADDR;
     ssize_t size;
 
-    size = load_elf_as(filename, NULL, NULL, NULL, &entry, NULL, &high, NULL,
+    size = load_elf_as(filename, NULL, NULL, NULL, &entry, &low, &high, NULL,
                        ELFDATA2LSB, EM_AARCH64, 1, 0, as);
     if (size > 0) {
+        *start = low;
         *end = high;
         return entry;
     }
@@ -665,8 +667,27 @@ static hwaddr raspi5b_load_kernel(const char *filename, AddressSpace *as,
         used = MAX(ldq_le_p(buffer + RASPI5B_IMAGE_SIZE), size);
     }
     rom_add_blob_fixed_as(filename, buffer, size, addr, as);
+    *start = addr;
     *end = addr + used;
     return addr;
+}
+
+/*
+ * The device tree goes wherever dtb-address says, as with the firmware's
+ * device_tree_address=: refuse a place where it would overlap @what, which
+ * lies from @start to @end, rather than let one overwrite the other, or
+ * the kernel clear the tree with its BSS
+ */
+static void raspi5b_check_dtb_place(hwaddr dtb, hwaddr dtb_size,
+                                    const char *what, hwaddr start,
+                                    hwaddr end)
+{
+    if (end > start && ranges_overlap(dtb, dtb_size, start, end - start)) {
+        error_report("the device tree at 0x%" HWADDR_PRIx "-0x%" HWADDR_PRIx
+                     " overlaps the %s at 0x%" HWADDR_PRIx "-0x%" HWADDR_PRIx,
+                     dtb, dtb + dtb_size - 1, what, start, end - 1);
+        exit(EXIT_FAILURE);
+    }
 }
 
 /*
@@ -684,7 +705,7 @@ static void raspi5b_boot_armstub(Raspi5bMachineState *s,
                                                machine->firmware);
     g_autofree uint8_t *stub = NULL;
     hwaddr kernel = RASPI5B_KERNEL_ADDR, next = RASPI5B_INITRD_ADDR;
-    hwaddr dtb = 0, end;
+    hwaddr kernel_start = 0, kernel_end = 0, dtb = 0;
     gsize size;
 
     if (!filename ||
@@ -694,8 +715,9 @@ static void raspi5b_boot_armstub(Raspi5bMachineState *s,
     }
 
     if (machine->kernel_filename) {
-        kernel = raspi5b_load_kernel(machine->kernel_filename, as, &end);
-        next = MAX(next, end);
+        kernel = raspi5b_load_kernel(machine->kernel_filename, as,
+                                     &kernel_start, &kernel_end);
+        next = MAX(next, kernel_end);
     }
     if (machine->initrd_filename) {
         ssize_t initrd_size;
@@ -723,6 +745,13 @@ static void raspi5b_boot_armstub(Raspi5bMachineState *s,
         if (dtb_size < 0) {
             exit(EXIT_FAILURE);
         }
+        raspi5b_check_dtb_place(dtb, dtb_size, "armstub", BCM2712_RAM_BASE,
+                                BCM2712_RAM_BASE + size);
+        raspi5b_check_dtb_place(dtb, dtb_size, "kernel", kernel_start,
+                                kernel_end);
+        raspi5b_check_dtb_place(dtb, dtb_size, "initrd",
+                                s->binfo.initrd_start,
+                                s->binfo.initrd_start + s->binfo.initrd_size);
         next = MAX(next, dtb + dtb_size);
     }
     if (next > BCM2712_VC_RAM_BASE || kernel > UINT32_MAX) {

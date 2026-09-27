@@ -27,6 +27,7 @@ class BiosOptionsTest(unittest.TestCase):
                                 text=True, timeout=TIMEOUT)
         self.assertEqual(result.returncode, 1, result.stderr)
         self.assertIn(message, result.stderr)
+        return result.stderr
 
     def test_needs_secure(self):
         self.assertRefused("-bios loads firmware that runs at EL3; "
@@ -52,6 +53,29 @@ class BiosOptionsTest(unittest.TestCase):
                                    "-M", f"raspi5b,secure=on,"
                                    f"dtb-address={addr:#x}",
                                    "-bios", str(GUEST))
+
+    def test_dtb_overlap(self):
+        """dtb-address on the armstub, in the BSS an Image declares, or on
+        the initrd"""
+        with tempfile.TemporaryDirectory() as tmp:
+            image = Path(tmp) / "Image"
+            header = bytearray(64)
+            header[16:24] = (16 << 20).to_bytes(8, "little")   # image_size
+            header[56:60] = b"ARM\x64"
+            image.write_bytes(header)
+            initrd = Path(tmp) / "initrd"
+            initrd.write_bytes(bytes(1 << 20))
+            for addr, what in ((0x100, "armstub at 0x0-"),
+                               (0x400000, "kernel at 0x200000-0x11fffff"),
+                               (0x8080000, "initrd at 0x8000000-0x80fffff")):
+                with self.subTest(addr=hex(addr)):
+                    err = self.assertRefused(f"the device tree at {addr:#x}-",
+                                             "-M", f"raspi5b,secure=on,"
+                                             f"dtb-address={addr:#x}",
+                                             "-bios", str(GUEST),
+                                             "-kernel", str(image),
+                                             "-initrd", str(initrd))
+                    self.assertIn(f" overlaps the {what}", err)
 
     def test_kernel_too_large(self):
         """An Image whose declared size, BSS included, reaches the
