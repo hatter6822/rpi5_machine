@@ -32,7 +32,7 @@ either device tree.
  2 files changed, 8 insertions(+)
 
 diff --git a/hw/arm/Kconfig b/hw/arm/Kconfig
-index adfb100..4f63818 100644
+index d4d500a..b8eb405 100644
 --- a/hw/arm/Kconfig
 +++ b/hw/arm/Kconfig
 @@ -384,6 +384,13 @@ config RASPI

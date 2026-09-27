@@ -13,6 +13,7 @@
 #include "hw/char/pl011.h"
 #include "hw/display/bcm2835_fb.h"
 #include "hw/gpio/brcmstb_gpio.h"
+#include "hw/gpio/brcmstb_pinctrl.h"
 #include "hw/intc/arm_gic.h"
 #include "hw/intc/brcmstb_l2_intc.h"
 #include "hw/misc/bcm2711_rng200.h"
@@ -188,6 +189,8 @@ struct BCM2712State {
     BrcmstbL2IntcState l2_intc[BCM2712_NUM_L2_INTCS];
     BrcmstbGpioState gio;       /* line n: BCM2712 GPIO n */
     BrcmstbGpioState gio_aon;   /* line n: always-on GPIO n */
+    BrcmstbPinctrlState pinctrl;
+    BrcmstbPinctrlState pinctrl_aon;
     BCM2835SystemTimerState systimer;
     BCM2835PowerMgtState pm;
     BCM2711Rng200State rng;
@@ -214,7 +217,7 @@ void bcm2712_fdt_populate(BCM2712State *s, void *fdt);
 /*
  * The path of the node at @dev's base address on the "soc" bus of a tree
  * that bcm2712_fdt_populate() wrote, or NULL if there is none; to be
- * freed. The GPIO blocks' nodes have phandles.
+ * freed. The nodes of the GPIO blocks and pin controllers have phandles.
  */
 char *bcm2712_fdt_node_path(void *fdt, BCM2712Device dev);
 

@@ -57,6 +57,8 @@
     gpios = <0x800f 0x9 0x1>
     label = "ACT"
 /gpio-keys
+    pinctrl-0 = <0x8014>
+    pinctrl-names = "default"
     compatible = "gpio-keys"
 /gpio-keys/power-button
     debounce-interval = <0x32>
@@ -135,7 +137,7 @@
     #address-cells = <0x1>
     compatible = "simple-bus"
 /soc@107c000000/firmware
-    mboxes = <0x8011>
+    mboxes = <0x8013>
     dma-ranges
     #size-cells = <0x1>
     #address-cells = <0x1>
@@ -146,7 +148,7 @@
     reg = <0x7c003000 0x1000>
     compatible = "brcm,bcm2835-system-timer"
 /soc@107c000000/mailbox@7c013880
-    phandle = <0x8011>
+    phandle = <0x8013>
     #mbox-cells = <0x0>
     interrupts = <0x0 0x21 0x4>
     reg = <0x7c013880 0x40>
@@ -168,6 +170,19 @@
 /soc@107c000000/rng@7d208000
     reg = <0x7d208000 0x28>
     compatible = "brcm,bcm2711-rng200"
+/soc@107c000000/pinctrl@7d504100
+    phandle = <0x8012>
+    reg = <0x7d504100 0x30>
+    compatible = "brcm,bcm2712c0-pinctrl"
+/soc@107c000000/pinctrl@7d504100/pwr-button-default-state
+    phandle = <0x8014>
+    bias-pull-up
+    pins = "gpio20"
+    function = "gpio"
+/soc@107c000000/pinctrl@7d510700
+    phandle = <0x8011>
+    reg = <0x7d510700 0x20>
+    compatible = "brcm,bcm2712c0-aon-pinctrl"
 /soc@107c000000/gpio@7d508500
     #interrupt-cells = <0x2>
     interrupt-controller

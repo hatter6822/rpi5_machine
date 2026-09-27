@@ -1719,6 +1719,117 @@ static void test_gio_migrate(void)
 }
 
 /*
+ * brcmstb pin controllers (Linux pinctrl-brcmstb.c): registers that hold
+ * the function and pull of each pin, as many as the device tree node
+ * spans. They store what is written and nothing more.
+ */
+typedef struct Pinctrl {
+    uint64_t base;
+    int num_regs;
+} Pinctrl;
+
+static const Pinctrl pinctrls[] = {
+    { 0x107d504100ULL, 12 },
+    { 0x107d510700ULL, 8 },     /* always-on */
+};
+
+/* A different value for each register */
+static uint32_t pinctrl_pattern(int block, int reg)
+{
+    return 0xa5a5a5a5u ^ (block << 28) ^ (reg * 0x01010101u);
+}
+
+static void pinctrl_fill(QTestState *qts)
+{
+    for (int i = 0; i < ARRAY_SIZE(pinctrls); i++) {
+        for (int r = 0; r < pinctrls[i].num_regs; r++) {
+            qtest_writel(qts, pinctrls[i].base + 4 * r, pinctrl_pattern(i, r));
+        }
+    }
+}
+
+static void pinctrl_check(QTestState *qts, bool filled)
+{
+    for (int i = 0; i < ARRAY_SIZE(pinctrls); i++) {
+        for (int r = 0; r < pinctrls[i].num_regs; r++) {
+            g_assert_cmphex(qtest_readl(qts, pinctrls[i].base + 4 * r), ==,
+                            filled ? pinctrl_pattern(i, r) : 0);
+        }
+    }
+}
+
+/* TODO(WS0.4): every register reads as zero until checked on hardware */
+static void test_pinctrl_reset_values(void)
+{
+    QTestState *qts = qtest_init("-machine raspi5b");
+
+    pinctrl_check(qts, false);
+    qtest_quit(qts);
+}
+
+/*
+ * Every register reads back what was written, and the block ends where
+ * its node does. The settings leave the GPIO lines alone: the pulled-up
+ * lines stay high whatever the pulls and functions of their pins.
+ */
+static void test_pinctrl_read_back(void)
+{
+    QTestState *qts = qtest_init("-machine raspi5b");
+
+    pinctrl_fill(qts);
+    for (int i = 0; i < ARRAY_SIZE(pinctrls); i++) {
+        uint64_t end = pinctrls[i].base + 4 * pinctrls[i].num_regs;
+
+        qtest_writel(qts, end, 0xffffffff);
+        g_assert_cmphex(qtest_readl(qts, end), ==, 0);
+    }
+    pinctrl_check(qts, true);
+    for (int i = 0; i < ARRAY_SIZE(gios); i++) {
+        g_assert_cmphex(gio_readl(qts, &gios[i], 0, GIO_DATA), ==,
+                        gios[i].high[0]);
+    }
+
+    qtest_quit(qts);
+}
+
+static void test_pinctrl_reset(void)
+{
+    QTestState *qts = qtest_init("-machine raspi5b");
+
+    pinctrl_fill(qts);
+    qtest_system_reset(qts);
+    pinctrl_check(qts, false);
+
+    qtest_quit(qts);
+}
+
+static void test_pinctrl_migrate(void)
+{
+    g_autofree char *file = g_strdup_printf("%s/raspi5b-pinctrl-%d.mig",
+                                            g_get_tmp_dir(), getpid());
+    g_autofree char *out = g_strdup_printf("exec:cat > %s", file);
+    g_autofree char *in = g_strdup_printf("exec:cat %s", file);
+    const char *args = "-machine raspi5b -m 1G";
+    QTestState *src, *dst;
+
+    src = qtest_init(args);
+    pinctrl_fill(src);
+    qtest_qmp_assert_success(src, "{ 'execute': 'migrate',"
+                             "  'arguments': { 'uri': %s } }", out);
+    wait_for_migration(src);
+    qtest_quit(src);
+
+    dst = qtest_initf("%s -incoming defer", args);
+    qtest_qmp_assert_success(dst, "{ 'execute': 'migrate-incoming',"
+                             "  'arguments': { 'uri': %s } }", in);
+    wait_for_migration(dst);
+    pinctrl_check(dst, true);
+
+    qtest_quit(dst);
+    unlink(file);
+}
+
+/*
  * The board: system_powerdown presses the power button, pulling GIO 20
  * low for 200 ms. Here with both edges enabled, as Linux gpio-keys has it.
  */
@@ -2086,6 +2197,11 @@ int main(int argc, char **argv)
     qtest_add_func("/raspi5b/gpio/aon", test_gio_aon);
     qtest_add_func("/raspi5b/gpio/reset", test_gio_reset);
     qtest_add_func("/raspi5b/gpio/migrate", test_gio_migrate);
+    qtest_add_func("/raspi5b/pinctrl/reset-values",
+                   test_pinctrl_reset_values);
+    qtest_add_func("/raspi5b/pinctrl/read-back", test_pinctrl_read_back);
+    qtest_add_func("/raspi5b/pinctrl/reset", test_pinctrl_reset);
+    qtest_add_func("/raspi5b/pinctrl/migrate", test_pinctrl_migrate);
     qtest_add_func("/raspi5b/board/power-button", test_power_button);
     qtest_add_func("/raspi5b/board/power-button-reset",
                    test_power_button_reset);

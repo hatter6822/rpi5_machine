@@ -45,6 +45,10 @@ Implemented devices
   ``0x10_7d51_7c00``, 17 + 6 lines, whose interrupt is not connected, as
   no device tree gives it one. Every line detects edges and levels,
   outputs included
+* The pin controllers beside them, at ``0x10_7d50_4100`` (12 registers)
+  and ``0x10_7d51_0700`` (8 registers, always-on). They keep the function
+  and pull that software selects for each pin, so that Linux reads its
+  settings back, but the settings have no effect on the lines
 * On the board, the power button on GIO 20, which reads high until it is
   pressed (see below), and the green activity LED on GIO AON 9, a QEMU
   ``led`` device lit while its line is low, whose changes show as
@@ -65,8 +69,7 @@ Missing devices
 * Firmware property tags specific to the Pi 5 (clocks, power, RTC, GPIO
   expander); the BCM283x set is answered
 * SD/eMMC controllers, PCIe root complexes and the RP1 south bridge
-* Pin control, the SD card detect line, and the power LED, which RP1
-  drives
+* The power LED, which RP1 drives, and the SD card detect line
 * Power domains (only V3D's is driven by Linux on this SoC)
 * Display (HVS, HDMI), V3D and ISP
 
@@ -178,9 +181,7 @@ exits with status 0.
 The monitor's ``system_powerdown`` presses the board's power button for
 200 ms, as a user would; a press carries on through a reset. Linux's
 ``gpio-keys`` reports it as ``KEY_POWER``, which systemd-logind takes as
-a request to power off. With the firmware's ``bcm2712-rpi-5-b.dtb``,
-``gpio-keys`` waits for the pin controllers, which are not modelled yet,
-so the press goes unnoticed.
+a request to power off.
 
 Device tree
 -----------
@@ -188,8 +189,9 @@ Device tree
 Without ``-dtb``, the machine generates a device tree describing what it
 models, derived from its memory map: the CPUs with PSCI, the generic timer,
 the PMU, the GIC, the system timer, the mailbox and the firmware interface,
-the PM block, the RNG, the level 2 interrupt controllers, the GPIO blocks,
-the power button and the activity LED, UART10 (``serial10``, the
+the PM block, the RNG, the level 2 interrupt controllers, the GPIO blocks
+and their pin controllers, the power button with the state of its pin
+(GPIO, pulled up), the activity LED, UART10 (``serial10``, the
 ``stdout-path``), the fixed clocks, and a CMA pool in the first GiB, where
 the VideoCore can reach Linux's buffers. Node names and properties follow
 Linux's ``bcm2712.dtsi`` and the firmware's tree, and the result validates

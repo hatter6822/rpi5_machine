@@ -315,6 +315,9 @@ static void bcm2712_init(Object *obj)
     }
     object_initialize_child(obj, "gio", &s->gio, TYPE_BRCMSTB_GPIO);
     object_initialize_child(obj, "gio-aon", &s->gio_aon, TYPE_BRCMSTB_GPIO);
+    object_initialize_child(obj, "pinctrl", &s->pinctrl, TYPE_BRCMSTB_PINCTRL);
+    object_initialize_child(obj, "pinctrl-aon", &s->pinctrl_aon,
+                            TYPE_BRCMSTB_PINCTRL);
     object_initialize_child(obj, "systimer", &s->systimer,
                             TYPE_BCM2835_SYSTIMER);
     object_initialize_child(obj, "pm", &s->pm, TYPE_BCM2835_POWERMGT);
@@ -404,6 +407,19 @@ static bool bcm2712_realize_gpios(BCM2712State *s, Error **errp)
     }
     sysbus_connect_irq(SYS_BUS_DEVICE(&s->gio), 0,
                        qdev_get_gpio_in(main_irq, BCM2712_MAIN_IRQ_GIO));
+    return true;
+}
+
+/* A pin controller, with as many registers as its device tree node spans */
+static bool bcm2712_realize_pinctrl(BrcmstbPinctrlState *pinctrl,
+                                    BCM2712Device dev, Error **errp)
+{
+    qdev_prop_set_uint32(DEVICE(pinctrl), "num-regs",
+                         bcm2712_memmap[dev].size / 4);
+    if (!sysbus_realize(SYS_BUS_DEVICE(pinctrl), errp)) {
+        return false;
+    }
+    bcm2712_map(SYS_BUS_DEVICE(pinctrl), 0, dev);
     return true;
 }
 
@@ -550,6 +566,8 @@ static void bcm2712_realize(DeviceState *dev, Error **errp)
     if (!bcm2712_realize_cpus(s, errp) || !bcm2712_realize_gic(s, errp) ||
         !bcm2712_realize_l2_intcs(s, errp) ||
         !bcm2712_realize_gpios(s, errp) ||
+        !bcm2712_realize_pinctrl(&s->pinctrl, BCM2712_PINCTRL, errp) ||
+        !bcm2712_realize_pinctrl(&s->pinctrl_aon, BCM2712_PINCTRL_AON, errp) ||
         !bcm2712_realize_systimer(s, errp) || !bcm2712_realize_pm(s, errp) ||
         !bcm2712_realize_rng(s, errp) || !bcm2712_realize_vc(s, errp)) {
         return;
@@ -795,6 +813,26 @@ static void bcm2712_fdt_gpios(void *fdt, const uint32_t *l2_phandles)
     qemu_fdt_setprop_cell(fdt, gio, "#interrupt-cells", 2);
 }
 
+/*
+ * The pin controllers, as bcm2712.dtsi has them, in reverse since libfdt
+ * adds each subnode first. The phandles are for the board's pin states.
+ */
+static void bcm2712_fdt_pinctrls(void *fdt)
+{
+    static const char aon_compat[] = "brcm,bcm2712c0-aon-pinctrl";
+    static const char compat[] = "brcm,bcm2712c0-pinctrl";
+    g_autofree char *aon = NULL, *pinctrl = NULL;
+
+    aon = bcm2712_fdt_soc_node(fdt, "pinctrl", BCM2712_PINCTRL_AON,
+                               aon_compat, sizeof(aon_compat));
+    qemu_fdt_setprop_cell(fdt, aon, "phandle", qemu_fdt_alloc_phandle(fdt));
+
+    pinctrl = bcm2712_fdt_soc_node(fdt, "pinctrl", BCM2712_PINCTRL, compat,
+                                   sizeof(compat));
+    qemu_fdt_setprop_cell(fdt, pinctrl, "phandle",
+                          qemu_fdt_alloc_phandle(fdt));
+}
+
 char *bcm2712_fdt_node_path(void *fdt, BCM2712Device dev)
 {
     g_autofree char *unit = g_strdup_printf("@%x",
@@ -854,6 +892,7 @@ void bcm2712_fdt_populate(BCM2712State *s, void *fdt)
 
     bcm2712_fdt_l2_intcs(fdt, l2_phandles);
     bcm2712_fdt_gpios(fdt, l2_phandles);
+    bcm2712_fdt_pinctrls(fdt);
 
     rng = bcm2712_fdt_soc_node(fdt, "rng", BCM2712_RNG,
                                "brcm,bcm2711-rng200",

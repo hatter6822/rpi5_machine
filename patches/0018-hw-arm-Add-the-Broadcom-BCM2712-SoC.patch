@@ -12,8 +12,9 @@ Model the SoC with the devices a bare-metal kernel or Linux needs to
 boot: the cores (MPIDR.Aff1 is the core number, CNTFRQ is 54 MHz,
 optional EL3), the GIC-400 with 288 SPIs and the timer and maintenance
 PPIs, UART10 (a PL011), the system timer, the watchdog and reset status
-block, the RNG200, the seven level 2 interrupt controllers, and the
-VideoCore mailbox with the firmware property and framebuffer channels.
+block, the RNG200, the seven level 2 interrupt controllers, the two GPIO
+blocks and their pin controllers, and the VideoCore mailbox with the
+firmware property and framebuffer channels.
 The firmware reaches buffers through a VideoCore bus view that holds the
 first GiB of RAM at 0x0 and at 0xc000_0000. Every other block in the
 device tree is an unimplemented-device placeholder of its size, and two
@@ -25,15 +26,15 @@ from the same constants as the memory map, for boards that generate one.
 Addresses, interrupts and compatibles follow Linux's bcm2712.dtsi;
 values not documented publicly are marked for checking on hardware.
 ---
- hw/arm/Kconfig     | 16 ++++++++++++++++
+ hw/arm/Kconfig     | 17 +++++++++++++++++
  hw/arm/meson.build |  1 +
- 2 files changed, 17 insertions(+)
+ 2 files changed, 18 insertions(+)
 
 diff --git a/hw/arm/Kconfig b/hw/arm/Kconfig
-index 16f83f0..adfb100 100644
+index 16f83f0..d4d500a 100644
 --- a/hw/arm/Kconfig
 +++ b/hw/arm/Kconfig
-@@ -384,6 +384,22 @@ config RASPI
+@@ -384,6 +384,23 @@ config RASPI
      select BCM2836_CONTROL
      select BCM2838_GPIO
  
@@ -49,6 +50,7 @@ index 16f83f0..adfb100 100644
 +    select BCM2835_SYSTMR
 +    select BRCMSTB_GPIO
 +    select BRCMSTB_L2_INTC
++    select BRCMSTB_PINCTRL
 +    select DEVICE_TREE
 +    select PL011 # UART
 +    select UNIMP

@@ -59,22 +59,23 @@ commit (or a short series) with its own tests.
 
 ## 2. Current state
 
-Delivered so far: M1 (WS0.1–WS0.3, WS0.5, WS0.6, WS2.1, WS2.2, WS2.3a, WS2.4, WS2.5, WS3.2, WS3.6, WS9.2), M2 (WS1.2, WS1.5, WS3.1, WS3.3, WS3.4) and, of M3, WS4.1, WS4.2 and WS4.6:
+Delivered so far: M1 (WS0.1–WS0.3, WS0.5, WS0.6, WS2.1, WS2.2, WS2.3a, WS2.4, WS2.5, WS3.2, WS3.6, WS9.2), M2 (WS1.2, WS1.5, WS3.1, WS3.3, WS3.4) and, of M3, WS4.1, WS4.2, WS4.3 and WS4.6:
 
 | Area | State |
 | --- | --- |
 | Repository | pinned QEMU v11.1.1 submodule, overlay + patch series (patches may share files, like an upstream series) managed by `scripts/qemu-tree`, which also exports the upstream series (WS0.5: a commit per patch and a cover letter, checked with `git am`, checkpatch and a build of every commit), CI with ccache |
 | Kconfig (WS0.6) | every BCM283x device model has its own symbol, so `bcm2712` can select just the models it reuses; a `raspi5b`-only build is tested (`make check-minimal`) |
-| SoC (`bcm2712`) | 1–4 Cortex-A76 (`MPIDR.Aff1` = core with `MPIDR.MT` set (WS1.2), CNTFRQ 54 MHz, optional EL3, the IMPDEF registers firmware writes (WS1.5), warm reset through `RMR_EL3` (WS3.3)), GIC-400 with 288 SPIs, 5 priority bits and all timer/maintenance PPIs, UART10 (PL011), system timer (WS2.1), watchdog and reset status (WS2.4), RNG200 (WS2.5), the seven brcmstb level 2 interrupt controllers (WS4.1), the two brcmstb GPIO blocks (WS4.2), VideoCore mailbox with the BCM283x property and framebuffer channels (WS2.2) and every identity tag answered (WS2.3a), complete memory map with T0 placeholders and two catch-all windows |
+| SoC (`bcm2712`) | 1–4 Cortex-A76 (`MPIDR.Aff1` = core with `MPIDR.MT` set (WS1.2), CNTFRQ 54 MHz, optional EL3, the IMPDEF registers firmware writes (WS1.5), warm reset through `RMR_EL3` (WS3.3)), GIC-400 with 288 SPIs, 5 priority bits and all timer/maintenance PPIs, UART10 (PL011), system timer (WS2.1), watchdog and reset status (WS2.4), RNG200 (WS2.5), the seven brcmstb level 2 interrupt controllers (WS4.1), the two brcmstb GPIO blocks (WS4.2) and their pin controllers (WS4.3), VideoCore mailbox with the BCM283x property and framebuffer channels (WS2.2) and every identity tag answered (WS2.3a), complete memory map with T0 placeholders and two catch-all windows |
 | Board (`raspi5b`) | 1/2/4/8/16 GiB RAM, board revision code, serial number (`serial=`), PSCI over SMC with EL2 entry (default) or guest-owned EL3 (`secure=on`), firmware such as TF-A's BL31 loaded with `-bios` and handed the kernel, initrd and device tree as the Pi's firmware does (WS3.3), system reset and power-off through PSCI, the watchdog and the monitor (WS3.6), a built-in device tree when no `-dtb` is given (WS3.2; `builtin-dtb=off` passes none), the power button on GIO 20, which `system_powerdown` presses, and the ACT LED on GIO AON 9 (WS4.6), and in whichever tree the guest gets the firmware's changes, made anew for each boot (WS3.1): model, serial number, the command line it builds, `/chosen` with the boot's reset status, partition and count, a 5 A supply and seeds, the CMA size, the bootloader configuration, the Ethernet address, unmodelled devices disabled |
-| Tests | qtest (UART IDs, GIC geometry, priority bits and security, RAM, placeholders, system timer, watchdog, mailbox, identity tags, RNG, L2 interrupt controllers, GPIO, the power button and ACT LED), the built-in tree validated against the Linux v6.18 bindings (`make check-dt`), the device-tree fix-ups (each one, the built-in tree against a checked-in dump, the values of each boot across resets and migration), bare-metal smoke guest (EL, MPIDR, CNTFRQ, PSCI CPU_ON on all cores, SYSTEM_OFF, EL3 mode), and the bare-metal suite (WS9.2, 30 tests: GIC and the Secure/Non-secure group split, each core's MPIDR, every timer on every core, SGIs between all core pairs, SPI routing, PSCI, the system timer, the mailbox and identity tags, the RNG, a software-raised interrupt through each edge-layout L2 controller, a GPIO output's own edge through GIO's, UART receive and loopback, a watchdog reset and four system resets checked against the boot state, an ID-register dump, the A76's IMPDEF registers; 1–4 cores, with the built-in tree, a `-dtb` one and none, EL2 and EL3), the `-bios` handoff (qtest), and real firmware (`make check-firmware`, all pinned: the smoke guest and the suite on TF-A's `rpi5` BL31, Linux on TF-A and through U-Boot, the EDK2 port to its shell, and the changes to the firmware's tree against a checked-in list) |
-| Linux and firmware | the stock Raspberry Pi OS kernel (6.18) boots on 4 CPUs to the root-fs mount, without warnings ("firmware out-of-date" included), with KASLR, registering every L2 interrupt controller its tree enables and listing both GPIO blocks with their banks (on the built-in tree, `gpio-keys` also reports `system_powerdown` as `KEY_POWER` and the ACT LED follows sysfs), with the firmware's `bcm2712-rpi-5-b.dtb` and on the built-in tree (1, 2 and 8 GiB), directly, on TF-A's BL31 or through U-Boot on it (WS3.4); the EDK2 port reaches the UEFI shell |
+| Tests | qtest (UART IDs, GIC geometry, priority bits and security, RAM, placeholders, system timer, watchdog, mailbox, identity tags, RNG, L2 interrupt controllers, GPIO, pin control, the power button and ACT LED), the built-in tree validated against the Linux v6.18 bindings (`make check-dt`), the device-tree fix-ups (each one, the built-in tree against a checked-in dump, the values of each boot across resets and migration), bare-metal smoke guest (EL, MPIDR, CNTFRQ, PSCI CPU_ON on all cores, SYSTEM_OFF, EL3 mode), and the bare-metal suite (WS9.2, 30 tests: GIC and the Secure/Non-secure group split, each core's MPIDR, every timer on every core, SGIs between all core pairs, SPI routing, PSCI, the system timer, the mailbox and identity tags, the RNG, a software-raised interrupt through each edge-layout L2 controller, a GPIO output's own edge through GIO's, UART receive and loopback, a watchdog reset and four system resets checked against the boot state, an ID-register dump, the A76's IMPDEF registers; 1–4 cores, with the built-in tree, a `-dtb` one and none, EL2 and EL3), the `-bios` handoff (qtest), and real firmware (`make check-firmware`, all pinned: the smoke guest and the suite on TF-A's `rpi5` BL31, Linux on TF-A and through U-Boot, the EDK2 port to its shell, and the changes to the firmware's tree against a checked-in list) |
+| Linux and firmware | the stock Raspberry Pi OS kernel (6.18) boots on 4 CPUs to the root-fs mount, without warnings ("firmware out-of-date" included), with KASLR, registering every L2 interrupt controller its tree enables, listing both GPIO blocks with their banks and applying pin states through both pin controllers, with `gpio-keys` reporting `system_powerdown` as `KEY_POWER` (and on the built-in tree the ACT LED following sysfs), with the firmware's `bcm2712-rpi-5-b.dtb` and on the built-in tree (1, 2 and 8 GiB), directly, on TF-A's BL31 or through U-Boot on it (WS3.4); the EDK2 port reaches the UEFI shell |
 
 Known provisional values, each marked in the code: 288 SPIs
 (`TODO(WS1.3)`), the VideoCore memory size and DMA channel mask
 (`TODO(WS0.4)`), the PMU interrupts taken from the vendor DT
-(`TODO(WS1.4)`), what the L2 controllers' write-only registers read
-(`TODO(WS0.4)`), and the board revision's `REVISION` field (WS9.8).
+(`TODO(WS1.4)`), what the L2 controllers' write-only registers read, the
+reset values of the GPIO blocks and pin controllers (`TODO(WS0.4)`), and
+the board revision's `REVISION` field (WS9.8).
 
 ## 3. Milestones
 
@@ -1016,7 +1017,38 @@ card detect and LEDs.
 interrupts and masking; Linux `gpioinfo` lists both controllers with the
 right widths.
 
-#### WS4.3 Pin control (S)
+#### WS4.3 Pin control (done)
+*Delivered:* a new model, `brcmstb-pinctrl` (`hw/gpio/brcmstb_pinctrl.c`),
+with its Kconfig symbol, meson line and trace events as upstream-first
+patch 0017, ahead of the SoC patch, so the SoC, board, qtest and
+documentation patches become 0018–0021. A `num-regs` property sets the
+number of 32-bit registers, and the SoC gives each block as many as its
+device tree node spans: 12 for `pinctrl`, 8 for `pinctrl_aon`. The
+registers store what software writes and reset to zero (TODO(WS0.4));
+the functions and pulls they select have no effect on the lines, which
+the board's pull-ups (WS4.6) keep driving. Both nodes are in the built-in
+tree, with phandles, and the board adds the power button's pin state
+(`pwr-button-default-state`: GPIO function, pull-up), which `gpio-keys`
+selects, as in the firmware's and mainline's trees. The two pin control
+compatibles leave the list of compatibles disabled in a `-dtb` tree, and
+so does `raspberrypi,gpiomem`, now that every block its four SoC nodes
+map is modelled (RP1's node stays under the disabled PCIe controller).
+qtests cover reset values, the read-back of every register, the end of
+each block, the GPIO lines staying as they are whatever the settings,
+system reset and migration. Linux (6.18, `pinctrl-brcmstb`) registers
+both controllers on both trees and applies the power button's state (and
+on the firmware's tree the Wi-Fi enable line's): `pinconf-pins` shows the
+pull-up on GPIO 20, which `/dev/gpiomem3` reads back from the pad
+register, and a function written through it reads back the same. On the
+firmware's tree `gpio-keys` no longer defers, and `system_powerdown`
+powers Linux off as on the built-in tree. Linux's `pins` file names each
+function one slot off: `brcmstb_pinctrl_fsel_get()` indexes the pin's
+function table with the register value rather than one less, so a GPIO
+pin shows as its first alternate function; `pinmux-pins` and
+`pinconf-pins` are right. The D0 stepping's pin controllers are smaller
+blocks with another layout (see WS9.8); storing registers serves either,
+as a D0 tree's nodes fit inside the C1 blocks.
+
 `bcm2712c0-pinctrl` (`0x10_7d50_4100`, `0x30`) and `-aon-pinctrl`
 (`0x10_7d51_0700`, `0x20`) at T1: register storage with reset values
 from WS0.4 (until then, zeros), so drivers that read back mux settings
@@ -1059,7 +1091,7 @@ state of an SD bus that only the SD host brings. The built-in tree gains
 `/leds/led-act` (label `ACT`, active low, `mmc0` trigger, as the
 firmware's tree has them but under node names the bindings accept), and
 both GPIO blocks get phandles, which the board finds through the SoC's
-new `bcm2712_fdt_node_path()`; the board patch 0018 selects `LED`.
+new `bcm2712_fdt_node_path()`; the board patch 0019 selects `LED`.
 qtests cover the press and release, their interrupt through GIO and
 `main_irq`, a second request lengthening a press, a reset and a
 migration during one, and the LED following its line; the GPIO tests now
@@ -1067,7 +1099,8 @@ expect the two lines high. Linux (6.18 with the release's
 `gpio_keys.ko`, loaded by hand) reports `system_powerdown` on the
 built-in tree as `KEY_POWER` down, then up 203 ms later, and powers off,
 QEMU exiting with status 0; the ACT LED follows its sysfs brightness.
-With the firmware's tree, `gpio-keys` waits for pin control (WS4.3).
+With the firmware's tree, `gpio-keys` waited for pin control, which WS4.3
+brought.
 
 **Depends:** WS4.2.
 Power button on GIO 20 (`gpio-keys`, active low) driven by the QEMU
@@ -1501,6 +1534,21 @@ codes ending in `...171`) differ in pin control compatibles and removed
 blocks (`bcm2712d0.dtsi` downstream). Add a `soc-stepping` property
 (`c1` default) once the differences are catalogued, and derive the
 revision code's `REVISION` field from it.
+
+Catalogued so far (WS4.3), from the firmware's `bcm2712-rpi-5-b.dtb` and
+`bcm2712d0-rpi-5-b.dtb` (release 1.20260915), which have the same nodes
+and differ only in:
+
+* the pin controllers: `brcm,bcm2712d0-pinctrl` (`0x20`) and
+  `brcm,bcm2712d0-aon-pinctrl` (`0x1c`). Linux's
+  `pinctrl-brcmstb-bcm2712.c` gives their layout: GPIOs 1–4, 10–15 and
+  18–35 and the eMMC pads, with functions in registers 0–3 and pulls in
+  4–6; always-on GPIOs 0–6, 8, 9 and 12–14 and the SGPIOs, with functions
+  in 0–4 and pulls in 5–6;
+* GIO AON's first bank: 15 lines, not 17;
+* UART10's interrupt: SPI 120, not 121;
+* the DMA requests (`dmas`) of the two HDMI audio outputs and SPI10;
+* the VideoCore VI, `brcm,bcm2712d0-vc6` ahead of `brcm,bcm2712-vc6`.
 
 ## 7. Decisions
 

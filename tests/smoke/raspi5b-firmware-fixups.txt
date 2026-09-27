@@ -24,9 +24,7 @@
 + /soc@107c000000/reset-controller@1504318:status = "disabled"
 + /soc@107c000000/clock@7c700000:status = "disabled"
 ~ /soc@107c000000/spi@7d004000:status = "disabled" (was "okay")
-+ /soc@107c000000/pinctrl@7d504100:status = "disabled"
 ~ /soc@107c000000/serial@7d50c000:status = "disabled" (was "okay")
-+ /soc@107c000000/pinctrl@7d510700:status = "disabled"
 ~ /soc@107c000000/avs-monitor@7d542000:status = "disabled" (was "okay")
 + /soc@107c000000/power:status = "disabled"
 + /soc@107c000000/fb:status = "disabled"
@@ -35,13 +33,8 @@
 + /soc@107c000000/nvmem/nvmem_cust:status = "disabled"
 + /soc@107c000000/nvmem/nvmem_mac:status = "disabled"
 + /soc@107c000000/nvmem/nvmem_priv:status = "disabled"
-+ /soc@107c000000/gpiomem@7d508500:status = "disabled"
-+ /soc@107c000000/gpiomem@7d517c00:status = "disabled"
-+ /soc@107c000000/gpiomem@7d504100:status = "disabled"
-+ /soc@107c000000/gpiomem@7d510700:status = "disabled"
 ~ /axi/pcie@1000120000:status = "disabled" (was "okay")
 ~ /axi/pcie@1000120000/rp1/ethernet@100000:local-mac-address = [52 54 00 12 34 57] (was [00 00 00 00 00 00])
-+ /axi/pcie@1000120000/rp1/gpiomem@d0000:status = "disabled"
 + /axi/msi-controller@1000130000:status = "disabled"
 + /axi/msi-controller@1000131000:status = "disabled"
 + /axi/iommu@5100:status = "disabled"

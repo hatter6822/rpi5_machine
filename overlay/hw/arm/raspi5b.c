@@ -223,8 +223,6 @@ static const char *const raspi5b_unmodelled_compatibles[] = {
     "brcm,bcm2712-mop",
     "brcm,bcm2712-moplet",
     "brcm,bcm2712-pispbe",
-    "brcm,bcm2712c0-pinctrl",
-    "brcm,bcm2712c0-aon-pinctrl",
     "brcm,brcmstb-reset",
     "brcm,bcm7216-pcie-sata-rescal",
     /* Nodes only present in the Raspberry Pi downstream device tree */
@@ -237,7 +235,6 @@ static const char *const raspi5b_unmodelled_compatibles[] = {
     "brcm,syscon-piarbctl",
     "brcm,brcm2711-dvp",
     "brcm,bcm2835-spi",
-    "raspberrypi,gpiomem",
     /* Clients of the VideoCore firmware (mailbox) or of RP1's */
     "brcm,bcm2708-fb",
     "raspberrypi,rpi-otp",
@@ -312,19 +309,33 @@ static void raspi5b_fdt_memory(void *fdt, uint64_t ram_size)
 }
 
 /*
- * The power button and the activity LED, as the firmware's tree has them
- * but under node names their bindings accept. The power LED hangs off
- * RP1, which is not modelled.
+ * The power button, with the state of its pin, and the activity LED, as
+ * the firmware's tree has them but under node names their bindings
+ * accept. The power LED hangs off RP1, which is not modelled.
  */
 static void raspi5b_fdt_gpio_users(void *fdt)
 {
     g_autofree char *gio = bcm2712_fdt_node_path(fdt, BCM2712_GIO);
     g_autofree char *gio_aon = bcm2712_fdt_node_path(fdt, BCM2712_GIO_AON);
+    g_autofree char *pinctrl = bcm2712_fdt_node_path(fdt, BCM2712_PINCTRL);
+    g_autofree char *button_pin = g_strdup_printf(
+        "%s/pwr-button-default-state", pinctrl);
+    g_autofree char *button_gpio = g_strdup_printf(
+        "gpio%d", RASPI5B_GIO_PWR_BUTTON);
+    uint32_t button_pin_phandle = qemu_fdt_alloc_phandle(fdt);
     const char *button = "/gpio-keys/power-button";
     const char *led = "/leds/led-act";
 
+    qemu_fdt_add_subnode(fdt, button_pin);
+    qemu_fdt_setprop_string(fdt, button_pin, "function", "gpio");
+    qemu_fdt_setprop_string(fdt, button_pin, "pins", button_gpio);
+    qemu_fdt_setprop(fdt, button_pin, "bias-pull-up", NULL, 0);
+    qemu_fdt_setprop_cell(fdt, button_pin, "phandle", button_pin_phandle);
+
     qemu_fdt_add_subnode(fdt, "/gpio-keys");
     qemu_fdt_setprop_string(fdt, "/gpio-keys", "compatible", "gpio-keys");
+    qemu_fdt_setprop_string(fdt, "/gpio-keys", "pinctrl-names", "default");
+    qemu_fdt_setprop_cell(fdt, "/gpio-keys", "pinctrl-0", button_pin_phandle);
     qemu_fdt_add_subnode(fdt, button);
     qemu_fdt_setprop_string(fdt, button, "label", "pwr_button");
     qemu_fdt_setprop_cell(fdt, button, "linux,code", KEY_POWER);
