@@ -5454,6 +5454,11 @@ static void test_pcie_reset_values(void)
         g_assert_cmphex(pcie_readl(qts, n, RP_CAP_PM) >> 16, ==, 0x4803);
         g_assert_cmphex(pcie_readl(qts, n, RP_CAP_PM + 4) & 0xffff, ==,
                         0x0008);
+        /* Before PM, nothing: no subsystem IDs, and no storage either */
+        pcie_writel(qts, n, RP_CAP_PM - 8, 0xffffffff);
+        pcie_writel(qts, n, RP_CAP_PM - 4, 0xffffffff);
+        g_assert_cmphex(pcie_readl(qts, n, RP_CAP_PM - 8), ==, 0);
+        g_assert_cmphex(pcie_readl(qts, n, RP_CAP_PM - 4), ==, 0);
         g_assert_cmphex(pcie_readl(qts, n, RP_CAP_EXP), ==, 0x00420010);
         /* 512-byte payloads, role-based errors, no extended tags */
         g_assert_cmphex(pcie_readl(qts, n, RP_CAP_EXP + 4) & 0x8027, ==,

@@ -1135,6 +1135,7 @@ static void brcmstb_pcie_root_port_realize(PCIDevice *d, Error **errp)
     BrcmstbPCIeRootPortState *rp = BRCMSTB_PCIE_ROOT_PORT(d);
     ERRP_GUARD();
     uint8_t *exp_cap;
+    uint8_t ssvid;
 
     PCIE_SLOT(d)->hotplug = false;
     d->cap_present &= ~QEMU_PCIE_SLTCAP_PCP;
@@ -1153,7 +1154,7 @@ static void brcmstb_pcie_root_port_realize(PCIDevice *d, Error **errp)
     pci_set_word(d->w1cmask + d->exp.exp_cap + PCI_EXP_SLTSTA, 0);
 
     /*
-     * ASPM L1 (L0s is the host's to add), exits in under 1us and 2us,
+     * ASPM L1 (L0s is the host's to add), 1 to 2us to exit either state,
      * clock PM and bandwidth notification; no link active reporting,
      * which only faster links must have
      */
@@ -1176,8 +1177,16 @@ static void brcmstb_pcie_root_port_realize(PCIDevice *d, Error **errp)
                                  0xf << 16);
     pci_long_test_and_set_mask(d->config + BRCMSTB_PCIE_AER_OFFSET, 1 << 16);
 
-    /* No subsystem IDs, which the parent always adds */
-    pci_del_capability(d, PCI_CAP_ID_SSVID, 8);
+    /*
+     * No subsystem IDs, which the parent always adds: the bytes it wrote
+     * are reserved again, reading as zero
+     */
+    ssvid = pci_find_capability(d, PCI_CAP_ID_SSVID);
+    if (ssvid) {
+        pci_del_capability(d, PCI_CAP_ID_SSVID, 8);
+        memset(d->config + ssvid, 0, 8);
+        memset(d->wmask + ssvid, 0, 8);
+    }
 
     if (pci_pm_init(d, BRCMSTB_PCIE_PM_OFFSET, errp) < 0) {
         return;
