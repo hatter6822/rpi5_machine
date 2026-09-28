@@ -19,8 +19,6 @@
 ~ /reserved-memory/linux,cma:size = <0x0 0x4000000> (was <0x4000000>)
 ~ /reserved-memory/nvram@0:reg = <0x0 0x3fc80000 0x0 0x4d> (was <0x0 0x0 0x0 0x0>)
 ~ /reserved-memory/nvram@0:status = "okay" (was "disabled")
-+ /soc@107c000000/reset-controller@119500:status = "disabled"
-+ /soc@107c000000/reset-controller@1504318:status = "disabled"
 + /soc@107c000000/clock@7c700000:status = "disabled"
 ~ /soc@107c000000/spi@7d004000:status = "disabled" (was "okay")
 + /soc@107c000000/serial@7d50c000/bluetooth:status = "disabled"
@@ -29,7 +27,6 @@
 + /soc@107c000000/nvmem/nvmem_cust:status = "disabled"
 + /soc@107c000000/nvmem/nvmem_mac:status = "disabled"
 + /soc@107c000000/nvmem/nvmem_priv:status = "disabled"
-~ /axi/pcie@1000120000:status = "disabled" (was "okay")
 ~ /axi/pcie@1000120000/rp1/ethernet@100000:local-mac-address = [52 54 00 12 34 57] (was [00 00 00 00 00 00])
 + /axi/msi-controller@1000130000:status = "disabled"
 + /axi/msi-controller@1000131000:status = "disabled"

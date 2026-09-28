@@ -238,7 +238,6 @@ static uint32_t raspi5b_board_rev(uint64_t ram_size)
  * does a device whose driver needs one that is not. See docs/PLAN.md.
  */
 static const char *const raspi5b_unmodelled_compatibles[] = {
-    "brcm,bcm2712-pcie",
     "brcm,bcm2712-mip",
     "brcm,2712-v3d",
     "brcm,bcm2712-vc6",
@@ -250,8 +249,6 @@ static const char *const raspi5b_unmodelled_compatibles[] = {
     "brcm,bcm2712-mop",
     "brcm,bcm2712-moplet",
     "brcm,bcm2712-pispbe",
-    "brcm,brcmstb-reset",
-    "brcm,bcm7216-pcie-sata-rescal",
     /* Nodes only present in the Raspberry Pi downstream device tree */
     "brcm,bcm2712-iommu",
     "brcm,bcm2712-iommuc",

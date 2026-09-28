@@ -55,6 +55,12 @@ KNOWN = (
     re.compile(r"firmware \(raspberrypi,bcm2835-firmware\): "
                r"'#address-cells', '#size-cells', 'dma-ranges'(, 'vcio')? "
                r"do not match"),
+    # The QoS settings of the firmware's PCIe1 and PCIe2 nodes, which the
+    # Raspberry Pi kernel's driver reads and no binding describes
+    re.compile(r"pcie@10001[12]0000 \(brcm,bcm2712-pcie\): "
+               r"(Unevaluated properties are not allowed "
+               r"\('brcm,fifo-qos-map' was unexpected\)|"
+               r"brcm,(fifo|vdm)-qos-map: .* is not of type)"),
 )
 
 

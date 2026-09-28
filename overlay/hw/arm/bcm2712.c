@@ -35,6 +35,10 @@ const MemMapEntry bcm2712_memmap[BCM2712_NUM_DEVICES] = {
     [BCM2712_AXI]           = { 0x1000000000, 0x7c000000 },
     [BCM2712_SOC]           = { 0x107c000000, 0x04000000 },
 
+    [BCM2712_PCIE0_MEM]     = { 0x1400000000, 16 * GiB },
+    [BCM2712_PCIE1_MEM]     = { 0x1800000000, 16 * GiB },
+    [BCM2712_PCIE2_MEM]     = { 0x1c00000000, 16 * GiB },
+
     [BCM2712_PCIE0]         = { 0x1000100000, 0x9310 },
     [BCM2712_PCIE1]         = { 0x1000110000, 0x9310 },
     [BCM2712_PCIE_RESCAL]   = { 0x1000119500, 0x10 },
@@ -79,6 +83,9 @@ const MemMapEntry bcm2712_memmap[BCM2712_NUM_DEVICES] = {
 static const char *const bcm2712_device_names[BCM2712_NUM_DEVICES] = {
     [BCM2712_AXI]           = "bcm2712.axi",
     [BCM2712_SOC]           = "bcm2712.soc",
+    [BCM2712_PCIE0_MEM]     = "bcm2712.pcie0-mem",
+    [BCM2712_PCIE1_MEM]     = "bcm2712.pcie1-mem",
+    [BCM2712_PCIE2_MEM]     = "bcm2712.pcie2-mem",
     [BCM2712_PCIE0]         = "bcm2712.pcie0",
     [BCM2712_PCIE1]         = "bcm2712.pcie1",
     [BCM2712_PCIE_RESCAL]   = "bcm2712.pcie-rescal",
@@ -196,6 +203,32 @@ static const struct {
 } bcm2712_sdios[BCM2712_NUM_SDIO] = {
     { "sdio1", BCM2712_SDIO1, BCM2712_SPI_SDIO1 },
     { "sdio2", BCM2712_SDIO2, BCM2712_SPI_SDIO2 },
+};
+
+/*
+ * The PCIe root complexes: registers, outbound aperture, interrupts
+ * (INTA's, then "pcie" and "msi"), and the root ports' links. PCIe1's
+ * and PCIe2's are those lspci shows on a Pi 5; PCIe0's are taken to be
+ * PCIe1's. TODO(WS0.4): check PCIe0's link capabilities on hardware.
+ */
+static const struct {
+    const char *name;
+    BCM2712Device dev;
+    BCM2712Device mem;
+    int spi_inta;
+    int spi;
+    int spi_msi;
+    uint32_t num_lanes;
+    uint32_t max_link_speed;
+    bool aspm_l0s;
+    bool l1ss;
+} bcm2712_pcies[BCM2712_NUM_PCIE] = {
+    { "pcie0", BCM2712_PCIE0, BCM2712_PCIE0_MEM, BCM2712_SPI_PCIE0_INTA,
+      BCM2712_SPI_PCIE0, BCM2712_SPI_PCIE0_MSI, 1, 2, true, false },
+    { "pcie1", BCM2712_PCIE1, BCM2712_PCIE1_MEM, BCM2712_SPI_PCIE1_INTA,
+      BCM2712_SPI_PCIE1, BCM2712_SPI_PCIE1_MSI, 1, 2, true, false },
+    { "pcie2", BCM2712_PCIE2, BCM2712_PCIE2_MEM, BCM2712_SPI_PCIE2_INTA,
+      BCM2712_SPI_PCIE2, BCM2712_SPI_PCIE2_MSI, 4, 2, false, true },
 };
 
 /* GIC-400 register frames, relative to bcm2712_memmap[BCM2712_GIC] */
@@ -367,6 +400,13 @@ static void bcm2712_init(Object *obj)
     /* The SD card slot */
     object_property_add_alias(obj, "sd-bus", OBJECT(&s->sdio[0].sdhci),
                               "sd-bus");
+    object_initialize_child(obj, "reset", &s->reset, TYPE_BRCMSTB_RESET);
+    object_initialize_child(obj, "pcie-rescal", &s->rescal,
+                            TYPE_BRCMSTB_RESCAL);
+    for (int i = 0; i < BCM2712_NUM_PCIE; i++) {
+        object_initialize_child(obj, bcm2712_pcies[i].name, &s->pcie[i],
+                                TYPE_BRCMSTB_PCIE_HOST);
+    }
     object_initialize_child(obj, "systimer", &s->systimer,
                             TYPE_BCM2835_SYSTIMER);
     object_initialize_child(obj, "pm", &s->pm, TYPE_BCM2835_POWERMGT);
@@ -510,6 +550,67 @@ static bool bcm2712_realize_sdios(BCM2712State *s, Error **errp)
         }
         bcm2712_map(sbd, 0, bcm2712_sdios[i].dev);
         sysbus_connect_irq(sbd, 0, bcm2712_spi(s, bcm2712_sdios[i].spi));
+    }
+    return true;
+}
+
+/*
+ * The PCIe root complexes, with the reset controller that drives their
+ * bridge resets and the calibration of their PHYs. Each root port's
+ * secondary bus is named "pcie<n>.0", after the controller's PCI domain
+ * in the device tree. Their DMA reaches the whole physical address space
+ * through their inbound windows.
+ */
+static bool bcm2712_realize_pcie(BCM2712State *s, Error **errp)
+{
+    SysBusDevice *reset = SYS_BUS_DEVICE(&s->reset);
+
+    qdev_prop_set_uint32(DEVICE(reset), "num-banks",
+                         bcm2712_memmap[BCM2712_RESET].size /
+                         BRCMSTB_RESET_BANK_SIZE);
+    if (!sysbus_realize(reset, errp) ||
+        !sysbus_realize(SYS_BUS_DEVICE(&s->rescal), errp)) {
+        return false;
+    }
+    bcm2712_map(reset, 0, BCM2712_RESET);
+    bcm2712_map(SYS_BUS_DEVICE(&s->rescal), 0, BCM2712_PCIE_RESCAL);
+
+    for (int i = 0; i < BCM2712_NUM_PCIE; i++) {
+        SysBusDevice *sbd = SYS_BUS_DEVICE(&s->pcie[i]);
+        DeviceState *dev = DEVICE(sbd);
+        g_autofree char *bus_name = g_strdup_printf("pcie%d.0", i);
+
+        qdev_prop_set_uint32(dev, "domain", i);
+        qdev_prop_set_string(dev, "bus-name", bus_name);
+        qdev_prop_set_uint64(dev, "outbound-base",
+                             bcm2712_memmap[bcm2712_pcies[i].mem].base);
+        qdev_prop_set_uint64(dev, "outbound-size",
+                             bcm2712_memmap[bcm2712_pcies[i].mem].size);
+        qdev_prop_set_uint32(dev, "num-lanes", bcm2712_pcies[i].num_lanes);
+        qdev_prop_set_uint32(dev, "max-link-speed",
+                             bcm2712_pcies[i].max_link_speed);
+        qdev_prop_set_bit(dev, "aspm-l0s", bcm2712_pcies[i].aspm_l0s);
+        qdev_prop_set_bit(dev, "l1ss", bcm2712_pcies[i].l1ss);
+        object_property_set_link(OBJECT(dev), "dma-memory",
+                                 OBJECT(get_system_memory()), &error_abort);
+        if (!sysbus_realize(sbd, errp)) {
+            return false;
+        }
+        bcm2712_map(sbd, 0, bcm2712_pcies[i].dev);
+        bcm2712_map(sbd, 1, bcm2712_pcies[i].mem);
+        for (int n = 0; n < BRCMSTB_PCIE_NUM_INTX; n++) {
+            sysbus_connect_irq(sbd, BRCMSTB_PCIE_IRQ_INTA + n,
+                               bcm2712_spi(s, bcm2712_pcies[i].spi_inta + n));
+        }
+        sysbus_connect_irq(sbd, BRCMSTB_PCIE_IRQ_PCIE,
+                           bcm2712_spi(s, bcm2712_pcies[i].spi));
+        sysbus_connect_irq(sbd, BRCMSTB_PCIE_IRQ_MSI,
+                           bcm2712_spi(s, bcm2712_pcies[i].spi_msi));
+        qdev_connect_gpio_out_named(DEVICE(reset), "reset",
+                                    BCM2712_RESET_PCIE0_BRIDGE + i,
+                                    qdev_get_gpio_in_named(dev,
+                                                           "bridge-reset",
+                                                           0));
     }
     return true;
 }
@@ -714,6 +815,7 @@ static void bcm2712_realize(DeviceState *dev, Error **errp)
         !bcm2712_realize_pinctrl(&s->pinctrl, BCM2712_PINCTRL, errp) ||
         !bcm2712_realize_pinctrl(&s->pinctrl_aon, BCM2712_PINCTRL_AON, errp) ||
         !bcm2712_realize_ddcs(s, errp) || !bcm2712_realize_sdios(s, errp) ||
+        !bcm2712_realize_pcie(s, errp) ||
         !bcm2712_realize_systimer(s, errp) || !bcm2712_realize_pm(s, errp) ||
         !bcm2712_realize_rng(s, errp) || !bcm2712_realize_avs(s, errp) ||
         !bcm2712_realize_vc(s, errp) || !bcm2712_realize_uarts(s, errp)) {
@@ -733,6 +835,9 @@ static void bcm2712_realize(DeviceState *dev, Error **errp)
             break;
         case BCM2712_GIC:
         case BCM2712_UART10:
+        case BCM2712_PCIE0_MEM:
+        case BCM2712_PCIE1_MEM:
+        case BCM2712_PCIE2_MEM:
             break;
         default:
             create_unimplemented_device(bcm2712_device_names[d],
@@ -755,6 +860,9 @@ static void bcm2712_realize(DeviceState *dev, Error **errp)
 #define BCM2712_FDT_SOC_PATH        "/soc@107c000000"
 #define BCM2712_FDT_SOC_BUS_BASE    0x1000000000ULL
 #define BCM2712_FDT_SOC_BUS_SIZE    0x80000000U
+
+/* The "axi" bus, whose addresses are CPU addresses */
+#define BCM2712_FDT_AXI_PATH        "/axi"
 
 /* The DDC buses' speed in bcm2712.dtsi, in Hz; the model has none */
 #define BCM2712_FDT_DDC_HZ          97500
@@ -1041,6 +1149,149 @@ static void bcm2712_fdt_sdios(void *fdt, uint32_t clk_emmc2)
 }
 
 /*
+ * The "axi" bus of the firmware's tree, which reaches the PCIe root
+ * complexes' 64-bit address ranges: the first 64 GiB (RAM), the AXI
+ * peripherals and the outbound apertures, at their CPU addresses.
+ */
+static void bcm2712_fdt_axi(void *fdt)
+{
+    static const BCM2712Device windows[] = {
+        BCM2712_AXI, BCM2712_PCIE0_MEM, BCM2712_PCIE1_MEM, BCM2712_PCIE2_MEM,
+    };
+    uint32_t ranges[(ARRAY_SIZE(windows) + 1) * 6];
+    uint32_t *r = ranges;
+
+    /* RAM, then each window, mapped 1:1 */
+    for (int i = -1; i < (int)ARRAY_SIZE(windows); i++) {
+        uint64_t base = i < 0 ? BCM2712_RAM_BASE
+                              : bcm2712_memmap[windows[i]].base;
+        uint64_t size = i < 0 ? 64 * GiB
+                              : windows[i] == BCM2712_AXI
+                                ? 4 * GiB : bcm2712_memmap[windows[i]].size;
+
+        *r++ = cpu_to_be32(base >> 32);
+        *r++ = cpu_to_be32(base);
+        *r++ = cpu_to_be32(base >> 32);
+        *r++ = cpu_to_be32(base);
+        *r++ = cpu_to_be32(size >> 32);
+        *r++ = cpu_to_be32(size);
+    }
+    qemu_fdt_add_subnode(fdt, BCM2712_FDT_AXI_PATH);
+    qemu_fdt_setprop_string(fdt, BCM2712_FDT_AXI_PATH, "compatible",
+                            "simple-bus");
+    qemu_fdt_setprop_cell(fdt, BCM2712_FDT_AXI_PATH, "#address-cells", 2);
+    qemu_fdt_setprop_cell(fdt, BCM2712_FDT_AXI_PATH, "#size-cells", 2);
+    qemu_fdt_setprop(fdt, BCM2712_FDT_AXI_PATH, "ranges", ranges,
+                     sizeof(ranges));
+    qemu_fdt_setprop(fdt, BCM2712_FDT_AXI_PATH, "dma-ranges", ranges,
+                     sizeof(ranges));
+}
+
+/*
+ * The PCIe root complexes as the firmware's tree has them, each with an
+ * outbound window of 32-bit and one of 64-bit PCI memory, and an inbound
+ * window onto RAM, and using its own MSI controller. PCIe0 is disabled,
+ * as there; PCIe1, the connector, is enabled, as dtparam=pciex1 has the
+ * firmware do, and Linux leaves it when it finds no link; PCIe2 is
+ * disabled while RP1 is not modelled.
+ */
+static void bcm2712_fdt_pcie(void *fdt, uint32_t gic)
+{
+    static const char irq_names[] = "pcie\0msi";
+    static const char reset_names[] = "rescal\0bridge";
+    /* PCI address, CPU address and size of the 32-bit and 64-bit windows */
+    static const uint64_t outbound[BCM2712_NUM_PCIE][2][3] = {
+        { { 0x0, 0x1700000000, 0xfffffffc },
+          { 0x400000000, 0x1400000000, 0x300000000 } },
+        { { 0x80000000, 0x1b80000000, 0x80000000 },
+          { 0x400000000, 0x1800000000, 0x380000000 } },
+        { { 0x0, 0x1f00000000, 0xfffffffc },
+          { 0x400000000, 0x1c00000000, 0x300000000 } },
+    };
+    uint32_t rescal, reset;
+    g_autofree char *rescal_path = NULL, *reset_path = NULL;
+
+    rescal = qemu_fdt_alloc_phandle(fdt);
+    rescal_path = bcm2712_fdt_soc_node(fdt, "reset-controller",
+        BCM2712_PCIE_RESCAL, "brcm,bcm7216-pcie-sata-rescal",
+        sizeof("brcm,bcm7216-pcie-sata-rescal"));
+    qemu_fdt_setprop_cell(fdt, rescal_path, "#reset-cells", 0);
+    qemu_fdt_setprop_cell(fdt, rescal_path, "phandle", rescal);
+    reset = qemu_fdt_alloc_phandle(fdt);
+    reset_path = bcm2712_fdt_soc_node(fdt, "reset-controller", BCM2712_RESET,
+                                      "brcm,brcmstb-reset",
+                                      sizeof("brcm,brcmstb-reset"));
+    qemu_fdt_setprop_cell(fdt, reset_path, "#reset-cells", 1);
+    qemu_fdt_setprop_cell(fdt, reset_path, "phandle", reset);
+
+    for (int i = BCM2712_NUM_PCIE - 1; i >= 0; i--) {
+        hwaddr base = bcm2712_memmap[bcm2712_pcies[i].dev].base;
+        g_autofree char *path = g_strdup_printf(BCM2712_FDT_AXI_PATH
+                                                "/pcie@%" HWADDR_PRIx, base);
+        uint32_t phandle = qemu_fdt_alloc_phandle(fdt);
+        uint32_t map[BRCMSTB_PCIE_NUM_INTX * 8];
+
+        for (int n = 0; n < BRCMSTB_PCIE_NUM_INTX; n++) {
+            uint32_t entry[8] = { 0, 0, 0, n + 1, gic, GIC_FDT_IRQ_TYPE_SPI,
+                                  bcm2712_pcies[i].spi_inta + n,
+                                  GIC_FDT_IRQ_FLAGS_LEVEL_HI };
+
+            for (int k = 0; k < 8; k++) {
+                map[n * 8 + k] = cpu_to_be32(entry[k]);
+            }
+        }
+        qemu_fdt_add_subnode(fdt, path);
+        qemu_fdt_setprop_string(fdt, path, "compatible", "brcm,bcm2712-pcie");
+        qemu_fdt_setprop_sized_cells(fdt, path, "reg", 2, base, 2,
+            bcm2712_memmap[bcm2712_pcies[i].dev].size);
+        qemu_fdt_setprop_string(fdt, path, "device_type", "pci");
+        qemu_fdt_setprop_cell(fdt, path, "linux,pci-domain", i);
+        qemu_fdt_setprop_cell(fdt, path, "max-link-speed", 2);
+        qemu_fdt_setprop_cell(fdt, path, "num-lanes",
+                              bcm2712_pcies[i].num_lanes);
+        qemu_fdt_setprop_cell(fdt, path, "#address-cells", 3);
+        qemu_fdt_setprop_cell(fdt, path, "#interrupt-cells", 1);
+        qemu_fdt_setprop_cell(fdt, path, "#size-cells", 2);
+        qemu_fdt_setprop_cells(fdt, path, "interrupts",
+                               GIC_FDT_IRQ_TYPE_SPI, bcm2712_pcies[i].spi,
+                               GIC_FDT_IRQ_FLAGS_LEVEL_HI,
+                               GIC_FDT_IRQ_TYPE_SPI, bcm2712_pcies[i].spi_msi,
+                               GIC_FDT_IRQ_FLAGS_LEVEL_HI);
+        qemu_fdt_setprop(fdt, path, "interrupt-names", irq_names,
+                         sizeof(irq_names));
+        qemu_fdt_setprop_cells(fdt, path, "interrupt-map-mask", 0, 0, 0, 7);
+        qemu_fdt_setprop(fdt, path, "interrupt-map", map, sizeof(map));
+        qemu_fdt_setprop_cells(fdt, path, "resets", rescal, reset,
+                               BCM2712_RESET_PCIE0_BRIDGE + i);
+        qemu_fdt_setprop(fdt, path, "reset-names", reset_names,
+                         sizeof(reset_names));
+        qemu_fdt_setprop(fdt, path, "msi-controller", NULL, 0);
+        qemu_fdt_setprop_cell(fdt, path, "msi-parent", phandle);
+        qemu_fdt_setprop_cells(fdt, path, "ranges",
+            0x02000000, outbound[i][0][0] >> 32, outbound[i][0][0],
+            outbound[i][0][1] >> 32, outbound[i][0][1],
+            outbound[i][0][2] >> 32, outbound[i][0][2],
+            0x43000000, outbound[i][1][0] >> 32, outbound[i][1][0],
+            outbound[i][1][1] >> 32, outbound[i][1][1],
+            outbound[i][1][2] >> 32, outbound[i][1][2]);
+        /* PCI 0x10_0000_0000 onwards is the first 64 GiB of RAM */
+        qemu_fdt_setprop_cells(fdt, path, "dma-ranges",
+                               0x43000000, 0x10, 0, 0, 0, 0x10, 0);
+        if (bcm2712_pcies[i].dev == BCM2712_PCIE1) {
+            qemu_fdt_setprop_cell(fdt, path, "brcm,fifo-qos-map", 0x3030303);
+            qemu_fdt_setprop_string(fdt, path, "brcm,clkreq-mode", "safe");
+        } else if (bcm2712_pcies[i].dev == BCM2712_PCIE2) {
+            qemu_fdt_setprop_cells(fdt, path, "brcm,vdm-qos-map",
+                                   0x8080809, 0xa0a0b0b);
+            qemu_fdt_setprop(fdt, path, "aspm-no-l0s", NULL, 0);
+        }
+        qemu_fdt_setprop_string(fdt, path, "status",
+            bcm2712_pcies[i].dev == BCM2712_PCIE1 ? "okay" : "disabled");
+        qemu_fdt_setprop_cell(fdt, path, "phandle", phandle);
+    }
+}
+
+/*
  * The AVS monitor and its temperature sensor, as the firmware's tree has
  * them, and the thermal zone of the Pi 5's trees, which converts the
  * sensor's code and has Linux shut down at the critical temperature. Their
@@ -1115,6 +1366,7 @@ void bcm2712_fdt_populate(BCM2712State *s, void *fdt)
     uint32_t spi, fw;
 
     /* libfdt adds each subnode first: create them in reverse order */
+    bcm2712_fdt_axi(fdt);
     qemu_fdt_add_subnode(fdt, BCM2712_FDT_SOC_PATH);
     qemu_fdt_setprop_string(fdt, BCM2712_FDT_SOC_PATH, "compatible",
                             "simple-bus");
@@ -1211,6 +1463,7 @@ void bcm2712_fdt_populate(BCM2712State *s, void *fdt)
     qemu_fdt_setprop_cell(fdt, systimer, "clock-frequency", 1000000);
 
     bcm2712_fdt_sdios(fdt, clk_emmc2);
+    bcm2712_fdt_pcie(fdt, gic);
 
     /*
      * The firmware interface, behind the mailbox, as in the firmware's

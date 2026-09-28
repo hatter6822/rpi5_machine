@@ -5202,6 +5202,654 @@ static void test_bios_old_kernel(void)
     unlink(kernel_file);
 }
 
+/*
+ * The PCIe root complexes (Linux pcie-brcmstb.c, BCM7712 offsets), with
+ * QEMU's edu device on PCIe1's connector where the build has it
+ */
+#define PCIE_BASE(n)            (0x1000100000ULL + 0x10000 * (n))
+#define PCIE_MEM(n)             (0x1400000000ULL + 0x400000000ULL * (n))
+#define PCIE_SPI_INTA(n)        (209 + 10 * (n))
+#define PCIE_SPI_MSI(n)         (214 + 10 * (n))
+#define PCIE_NUM                3
+
+#define PCIE_RC_ID_VAL3         0x043c
+#define PCIE_RC_LINK_CAP        0x04dc
+#define PCIE_MDIO_ADDR          0x1100
+#define PCIE_MDIO_WR_DATA       0x1104
+#define PCIE_MDIO_RD_DATA       0x1108
+#define PCIE_MDIO_DONE          BIT(31)
+#define PCIE_MISC_CTRL          0x4008
+#define PCIE_MISC_CTRL_UR_MODE  BIT(13)
+#define PCIE_WIN_LO(n)          (0x400c + 8 * (n))
+#define PCIE_WIN_HI(n)          (0x4010 + 8 * (n))
+#define PCIE_BAR_LO(n)          (0x402c + 8 * ((n) - 1))    /* n = 1..3 */
+#define PCIE_BAR_HI(n)          (0x4030 + 8 * ((n) - 1))
+#define PCIE_MSI_BAR_LO         0x4044
+#define PCIE_MSI_BAR_HI         0x4048
+#define PCIE_MSI_DATA           0x404c
+#define PCIE_MSI_DATA_32        0xffe06540
+#define PCIE_CTRL               0x4064
+#define PCIE_CTRL_L23_REQUEST   BIT(0)
+#define PCIE_CTRL_PERSTB        BIT(2)
+#define PCIE_STATUS             0x4068
+#define PCIE_STATUS_UP          (BIT(4) | BIT(5))   /* PHYLINKUP, DL_ACTIVE */
+#define PCIE_STATUS_L23         BIT(6)
+#define PCIE_STATUS_PORT        BIT(7)
+#define PCIE_REVISION           0x406c
+#define PCIE_BASE_LIMIT(n)      (0x4070 + 4 * (n))
+#define PCIE_BASE_HI(n)         (0x4080 + 8 * (n))
+#define PCIE_LIMIT_HI(n)        (0x4084 + 8 * (n))
+#define PCIE_UBUS_CTRL          0x40a4
+#define PCIE_UBUS_REPLY_ERR_DIS BIT(13)
+#define PCIE_UBUS_DECERR_DIS    BIT(19)
+#define PCIE_REMAP_LO(n)        (0x40ac + 8 * ((n) - 1))    /* n = 1..3 */
+#define PCIE_REMAP_HI(n)        (0x40b0 + 8 * ((n) - 1))
+#define PCIE_REMAP_ACCESS_EN    BIT(0)
+#define PCIE_AXI_INTF_CTRL      0x416c
+#define PCIE_AXI_READ_ERROR     0x4170
+#define PCIE_HARD_DEBUG         0x4304
+#define PCIE_HARD_DEBUG_IDDQ    BIT(27)
+#define PCIE_MSI_INTR2          0x4500
+#define PCIE_EXT_CFG_DATA       0x8000
+#define PCIE_EXT_CFG_INDEX      0x9000
+#define PCIE_RGR1_SW_INIT_1     0x9210
+#define PCIE_RGR1_INIT          BIT(1)
+
+/* L2 controller registers (edge layout) */
+#define L2_STATUS               0x00
+#define L2_CLEAR                0x08
+#define L2_MASK_CLEAR           0x14
+
+#define RESET_BASE              0x1001504318ULL
+#define RESET_SET(bank)         (0x18 * (bank))
+#define RESET_CLEAR(bank)       (0x18 * (bank) + 4)
+#define RESET_STATUS(bank)      (0x18 * (bank) + 8)
+#define RESET_PCIE_BRIDGE(n)    (42 + (n))
+#define RESCAL_BASE             0x1000119500ULL
+
+/* Configuration space: type-1 header and capabilities */
+#define CFG_ID                  0x00
+#define CFG_COMMAND             0x04
+#define CFG_CMD_MEM             BIT(1)
+#define CFG_CMD_MASTER          BIT(2)
+#define CFG_CMD_INTX_DISABLE    BIT(10)
+#define CFG_CLASS_REV           0x08
+#define CFG_HEADER              0x0c
+#define CFG_BAR0                0x10
+#define CFG_BUSES               0x18
+#define CFG_MEM_WINDOW          0x20
+#define CFG_CAP_PTR             0x34
+#define CFG_INTERRUPT           0x3c
+
+/* The root port's capabilities, as lspci shows the BCM2712's */
+#define RP_CAP_PM               0x48
+#define RP_CAP_EXP              0xac
+#define RP_EXP_LNKCAP           (RP_CAP_EXP + 0x0c)
+#define RP_EXP_SLTCAP           (RP_CAP_EXP + 0x14)
+
+/* edu, whose registers are in BAR0 */
+#define EDU_ID                  0x00
+#define EDU_ID_VALUE            0x010000ed
+#define EDU_IRQ_RAISE           0x60
+#define EDU_IRQ_ACK             0x64
+#define EDU_DMA_SRC             0x80
+#define EDU_DMA_DST             0x88
+#define EDU_DMA_COUNT           0x90
+#define EDU_DMA_CMD             0x98
+#define EDU_DMA_RUN             0x1
+#define EDU_DMA_TO_PCI          0x2
+#define EDU_DMA_BUF             0x40000
+#define EDU_ARGS                "-device edu,bus=pcie1.0,dma_mask=0xffffffffff"
+
+/*
+ * PCIe1's window as the firmware's tree has Linux program it: CPU
+ * 0x1b_8000_0000 onwards is PCI 0x8000_0000, 2 GiB, where the tests put
+ * edu's BAR0; RAM is at PCI 0x10_0000_0000.
+ */
+#define PCIE1_WIN_CPU           0x1b80000000ULL
+#define PCIE1_WIN_PCI           0x80000000ULL
+#define PCIE1_WIN_SIZE          0x80000000ULL
+#define PCIE_DMA_BASE           0x1000000000ULL
+#define PCIE_MSI_TARGET         0x0fffffffcULL
+
+static uint32_t pcie_readl(QTestState *qts, int n, uint32_t reg)
+{
+    return qtest_readl(qts, PCIE_BASE(n) + reg);
+}
+
+static void pcie_writel(QTestState *qts, int n, uint32_t reg, uint32_t val)
+{
+    qtest_writel(qts, PCIE_BASE(n) + reg, val);
+}
+
+static bool pcie_link_is_up(QTestState *qts, int n)
+{
+    return (pcie_readl(qts, n, PCIE_STATUS) & PCIE_STATUS_UP) ==
+           PCIE_STATUS_UP;
+}
+
+/* A downstream device's configuration space, through EXT_CFG_DATA */
+static uint32_t pcie_ext_readl(QTestState *qts, int n, int bus, int devfn,
+                               uint32_t reg)
+{
+    pcie_writel(qts, n, PCIE_EXT_CFG_INDEX, bus << 20 | devfn << 12);
+    return pcie_readl(qts, n, PCIE_EXT_CFG_DATA + reg);
+}
+
+static void pcie_ext_writel(QTestState *qts, int n, int bus, int devfn,
+                            uint32_t reg, uint32_t val)
+{
+    pcie_writel(qts, n, PCIE_EXT_CFG_INDEX, bus << 20 | devfn << 12);
+    pcie_writel(qts, n, PCIE_EXT_CFG_DATA + reg, val);
+}
+
+/* The offset of capability @id in a downstream device's list, or 0 */
+static uint32_t pcie_ext_find_cap(QTestState *qts, int n, int bus, int devfn,
+                                  uint8_t id)
+{
+    uint32_t pos = pcie_ext_readl(qts, n, bus, devfn, CFG_CAP_PTR) & 0xfc;
+
+    while (pos) {
+        uint32_t hdr = pcie_ext_readl(qts, n, bus, devfn, pos);
+
+        if ((hdr & 0xff) == id) {
+            return pos;
+        }
+        pos = (hdr >> 8) & 0xfc;
+    }
+    return 0;
+}
+
+/* Outbound window @win: @size bytes at CPU @cpu onto PCI @pci */
+static void pcie_set_outbound(QTestState *qts, int n, int win, uint64_t cpu,
+                              uint64_t pci, uint64_t size)
+{
+    uint64_t base_mb = cpu / MiB, limit_mb = (cpu + size - 1) / MiB;
+
+    pcie_writel(qts, n, PCIE_WIN_LO(win), pci);
+    pcie_writel(qts, n, PCIE_WIN_HI(win), pci >> 32);
+    pcie_writel(qts, n, PCIE_BASE_LIMIT(win),
+                (limit_mb & 0xfff) << 20 | (base_mb & 0xfff) << 4);
+    pcie_writel(qts, n, PCIE_BASE_HI(win), base_mb >> 12);
+    pcie_writel(qts, n, PCIE_LIMIT_HI(win), limit_mb >> 12);
+}
+
+/* Inbound window @bar (1..3): @size bytes at PCI @pci onto CPU @cpu */
+static void pcie_set_inbound(QTestState *qts, int n, int bar, uint64_t pci,
+                             uint64_t cpu, int size_code)
+{
+    pcie_writel(qts, n, PCIE_BAR_LO(bar), (uint32_t)pci | size_code);
+    pcie_writel(qts, n, PCIE_BAR_HI(bar), pci >> 32);
+    pcie_writel(qts, n, PCIE_REMAP_LO(bar),
+                ((uint32_t)cpu & ~0xfffu) | PCIE_REMAP_ACCESS_EN);
+    pcie_writel(qts, n, PCIE_REMAP_HI(bar), cpu >> 32);
+}
+
+/*
+ * Bring PCIe1's link up and set edu up as Linux would: bus 1 behind the
+ * root port, BAR0 at the start of the 32-bit window, memory and bus
+ * mastering on, RAM reachable at PCI 0x10_0000_0000
+ */
+static void pcie_setup_edu(QTestState *qts)
+{
+    pcie_writel(qts, 1, PCIE_CTRL, PCIE_CTRL_PERSTB);
+    g_assert_true(pcie_link_is_up(qts, 1));
+
+    pcie_writel(qts, 1, CFG_BUSES, 0x010100);
+    pcie_writel(qts, 1, CFG_MEM_WINDOW,
+                (PCIE1_WIN_PCI >> 16) | ((PCIE1_WIN_PCI + MiB - 1) &
+                                         0xfff00000));
+    pcie_writel(qts, 1, CFG_COMMAND, CFG_CMD_MEM | CFG_CMD_MASTER);
+    g_assert_cmphex(pcie_ext_readl(qts, 1, 1, 0, CFG_ID), ==, 0x11e81234);
+    pcie_ext_writel(qts, 1, 1, 0, CFG_BAR0, PCIE1_WIN_PCI);
+    pcie_ext_writel(qts, 1, 1, 0, CFG_COMMAND,
+                    CFG_CMD_MEM | CFG_CMD_MASTER);
+
+    pcie_set_outbound(qts, 1, 0, PCIE1_WIN_CPU, PCIE1_WIN_PCI,
+                      PCIE1_WIN_SIZE);
+    pcie_set_inbound(qts, 1, 1, PCIE_DMA_BASE, 0, 21);     /* 64 GiB */
+}
+
+static bool pcie_has_edu(void)
+{
+    if (!qtest_has_device("edu")) {
+        g_test_skip("the build has no edu device");
+        return false;
+    }
+    return true;
+}
+
+/* Each root complex out of reset: link down, the BCM2712's root port */
+static void test_pcie_reset_values(void)
+{
+    QTestState *qts = qtest_init("-machine raspi5b");
+    static const uint32_t lnkcap[PCIE_NUM] = {
+        /* ASPM L0s and L1, width, speed */
+        3 << 10 | 1 << 4 | 2,
+        3 << 10 | 1 << 4 | 2,
+        2 << 10 | 4 << 4 | 2,
+    };
+    /* After the vendor-specific capability: secondary PCIe or L1SS */
+    static const uint32_t vsec_next[PCIE_NUM] = { 0x300, 0x300, 0x240 };
+
+    for (int n = 0; n < PCIE_NUM; n++) {
+        g_assert_cmphex(pcie_readl(qts, n, PCIE_STATUS), ==,
+                        PCIE_STATUS_PORT);
+        g_assert_cmphex(pcie_readl(qts, n, PCIE_REVISION), ==, 0x0304);
+        g_assert_cmphex(pcie_readl(qts, n, PCIE_CTRL), ==, 0);
+
+        g_assert_cmphex(pcie_readl(qts, n, CFG_ID), ==, 0x271214e4);
+        g_assert_cmphex(pcie_readl(qts, n, CFG_CLASS_REV), ==, 0x06040021);
+        g_assert_cmphex(pcie_readl(qts, n, CFG_HEADER) >> 16 & 0x7f, ==, 1);
+        g_assert_cmphex(pcie_readl(qts, n, CFG_INTERRUPT) >> 8 & 0xff, ==,
+                        1);
+        /* Capabilities: PM, then PCI Express, root port, no slot */
+        g_assert_cmphex(pcie_readl(qts, n, CFG_CAP_PTR) & 0xff, ==,
+                        RP_CAP_PM);
+        g_assert_cmphex(pcie_readl(qts, n, RP_CAP_PM) & 0xffff, ==,
+                        RP_CAP_EXP << 8 | 0x01);
+        /* PM version 3, PME from D0 and D3hot; no soft reset */
+        g_assert_cmphex(pcie_readl(qts, n, RP_CAP_PM) >> 16, ==, 0x4803);
+        g_assert_cmphex(pcie_readl(qts, n, RP_CAP_PM + 4) & 0xffff, ==,
+                        0x0008);
+        g_assert_cmphex(pcie_readl(qts, n, RP_CAP_EXP), ==, 0x00420010);
+        /* 512-byte payloads, role-based errors, no extended tags */
+        g_assert_cmphex(pcie_readl(qts, n, RP_CAP_EXP + 4) & 0x8027, ==,
+                        0x8002);
+        g_assert_cmphex(pcie_readl(qts, n, RP_EXP_SLTCAP), ==, 0);
+        g_assert_cmphex(pcie_readl(qts, n, RP_EXP_LNKCAP) & 0xfff, ==,
+                        lnkcap[n]);
+        g_assert_cmphex(pcie_readl(qts, n, PCIE_RC_LINK_CAP) & 0xfff, ==,
+                        lnkcap[n]);
+        /* L0s and L1 exit latencies, clock PM, bandwidth notification */
+        g_assert_cmphex(pcie_readl(qts, n, RP_EXP_LNKCAP) & 0x7ff000, ==,
+                        0x64d000);
+        /* Extended capabilities: AER, VC, vendor-specific, secondary */
+        g_assert_cmphex(pcie_readl(qts, n, 0x100), ==, 0x16010001);
+        g_assert_cmphex(pcie_readl(qts, n, 0x160), ==, 0x18010002);
+        g_assert_cmphex(pcie_readl(qts, n, 0x180), ==,
+                        vsec_next[n] << 20 | 0x1000b);
+        g_assert_cmphex(pcie_readl(qts, n, 0x184), ==, 0x02800000);
+        g_assert_cmphex(pcie_readl(qts, n, 0x300), ==, 0x00010019);
+    }
+    /* PCIe2's L1 PM Substates: L1.1 and L1.2, 8us, 10us */
+    g_assert_cmphex(pcie_readl(qts, 2, 0x240), ==, 0x3001001e);
+    g_assert_cmphex(pcie_readl(qts, 2, 0x244), ==, 0x0009081f);
+    g_assert_cmphex(pcie_readl(qts, 2, 0x248), ==, 0);
+    pcie_writel(qts, 2, 0x24c, 0x09);
+    g_assert_cmphex(pcie_readl(qts, 2, 0x24c), ==, 0x09);
+    qtest_quit(qts);
+}
+
+/* Linux's writes to the private registers show in the config space */
+static void test_pcie_private_regs(void)
+{
+    QTestState *qts = qtest_init("-machine raspi5b");
+
+    /* The class code override */
+    pcie_writel(qts, 0, PCIE_RC_ID_VAL3, 0x0b4000);
+    g_assert_cmphex(pcie_readl(qts, 0, CFG_CLASS_REV), ==, 0x0b400021);
+    g_assert_cmphex(pcie_readl(qts, 0, PCIE_RC_ID_VAL3), ==, 0x0b4000);
+    pcie_writel(qts, 0, PCIE_RC_ID_VAL3, 0x060400);
+    g_assert_cmphex(pcie_readl(qts, 0, CFG_CLASS_REV), ==, 0x06040021);
+
+    /* The link capabilities: speed 1, no L0s, as Linux limits them */
+    pcie_writel(qts, 1, PCIE_RC_LINK_CAP, 2 << 10 | 1 << 4 | 1);
+    g_assert_cmphex(pcie_readl(qts, 1, RP_EXP_LNKCAP) & 0xfff, ==,
+                    2 << 10 | 1 << 4 | 1);
+
+    /* The MDIO bus completes at once */
+    pcie_writel(qts, 1, PCIE_MDIO_ADDR, 0x1f);
+    pcie_writel(qts, 1, PCIE_MDIO_WR_DATA, PCIE_MDIO_DONE | 0x1600);
+    g_assert_cmphex(pcie_readl(qts, 1, PCIE_MDIO_WR_DATA) & PCIE_MDIO_DONE,
+                    ==, 0);
+    g_assert_cmphex(pcie_readl(qts, 1, PCIE_MDIO_RD_DATA) & PCIE_MDIO_DONE,
+                    ==, PCIE_MDIO_DONE);
+
+    /* The C1 stepping has no QoS update timing fix */
+    pcie_writel(qts, 1, PCIE_AXI_INTF_CTRL, 0x3880);
+    g_assert_cmphex(pcie_readl(qts, 1, PCIE_AXI_INTF_CTRL), ==, 0x2880);
+
+    /* Plain registers keep what is written */
+    pcie_writel(qts, 2, PCIE_UBUS_CTRL, 0x12345678);
+    g_assert_cmphex(pcie_readl(qts, 2, PCIE_UBUS_CTRL), ==, 0x12345678);
+    qtest_system_reset(qts);
+    g_assert_cmphex(pcie_readl(qts, 2, PCIE_UBUS_CTRL), ==, 0);
+    qtest_quit(qts);
+}
+
+/*
+ * The link: up with PERST# released, the bridge out of reset, the SerDes
+ * powered and a device on the bus
+ */
+static void test_pcie_link(void)
+{
+    QTestState *qts;
+
+    if (!pcie_has_edu()) {
+        return;
+    }
+    qts = qtest_init("-machine raspi5b " EDU_ARGS);
+
+    g_assert_false(pcie_link_is_up(qts, 1));
+    pcie_writel(qts, 1, PCIE_CTRL, PCIE_CTRL_PERSTB);
+    g_assert_cmphex(pcie_readl(qts, 1, PCIE_STATUS), ==,
+                    PCIE_STATUS_PORT | PCIE_STATUS_UP);
+
+    /* Nothing on PCIe0's or PCIe2's bus */
+    pcie_writel(qts, 0, PCIE_CTRL, PCIE_CTRL_PERSTB);
+    pcie_writel(qts, 2, PCIE_CTRL, PCIE_CTRL_PERSTB);
+    g_assert_false(pcie_link_is_up(qts, 0));
+    g_assert_false(pcie_link_is_up(qts, 2));
+
+    /* The SerDes powered down */
+    pcie_writel(qts, 1, PCIE_HARD_DEBUG, PCIE_HARD_DEBUG_IDDQ);
+    g_assert_false(pcie_link_is_up(qts, 1));
+    pcie_writel(qts, 1, PCIE_HARD_DEBUG, 0);
+    g_assert_true(pcie_link_is_up(qts, 1));
+
+    /* The bridge reset, from RGR1_SW_INIT_1 or the reset controller */
+    pcie_writel(qts, 1, PCIE_RGR1_SW_INIT_1, PCIE_RGR1_INIT);
+    g_assert_false(pcie_link_is_up(qts, 1));
+    pcie_writel(qts, 1, PCIE_RGR1_SW_INIT_1, 0);
+    g_assert_true(pcie_link_is_up(qts, 1));
+    qtest_writel(qts, RESET_BASE + RESET_SET(1),
+                 BIT(RESET_PCIE_BRIDGE(1) - 32));
+    g_assert_cmphex(qtest_readl(qts, RESET_BASE + RESET_STATUS(1)), ==,
+                    BIT(RESET_PCIE_BRIDGE(1) - 32));
+    g_assert_false(pcie_link_is_up(qts, 1));
+    qtest_writel(qts, RESET_BASE + RESET_CLEAR(1),
+                 BIT(RESET_PCIE_BRIDGE(1) - 32));
+    g_assert_cmphex(qtest_readl(qts, RESET_BASE + RESET_STATUS(1)), ==, 0);
+    g_assert_true(pcie_link_is_up(qts, 1));
+
+    /* L2/L3 entry, as Linux asks before asserting PERST# */
+    pcie_writel(qts, 1, PCIE_CTRL, PCIE_CTRL_PERSTB | PCIE_CTRL_L23_REQUEST);
+    g_assert_cmphex(pcie_readl(qts, 1, PCIE_STATUS), ==,
+                    PCIE_STATUS_PORT | PCIE_STATUS_L23);
+    pcie_writel(qts, 1, PCIE_CTRL, PCIE_CTRL_L23_REQUEST);
+    g_assert_cmphex(pcie_readl(qts, 1, PCIE_STATUS), ==, PCIE_STATUS_PORT);
+    qtest_quit(qts);
+}
+
+/* The bridge reset resets the root port; PERST# the devices below it */
+static void test_pcie_resets(void)
+{
+    QTestState *qts;
+
+    if (!pcie_has_edu()) {
+        return;
+    }
+    qts = qtest_init("-machine raspi5b " EDU_ARGS);
+    pcie_setup_edu(qts);
+
+    g_assert_cmphex(pcie_ext_readl(qts, 1, 1, 0, CFG_BAR0), ==,
+                    PCIE1_WIN_PCI);
+    pcie_writel(qts, 1, PCIE_CTRL, 0);
+    pcie_writel(qts, 1, PCIE_CTRL, PCIE_CTRL_PERSTB);
+    g_assert_cmphex(pcie_ext_readl(qts, 1, 1, 0, CFG_BAR0), ==, 0);
+    g_assert_cmphex(pcie_readl(qts, 1, CFG_BUSES), ==, 0x010100);
+
+    qtest_writel(qts, RESET_BASE + RESET_SET(1),
+                 BIT(RESET_PCIE_BRIDGE(1) - 32));
+    qtest_writel(qts, RESET_BASE + RESET_CLEAR(1),
+                 BIT(RESET_PCIE_BRIDGE(1) - 32));
+    g_assert_cmphex(pcie_readl(qts, 1, CFG_BUSES), ==, 0);
+
+    /* The resistor calibration finishes at once */
+    g_assert_cmphex(qtest_readl(qts, RESCAL_BASE + 8), ==, 0);
+    qtest_writel(qts, RESCAL_BASE, 1);
+    g_assert_cmphex(qtest_readl(qts, RESCAL_BASE), ==, 1);
+    g_assert_cmphex(qtest_readl(qts, RESCAL_BASE + 8), ==, 1);
+    qtest_writel(qts, RESCAL_BASE, 0);
+    g_assert_cmphex(qtest_readl(qts, RESCAL_BASE + 8), ==, 1);
+    qtest_system_reset(qts);
+    g_assert_cmphex(qtest_readl(qts, RESCAL_BASE + 8), ==, 0);
+    g_assert_cmphex(qtest_readl(qts, RESET_BASE + RESET_STATUS(1)), ==, 0);
+    qtest_quit(qts);
+}
+
+/* EXT_CFG_INDEX/DATA: devices by bus and devfn, while the link is up */
+static void test_pcie_ext_cfg(void)
+{
+    QTestState *qts;
+
+    if (!pcie_has_edu()) {
+        return;
+    }
+    qts = qtest_init("-machine raspi5b " EDU_ARGS);
+    pcie_writel(qts, 1, PCIE_UBUS_CTRL, PCIE_UBUS_REPLY_ERR_DIS);
+    pcie_writel(qts, 1, PCIE_AXI_READ_ERROR, 0xdeadbeef);
+
+    /* No link: the reply error, as data */
+    g_assert_cmphex(pcie_ext_readl(qts, 1, 1, 0, CFG_ID), ==, 0xdeadbeef);
+
+    pcie_setup_edu(qts);
+    g_assert_cmphex(pcie_ext_readl(qts, 1, 1, 0, CFG_CLASS_REV) >> 8, ==,
+                    0x00ff00);
+    /* 16-bit accesses, as Linux makes */
+    g_assert_cmphex(qtest_readw(qts, PCIE_BASE(1) + PCIE_EXT_CFG_DATA + 2),
+                    ==, 0x11e8);
+
+    /* No device there: an Unsupported Request */
+    g_assert_cmphex(pcie_ext_readl(qts, 1, 1, 3 << 3, CFG_ID), ==,
+                    0xdeadbeef);
+    g_assert_cmphex(pcie_ext_readl(qts, 1, 2, 0, CFG_ID), ==, 0xdeadbeef);
+    pcie_writel(qts, 1, PCIE_MISC_CTRL, PCIE_MISC_CTRL_UR_MODE);
+    g_assert_cmphex(pcie_ext_readl(qts, 1, 1, 3 << 3, CFG_ID), ==,
+                    0xffffffff);
+    /* Bus 0 is the root port's, reached at offset 0 only */
+    g_assert_cmphex(pcie_ext_readl(qts, 1, 0, 0, CFG_ID), ==, 0xffffffff);
+    qtest_quit(qts);
+}
+
+/* The outbound windows: CPU addresses in the aperture onto PCI memory */
+static void test_pcie_outbound(void)
+{
+    QTestState *qts;
+
+    if (!pcie_has_edu()) {
+        return;
+    }
+    qts = qtest_init("-machine raspi5b " EDU_ARGS);
+    pcie_setup_edu(qts);
+    g_assert_cmphex(qtest_readl(qts, PCIE1_WIN_CPU + EDU_ID), ==,
+                    EDU_ID_VALUE);
+
+    /* A second window onto the same PCI address, in MiB units */
+    pcie_set_outbound(qts, 1, 3, PCIE_MEM(1) + 5 * MiB, PCIE1_WIN_PCI, MiB);
+    g_assert_cmphex(qtest_readl(qts, PCIE_MEM(1) + 5 * MiB + EDU_ID), ==,
+                    EDU_ID_VALUE);
+
+    /* Where no window decodes, and where no device claims */
+    pcie_writel(qts, 1, PCIE_UBUS_CTRL,
+                PCIE_UBUS_REPLY_ERR_DIS | PCIE_UBUS_DECERR_DIS);
+    pcie_writel(qts, 1, PCIE_AXI_READ_ERROR, 0x5a5a5a5a);
+    g_assert_cmphex(qtest_readl(qts, PCIE_MEM(1) + 64 * MiB), ==,
+                    0x5a5a5a5a);
+    g_assert_cmphex(qtest_readl(qts, PCIE1_WIN_CPU + 16 * MiB), ==,
+                    0x5a5a5a5a);
+
+    /* A window outside the aperture decodes nothing */
+    pcie_set_outbound(qts, 1, 3, PCIE_MEM(2), PCIE1_WIN_PCI, MiB);
+    g_assert_cmphex(qtest_readl(qts, PCIE_MEM(1) + 5 * MiB + EDU_ID), ==,
+                    0x5a5a5a5a);
+    g_assert_cmphex(qtest_readl(qts, PCIE_MEM(2) + EDU_ID), !=,
+                    EDU_ID_VALUE);
+
+    /* Moving window 0 moves the device */
+    pcie_set_outbound(qts, 1, 0, PCIE_MEM(1), PCIE1_WIN_PCI, 2 * MiB);
+    g_assert_cmphex(qtest_readl(qts, PCIE_MEM(1) + EDU_ID), ==,
+                    EDU_ID_VALUE);
+    g_assert_cmphex(qtest_readl(qts, PCIE1_WIN_CPU + EDU_ID), ==,
+                    0x5a5a5a5a);
+    qtest_quit(qts);
+}
+
+/* edu's DMA engine: RAM, through inbound window 1, to its buffer and back */
+static void edu_dma(QTestState *qts, uint64_t src, uint64_t dst,
+                    uint32_t cmd)
+{
+    qtest_writeq(qts, PCIE1_WIN_CPU + EDU_DMA_SRC, src);
+    qtest_writeq(qts, PCIE1_WIN_CPU + EDU_DMA_DST, dst);
+    qtest_writeq(qts, PCIE1_WIN_CPU + EDU_DMA_COUNT, 16);
+    qtest_writeq(qts, PCIE1_WIN_CPU + EDU_DMA_CMD, EDU_DMA_RUN | cmd);
+    qtest_clock_step(qts, 200 * SCALE_MS);
+    g_assert_cmphex(qtest_readq(qts, PCIE1_WIN_CPU + EDU_DMA_CMD) &
+                    EDU_DMA_RUN, ==, 0);
+}
+
+static void test_pcie_inbound(void)
+{
+    static const uint8_t pattern[16] = "brcmstb inbound";
+    uint8_t buf[16];
+    QTestState *qts;
+
+    if (!pcie_has_edu()) {
+        return;
+    }
+    qts = qtest_init("-machine raspi5b -m 1G " EDU_ARGS);
+    pcie_setup_edu(qts);
+    qtest_memwrite(qts, 0x100000, pattern, sizeof(pattern));
+
+    edu_dma(qts, PCIE_DMA_BASE + 0x100000, EDU_DMA_BUF, 0);
+    edu_dma(qts, EDU_DMA_BUF, PCIE_DMA_BASE + 0x200000, EDU_DMA_TO_PCI);
+    qtest_memread(qts, 0x200000, buf, sizeof(buf));
+    g_assert_cmpmem(buf, sizeof(buf), pattern, sizeof(pattern));
+
+    /* A 64 KiB window elsewhere, remapped: PCI 0x2_0001_0000 -> 0x300000 */
+    pcie_set_inbound(qts, 1, 2, 0x200010000ULL, 0x300000, 1);
+    edu_dma(qts, EDU_DMA_BUF, 0x200010010ULL, EDU_DMA_TO_PCI);
+    qtest_memread(qts, 0x300010, buf, sizeof(buf));
+    g_assert_cmpmem(buf, sizeof(buf), pattern, sizeof(pattern));
+
+    /* Without ACCESS_EN, or with size code 0, the window is off */
+    pcie_writel(qts, 1, PCIE_REMAP_LO(2), 0x300000);
+    memset(buf, 0, sizeof(buf));
+    qtest_memwrite(qts, 0x300010, buf, sizeof(buf));
+    edu_dma(qts, EDU_DMA_BUF, 0x200010010ULL, EDU_DMA_TO_PCI);
+    qtest_memread(qts, 0x300010, buf, sizeof(buf));
+    g_assert_cmphex(buf[0], ==, 0);
+    pcie_set_inbound(qts, 1, 1, PCIE_DMA_BASE, 0, 0);
+    edu_dma(qts, EDU_DMA_BUF, PCIE_DMA_BASE + 0x300010, EDU_DMA_TO_PCI);
+    qtest_memread(qts, 0x300010, buf, sizeof(buf));
+    g_assert_cmphex(buf[0], ==, 0);
+    qtest_quit(qts);
+}
+
+/* INTA from the device behind the root port, on the root complex's SPI */
+static void test_pcie_intx(void)
+{
+    QTestState *qts;
+
+    if (!pcie_has_edu()) {
+        return;
+    }
+    qts = qtest_init("-machine raspi5b " EDU_ARGS);
+    pcie_setup_edu(qts);
+
+    g_assert_false(gic_spi_pending(qts, PCIE_SPI_INTA(1)));
+    qtest_writel(qts, PCIE1_WIN_CPU + EDU_IRQ_RAISE, 1);
+    g_assert_true(gic_spi_pending(qts, PCIE_SPI_INTA(1)));
+    g_assert_false(gic_spi_pending(qts, PCIE_SPI_INTA(1) + 1));
+    g_assert_false(gic_spi_pending(qts, PCIE_SPI_INTA(0)));
+    qtest_writel(qts, PCIE1_WIN_CPU + EDU_IRQ_ACK, 1);
+    g_assert_false(gic_spi_pending(qts, PCIE_SPI_INTA(1)));
+    qtest_quit(qts);
+}
+
+/* The RC's own MSI controller: a write of 0x6540 | n raises vector n */
+static void test_pcie_msi(void)
+{
+    QTestState *qts;
+    uint32_t msi;
+
+    if (!pcie_has_edu()) {
+        return;
+    }
+    qts = qtest_init("-machine raspi5b " EDU_ARGS);
+    pcie_setup_edu(qts);
+    msi = pcie_ext_find_cap(qts, 1, 1, 0, 0x05);
+    g_assert_cmphex(msi, !=, 0);
+
+    pcie_writel(qts, 1, PCIE_MSI_BAR_LO, (uint32_t)PCIE_MSI_TARGET | 1);
+    pcie_writel(qts, 1, PCIE_MSI_BAR_HI, PCIE_MSI_TARGET >> 32);
+    pcie_writel(qts, 1, PCIE_MSI_DATA, PCIE_MSI_DATA_32);
+    pcie_writel(qts, 1, PCIE_MSI_INTR2 + L2_MASK_CLEAR, UINT32_MAX);
+    pcie_ext_writel(qts, 1, 1, 0, msi + 4, (uint32_t)PCIE_MSI_TARGET);
+    pcie_ext_writel(qts, 1, 1, 0, msi + 8, PCIE_MSI_TARGET >> 32);
+    pcie_ext_writel(qts, 1, 1, 0, msi + 12, 0x6545);
+    pcie_ext_writel(qts, 1, 1, 0, msi, 1 << 16 |
+                    (pcie_ext_readl(qts, 1, 1, 0, msi) & 0xffff));
+
+    qtest_writel(qts, PCIE1_WIN_CPU + EDU_IRQ_RAISE, 1);
+    g_assert_cmphex(pcie_readl(qts, 1, PCIE_MSI_INTR2 + L2_STATUS), ==,
+                    BIT(5));
+    g_assert_true(gic_spi_pending(qts, PCIE_SPI_MSI(1)));
+    g_assert_false(gic_spi_pending(qts, PCIE_SPI_INTA(1)));
+    pcie_writel(qts, 1, PCIE_MSI_INTR2 + L2_CLEAR, BIT(5));
+    g_assert_false(gic_spi_pending(qts, PCIE_SPI_MSI(1)));
+    qtest_writel(qts, PCIE1_WIN_CPU + EDU_IRQ_ACK, 1);
+
+    /* Data that does not match MSI_DATA_CONFIG raises nothing */
+    pcie_ext_writel(qts, 1, 1, 0, msi + 12, 0x1245);
+    qtest_writel(qts, PCIE1_WIN_CPU + EDU_IRQ_RAISE, 1);
+    g_assert_cmphex(pcie_readl(qts, 1, PCIE_MSI_INTR2 + L2_STATUS), ==, 0);
+    qtest_writel(qts, PCIE1_WIN_CPU + EDU_IRQ_ACK, 1);
+
+    /* Nor does a write with the MSI target disabled */
+    pcie_ext_writel(qts, 1, 1, 0, msi + 12, 0x6546);
+    pcie_writel(qts, 1, PCIE_MSI_BAR_LO, (uint32_t)PCIE_MSI_TARGET);
+    qtest_writel(qts, PCIE1_WIN_CPU + EDU_IRQ_RAISE, 1);
+    g_assert_cmphex(pcie_readl(qts, 1, PCIE_MSI_INTR2 + L2_STATUS), ==, 0);
+    qtest_quit(qts);
+}
+
+/* Windows and link state survive migration */
+static void test_pcie_migrate(void)
+{
+    g_autofree char *file = g_strdup_printf("%s/raspi5b-pcie-%d.mig",
+                                            g_get_tmp_dir(), getpid());
+    g_autofree char *out = g_strdup_printf("exec:cat > %s", file);
+    g_autofree char *in = g_strdup_printf("exec:cat %s", file);
+    const char *args = "-machine raspi5b -m 1G " EDU_ARGS;
+    static const uint8_t pattern[16] = "migrated window";
+    uint8_t buf[16];
+    QTestState *src, *dst;
+
+    if (!pcie_has_edu()) {
+        return;
+    }
+    src = qtest_init(args);
+    pcie_setup_edu(src);
+    qtest_qmp_assert_success(src, "{ 'execute': 'migrate',"
+                             "  'arguments': { 'uri': %s } }", out);
+    wait_for_migration(src);
+    qtest_quit(src);
+
+    dst = qtest_initf("%s -incoming defer", args);
+    qtest_qmp_assert_success(dst, "{ 'execute': 'migrate-incoming',"
+                             "  'arguments': { 'uri': %s } }", in);
+    wait_for_migration(dst);
+
+    g_assert_true(pcie_link_is_up(dst, 1));
+    g_assert_cmphex(pcie_readl(dst, 1, CFG_BUSES), ==, 0x010100);
+    /* edu does not migrate, so it needs its BAR and bus mastering again */
+    pcie_ext_writel(dst, 1, 1, 0, CFG_BAR0, PCIE1_WIN_PCI);
+    pcie_ext_writel(dst, 1, 1, 0, CFG_COMMAND,
+                    CFG_CMD_MEM | CFG_CMD_MASTER);
+    g_assert_cmphex(qtest_readl(dst, PCIE1_WIN_CPU + EDU_ID), ==,
+                    EDU_ID_VALUE);
+    qtest_memwrite(dst, 0x100000, pattern, sizeof(pattern));
+    edu_dma(dst, PCIE_DMA_BASE + 0x100000, EDU_DMA_BUF, 0);
+    edu_dma(dst, EDU_DMA_BUF, PCIE_DMA_BASE + 0x200000, EDU_DMA_TO_PCI);
+    qtest_memread(dst, 0x200000, buf, sizeof(buf));
+    g_assert_cmpmem(buf, sizeof(buf), pattern, sizeof(pattern));
+
+    qtest_quit(dst);
+    unlink(file);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -5312,6 +5960,16 @@ int main(int argc, char **argv)
     qtest_add_func("/raspi5b/sdio/sdma", test_sdio_sdma);
     qtest_add_func("/raspi5b/sdio/reset", test_sdio_reset);
     qtest_add_func("/raspi5b/sdio/migrate", test_sdio_migrate);
+    qtest_add_func("/raspi5b/pcie/reset-values", test_pcie_reset_values);
+    qtest_add_func("/raspi5b/pcie/private-regs", test_pcie_private_regs);
+    qtest_add_func("/raspi5b/pcie/link", test_pcie_link);
+    qtest_add_func("/raspi5b/pcie/resets", test_pcie_resets);
+    qtest_add_func("/raspi5b/pcie/ext-cfg", test_pcie_ext_cfg);
+    qtest_add_func("/raspi5b/pcie/outbound", test_pcie_outbound);
+    qtest_add_func("/raspi5b/pcie/inbound", test_pcie_inbound);
+    qtest_add_func("/raspi5b/pcie/intx", test_pcie_intx);
+    qtest_add_func("/raspi5b/pcie/msi", test_pcie_msi);
+    qtest_add_func("/raspi5b/pcie/migrate", test_pcie_migrate);
     qtest_add_func("/raspi5b/board/power-button", test_power_button);
     qtest_add_func("/raspi5b/board/power-button-reset",
                    test_power_button_reset);

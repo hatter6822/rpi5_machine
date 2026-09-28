@@ -23,7 +23,9 @@
 #include "hw/misc/bcm2835_mbox.h"
 #include "hw/misc/bcm2835_powermgt.h"
 #include "hw/misc/bcm2712_property.h"
+#include "hw/misc/brcmstb_reset.h"
 #include "hw/nvram/bcm2835_otp.h"
+#include "hw/pci-host/brcmstb_pcie.h"
 #include "hw/sd/bcm2712_sdhci.h"
 #include "hw/timer/bcm2835_systmr.h"
 #include "qemu/units.h"
@@ -78,6 +80,11 @@ typedef enum BCM2712Device {
     /* Catch-all windows, mapped below every specific region */
     BCM2712_AXI,
     BCM2712_SOC,
+
+    /* The PCIe root complexes' outbound apertures */
+    BCM2712_PCIE0_MEM,
+    BCM2712_PCIE1_MEM,
+    BCM2712_PCIE2_MEM,
 
     /* AXI peripherals */
     BCM2712_PCIE0,
@@ -187,6 +194,15 @@ enum {
 /* The HDMI ports, each with the I2C bus that reads its monitor's EDID */
 #define BCM2712_NUM_HDMI            2
 
+/*
+ * The PCIe root complexes: PCIe0, internal and unused on the Pi 5; PCIe1,
+ * the external connector; PCIe2, RP1's link
+ */
+#define BCM2712_NUM_PCIE            3
+
+/* The bridge reset lines of the PCIe root complexes, in bcm_reset */
+#define BCM2712_RESET_PCIE0_BRIDGE  42  /* 42..44: PCIe0..PCIe2 */
+
 /* UARTA's baud clock, sw_baud in bcm2712.dtsi, in Hz */
 #define BCM2712_UARTA_CLK_HZ        96000000
 
@@ -220,6 +236,9 @@ struct BCM2712State {
     BrcmstbPinctrlState pinctrl_aon;
     BrcmstbI2cState ddc[BCM2712_NUM_HDMI];  /* HDMI n's DDC bus */
     BCM2712SDHCIState sdio[BCM2712_NUM_SDIO];   /* SDIO1, SDIO2 */
+    BrcmstbResetState reset;    /* bcm_reset, the software-init resets */
+    BrcmstbRescalState rescal;  /* the PCIe PHYs' resistor calibration */
+    BrcmstbPCIeHostState pcie[BCM2712_NUM_PCIE];
     BCM2835SystemTimerState systimer;
     BCM2835PowerMgtState pm;
     BCM2711Rng200State rng;

@@ -14,6 +14,8 @@ hw-i2c-Add-the-Broadcom-STB-BSC-I2C-controller: hw/i2c/brcmstb_i2c.c include/hw/
 hw-sd-Add-the-Broadcom-BCM2712-SD-host-controller: hw/sd/bcm2712_sdhci.c include/hw/sd/bcm2712_sdhci.h
 hw-misc-Add-the-Broadcom-AVS-monitor: hw/misc/bcm2711_avs_monitor.c include/hw/misc/bcm2711_avs_monitor.h
 hw-misc-Add-the-Raspberry-Pi-5-firmware-s-property-interface: hw/misc/bcm2712_property.c include/hw/misc/bcm2712_property.h
+hw-misc-Add-the-Broadcom-STB-reset-controllers: hw/misc/brcmstb_reset.c include/hw/misc/brcmstb_reset.h
+hw-pci-host-Add-the-Broadcom-STB-PCIe-root-complex: hw/pci-host/brcmstb_pcie.c include/hw/pci-host/brcmstb_pcie.h
 hw-arm-Add-the-Broadcom-BCM2712-SoC: hw/arm/bcm2712.c include/hw/arm/bcm2712.h
 hw-arm-Add-the-Raspberry-Pi-5-Model-B-machine: hw/arm/raspi5b.c
 tests-qtest-Add-tests-for-the-raspi5b-machine: tests/qtest/raspi5b-test.c

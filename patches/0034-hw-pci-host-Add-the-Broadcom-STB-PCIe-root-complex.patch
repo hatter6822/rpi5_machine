@@ -1,0 +1,96 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Mon, 28 Sep 2026 01:30:23 +0000
+Subject: [PATCH] hw/pci-host: Add the Broadcom STB PCIe root complex
+
+The BCM2712 (Raspberry Pi 5) has three PCIe root complexes of the kind
+Linux's pcie-brcmstb driver serves ("brcm,bcm2712-pcie"): one for the
+board's external connector, one for its RP1 I/O chip and one unused.
+Each has a root port whose configuration space sits at the start of the
+register window, an indexed window onto the other buses' configuration
+spaces, up to four outbound windows from an aperture of CPU addresses
+into PCI memory, up to ten inbound windows from PCI addresses onto the
+system bus, an MSI target that raises its own level-2 interrupt
+controller, and the link and reset controls the driver drives.
+
+Add a model of it. The root port has the capabilities lspci shows on a
+BCM2712 C1: power management, a PCI Express root port with no slot,
+AER, virtual channel, a vendor-specific block, secondary PCIe and,
+where the "l1ss" property asks, L1 PM substates. Its link has
+"num-lanes" lanes at up to "max-link-speed", and "aspm-l0s" adds ASPM
+L0s to L1. The private registers Linux writes to set the class code
+and the link capabilities show in the configuration space.
+
+The link trains at once while PERST# is deasserted, the root port's
+bridge is out of reset, the PHY is powered and a device is on the
+secondary bus. An empty port stays down, as the driver expects of a
+connector with nothing in it. Asserting PERST# resets the secondary
+bus; the "bridge-reset" GPIO input, or the RGR1 bit that the driver
+uses without a reset controller, resets the root port. Configuration
+reads and writes while the link is down, and accesses outside every
+window, fail as the error-reporting controls ask: a bus error, or data
+of all ones or of 0xdeadbeef.
+
+The outbound windows map PCI memory into an aperture given by
+"outbound-base" and "outbound-size", and the inbound windows map PCI
+addresses onto "dma-memory", which devices use through the root bus's
+IOMMU address space. The MSI target decodes writes whose data matches
+the driver's pattern into one of 32 vectors. INTA to INTD and the two
+level-2 controllers' outputs are the model's six interrupt outputs.
+MISC_REVISION reads as "hw-revision".
+---
+ hw/pci-host/Kconfig      | 7 +++++++
+ hw/pci-host/meson.build  | 1 +
+ hw/pci-host/trace-events | 9 +++++++++
+ 3 files changed, 17 insertions(+)
+
+diff --git a/hw/pci-host/Kconfig b/hw/pci-host/Kconfig
+index bda6e16..461b041 100644
+--- a/hw/pci-host/Kconfig
++++ b/hw/pci-host/Kconfig
+@@ -51,6 +51,13 @@ config PCI_EXPRESS_ASPEED
+     select PCI_EXPRESS
+     select PCIE_PORT
+ 
++config PCI_EXPRESS_BRCMSTB
++    bool
++    select PCI_EXPRESS
++    select PCIE_PORT
++    select BRCMSTB_L2_INTC
++    select MSI_NONBROKEN
++
+ config PCI_EXPRESS_Q35
+     bool
+     select PCI_EXPRESS
+diff --git a/hw/pci-host/meson.build b/hw/pci-host/meson.build
+index 3217e7e..a8c9716 100644
+--- a/hw/pci-host/meson.build
++++ b/hw/pci-host/meson.build
+@@ -3,6 +3,7 @@ pci_ss.add(when: 'CONFIG_PAM', if_true: files('pam.c'))
+ pci_ss.add(when: 'CONFIG_PCI_BONITO', if_true: files('bonito.c'))
+ pci_ss.add(when: 'CONFIG_GT64120', if_true: files('gt64120.c'))
+ pci_ss.add(when: 'CONFIG_PCI_EXPRESS_ASPEED', if_true: files('aspeed_pcie.c'))
++pci_ss.add(when: 'CONFIG_PCI_EXPRESS_BRCMSTB', if_true: files('brcmstb_pcie.c'))
+ pci_ss.add(when: 'CONFIG_PCI_EXPRESS_DESIGNWARE', if_true: files('designware.c'))
+ pci_ss.add(when: 'CONFIG_PCI_EXPRESS_GENERIC_BRIDGE', if_true: files('gpex.c'))
+ pci_ss.add(when: ['CONFIG_PCI_EXPRESS_GENERIC_BRIDGE', 'CONFIG_ACPI'], if_true: files('gpex-acpi.c'))
+diff --git a/hw/pci-host/trace-events b/hw/pci-host/trace-events
+index a6fd88c..4fcf818 100644
+--- a/hw/pci-host/trace-events
++++ b/hw/pci-host/trace-events
+@@ -11,6 +11,15 @@ aspeed_pcie_cfg_rw(uint32_t id, const char *dir, uint8_t bus, uint8_t devfn, uin
+ aspeed_pcie_phy_read(uint32_t id, uint64_t addr, uint32_t value) "%d: addr 0x%" PRIx64 " value 0x%" PRIx32
+ aspeed_pcie_phy_write(uint32_t id, uint64_t addr, uint32_t value) "%d: addr 0x%" PRIx64 " value 0x%" PRIx32
+ 
++# brcmstb_pcie.c
++brcmstb_pcie_read(uint32_t domain, uint64_t offset, unsigned size, uint64_t value) "pcie%u: [0x%04" PRIx64 "] (%u) -> 0x%08" PRIx64
++brcmstb_pcie_write(uint32_t domain, uint64_t offset, unsigned size, uint64_t value) "pcie%u: [0x%04" PRIx64 "] (%u) <- 0x%08" PRIx64
++brcmstb_pcie_outbound(uint32_t domain, unsigned n, uint64_t cpu, uint64_t pci, uint64_t size) "pcie%u: outbound %u: aperture 0x%" PRIx64 " -> PCI 0x%" PRIx64 ", 0x%" PRIx64 " bytes"
++brcmstb_pcie_inbound(uint32_t domain, unsigned bar, uint64_t pci, uint64_t cpu, uint64_t size) "pcie%u: inbound %u: PCI 0x%" PRIx64 " -> 0x%" PRIx64 ", 0x%" PRIx64 " bytes"
++brcmstb_pcie_perst(uint32_t domain, bool asserted) "pcie%u: PERST# asserted %d"
++brcmstb_pcie_bridge_reset(uint32_t domain) "pcie%u: bridge reset"
++brcmstb_pcie_msi(uint32_t domain, uint32_t vector) "pcie%u: MSI vector %u"
++
+ # bonito.c
+ bonito_spciconf_small_access(uint64_t addr, unsigned size) "PCI config address is smaller then 32-bit, addr: 0x%"PRIx64", size: %u"
+ 

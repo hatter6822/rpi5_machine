@@ -101,6 +101,23 @@ Implemented devices
   8250 ports only when its command line asks for them, which the
   firmware's tree does with ``8250.nr_uarts=1``; with the built-in tree,
   add it to ``-append``
+* The three PCIe root complexes, PCIe0 to PCIe2 at ``0x10_0010_0000``,
+  ``0x10_0011_0000`` and ``0x10_0012_0000``, with the reset controller
+  and PHY calibration block their Linux driver uses. Each has a
+  ``BCM2712 PCIe Bridge`` root port, rev 0x21 as on a C1 stepping, whose
+  capabilities are those ``lspci`` shows on a Pi 5: PCIe1's link is x1
+  at up to 5 GT/s with ASPM L0s and L1, the external connector;
+  PCIe2's is x4 at 5 GT/s with ASPM L1 and L1 PM substates, and holds
+  RP1 on a Pi 5, which is not modelled, so its bus is empty; PCIe0's is
+  taken to be PCIe1's. A device goes on a root port's bus,
+  ``pcie0.0``, ``pcie1.0`` or ``pcie2.0``, with ``-device ...,bus=``,
+  and the link trains at once when the driver lets it; an empty port
+  reports its link down, as a Pi 5 does with nothing in the connector,
+  and Linux gives up on it. Each maps a 16 GiB aperture of the AXI bus
+  into PCI memory and reaches all of RAM through the inbound windows
+  Linux sets. Message-signalled interrupts go to the root complex's own
+  MSI target; the MIP controllers the firmware's tree points them at are
+  not modelled yet
 * 1, 2, 4, 8 or 16 GiB of RAM at physical address 0 (``-m``; default 2 GiB)
 
 Every other block of the BCM2712 memory map is an ``unimplemented-device``
@@ -110,7 +127,8 @@ with ``-d unimp``.
 Missing devices
 ---------------
 
-* PCIe root complexes and the RP1 south bridge
+* The RP1 south bridge
+* The MIP MSI controllers
 * The Bluetooth radio on UARTA and the Wi-Fi radio on SDIO2
 * The power LED, which RP1 drives
 * Power domains (only V3D's is driven by Linux on this SoC)
@@ -337,7 +355,10 @@ with its clocks, reset controller, power domains and real-time clock, the
 PM block, the RNG, the AVS monitor with its temperature sensor and the
 thermal zone Linux reads it through, the level 2 interrupt controllers,
 the GPIO blocks
-and their pin controllers, the HDMI ports' DDC I2C controllers, the power
+and their pin controllers, the HDMI ports' DDC I2C controllers, the PCIe
+root complexes under ``/axi`` with their reset controllers (PCIe1, the
+external connector, enabled; PCIe0 and PCIe2 disabled, as the tree is
+made before any device is plugged in), the power
 button with the state of its pin (GPIO, pulled up), the activity LED,
 UART10 (``serial10``, the ``stdout-path``) and UARTA, the SD hosts (the
 card slot on SDIO1, ``mmc0``, with its card-detect line and the

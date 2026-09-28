@@ -50,7 +50,7 @@ card on either device tree.
  2 files changed, 9 insertions(+)
 
 diff --git a/hw/arm/Kconfig b/hw/arm/Kconfig
-index 868fe17..8cdd060 100644
+index d48bbd0..c746e84 100644
 --- a/hw/arm/Kconfig
 +++ b/hw/arm/Kconfig
 @@ -384,6 +384,14 @@ config RASPI
