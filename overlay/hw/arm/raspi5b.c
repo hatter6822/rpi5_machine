@@ -1471,7 +1471,9 @@ static void raspi5b_machine_class_init(ObjectClass *oc, const void *data)
     object_class_property_set_description(oc, "secure",
         "Expose EL3 and the GIC Security Extensions to the guest. "
         "When off (the default), QEMU provides PSCI in place of the "
-        "firmware's TF-A BL31, which -bios loads when on");
+        "firmware's TF-A BL31, which -bios loads when on. A Linux "
+        "Image given with -kernel starts at EL2 either way; EL3 "
+        "needs -bios or an ELF -kernel");
 
     object_class_property_add_bool(oc, "builtin-dtb",
                                    raspi5b_get_builtin_dtb,

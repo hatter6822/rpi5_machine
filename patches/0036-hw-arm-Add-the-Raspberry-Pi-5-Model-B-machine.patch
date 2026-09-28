@@ -11,7 +11,9 @@ enters at EL2, and QEMU's PSCI over SMC stands in for the TF-A BL31 that
 the firmware installs. With secure=on the guest owns EL3 and the GIC
 Security Extensions instead, for secure firmware of its own. The
 VideoCore keeps the top 4 MiB of the first GiB, which the device tree's
-memory node leaves out.
+memory node leaves out. EL3 is entered by firmware given with -bios or
+an ELF -kernel; a Linux Image given with -kernel still starts at EL2
+with QEMU's PSCI, as the Linux boot protocol asks.
 
 When no -dtb is given, the machine generates a device tree for the
 modelled devices, with /chosen/stdout-path on UART10; builtin-dtb=off

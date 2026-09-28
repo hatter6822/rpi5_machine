@@ -149,7 +149,11 @@ QEMU's built-in PSCI emulation:
 
 With ``-machine raspi5b,secure=on`` the guest owns EL3 instead: CPUs and the
 GIC implement the Security Extensions, PSCI is not emulated for guests that
-start in EL3, and every CPU starts at the image entry point.
+start in EL3, and every CPU starts at the image entry point. The guest
+starts in EL3 when it is firmware given with ``-bios`` (see below) or an
+ELF file given with ``-kernel``; a Linux ``Image`` given with ``-kernel``
+alone still starts in EL2 with QEMU's PSCI, as the Linux boot protocol
+asks, whatever ``secure`` says.
 
 ``-kernel`` accepts an AArch64 Linux ``Image`` (booted using the Linux boot
 protocol, with the device tree address in ``x0``) or an ELF file (entered at

@@ -2077,7 +2077,7 @@ and differ only in:
 | GPL-2.0-or-later throughout | required to link with QEMU and to upstream |
 | Machine name `raspi5b`, SoC type `bcm2712` | follows `raspi4b`/`bcm2838` naming; the product is the "Raspberry Pi 5 Model B" (`raspberrypi,5-model-b`) |
 | SoC derives from `TYPE_DEVICE`, not `BCM283X_BASE` | the BCM2712 map shares no base address or layout with BCM283x; the base class would carry the ARM-local interrupt controller and 32-bit peripheral window, which the BCM2712 lacks |
-| Default `secure=off`: no EL3, EL2 entry, QEMU PSCI over SMC | exactly the contract the Pi 5 firmware gives an OS; `secure=on` for firmware work |
+| Default `secure=off`: no EL3, EL2 entry, QEMU PSCI over SMC | exactly the contract the Pi 5 firmware gives an OS; `secure=on` for firmware work, entered at EL3 by `-bios` or an ELF `-kernel`, while a Linux `Image` still starts at EL2 on QEMU's PSCI, as the boot protocol asks (kept and documented after the M3 audit) |
 | GIC Security Extensions follow `secure` | without EL3 nothing could move interrupts to Group 1 |
 | GIC-400: 5 priority bits | the GIC-400 TRM; software that assumes 8 bits (like QEMU's default) would see wrong priority masking on hardware |
 | 288 SPIs | smallest multiple of 32 covering SPI 276; to be confirmed (WS1.3) |
