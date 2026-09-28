@@ -5743,6 +5743,26 @@ static void test_pcie_inbound(void)
     qtest_quit(qts);
 }
 
+/*
+ * PCIe0, unused on the Pi 5 Model B, is empty (its link stays down, see
+ * the link test), but a device given to it enumerates as on the others
+ */
+static void test_pcie0(void)
+{
+    QTestState *qts;
+
+    if (!pcie_has_edu()) {
+        return;
+    }
+    qts = qtest_init("-machine raspi5b -device edu,bus=pcie0.0");
+    g_assert_false(pcie_link_is_up(qts, 0));
+    pcie_writel(qts, 0, PCIE_CTRL, PCIE_CTRL_PERSTB);
+    g_assert_true(pcie_link_is_up(qts, 0));
+    pcie_writel(qts, 0, CFG_BUSES, 0x010100);
+    g_assert_cmphex(pcie_ext_readl(qts, 0, 1, 0, CFG_ID), ==, 0x11e81234);
+    qtest_quit(qts);
+}
+
 /* edu's DMA, with its BAR0 where pcie2-preinit puts PCI 0 */
 static void edu2_dma(QTestState *qts, uint64_t src, uint64_t dst,
                      uint32_t cmd)
@@ -6222,6 +6242,7 @@ int main(int argc, char **argv)
     qtest_add_func("/raspi5b/pcie/msi", test_pcie_msi);
     qtest_add_func("/raspi5b/pcie/migrate", test_pcie_migrate);
     qtest_add_func("/raspi5b/pcie/preinit", test_pcie_preinit);
+    qtest_add_func("/raspi5b/pcie/pcie0", test_pcie0);
     qtest_add_func("/raspi5b/mip/reset-values", test_mip_reset_values);
     qtest_add_func("/raspi5b/mip/level", test_mip_level);
     qtest_add_func("/raspi5b/mip/edge", test_mip_edge);
