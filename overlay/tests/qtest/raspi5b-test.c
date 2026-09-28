@@ -5850,6 +5850,170 @@ static void test_pcie_migrate(void)
     unlink(file);
 }
 
+/* MIP: MSIs from PCIe as SPIs */
+#define MIP_BASE(n)             (0x1000130000ULL + 0x1000 * (n))
+#define MIP_INT_RAISE           0x00
+#define MIP_INT_CLEAR           0x10
+#define MIP_INT_CFGL            0x20
+#define MIP_INT_CFGH            0x30
+#define MIP_INT_MASKL           0x40
+#define MIP_INT_MASKH           0x50
+#define MIP_INT_MASKL_VPU       0x60
+#define MIP_INT_STATUSL         0x80
+#define MIP_INT_STATUSH         0x90
+#define MIP_INT_STATUSL_VPU     0xa0
+#define MIP0_SPI(v)             (128 + (v))
+#define MIP1_SPI(v)             (247 + (v))     /* v = 8..15 */
+#define MIP_MSI_ADDR            0xfffffff000ULL /* the doorbell, from PCI */
+#define GICD_ICFGR              0xc00
+#define GICD_ICPENDR            0x280
+#define GICD_ITARGETSR          0x800
+
+static uint32_t mip_readl(QTestState *qts, int n, uint32_t reg)
+{
+    return qtest_readl(qts, MIP_BASE(n) + reg);
+}
+
+static void mip_writel(QTestState *qts, int n, uint32_t reg, uint32_t val)
+{
+    qtest_writel(qts, MIP_BASE(n) + reg, val);
+}
+
+/*
+ * Make @spi edge-triggered in the GIC and target it at CPU 0, as Linux
+ * does for MIP vectors: the GIC latches an edge only for its targets
+ */
+static void gic_spi_set_edge(QTestState *qts, int spi)
+{
+    int intid = 32 + spi;
+    uint64_t reg = GICD_BASE + GICD_ICFGR + 4 * (intid / 16);
+
+    qtest_writel(qts, reg, qtest_readl(qts, reg) | 2u << 2 * (intid % 16));
+    qtest_writeb(qts, GICD_BASE + GICD_ITARGETSR + intid, 1);
+}
+
+static void gic_spi_clear_pending(QTestState *qts, int spi)
+{
+    int intid = 32 + spi;
+
+    qtest_writel(qts, GICD_BASE + GICD_ICPENDR + 4 * (intid / 32),
+                 BIT(intid % 32));
+}
+
+/* Out of reset every vector is masked, level and clear */
+static void test_mip_reset_values(void)
+{
+    QTestState *qts = qtest_init("-machine raspi5b");
+
+    for (int n = 0; n < 2; n++) {
+        g_assert_cmphex(mip_readl(qts, n, MIP_INT_MASKL), ==, UINT32_MAX);
+        g_assert_cmphex(mip_readl(qts, n, MIP_INT_MASKH), ==, UINT32_MAX);
+        g_assert_cmphex(mip_readl(qts, n, MIP_INT_MASKL_VPU), ==,
+                        UINT32_MAX);
+        g_assert_cmphex(mip_readl(qts, n, MIP_INT_CFGL), ==, 0);
+        g_assert_cmphex(mip_readl(qts, n, MIP_INT_CFGH), ==, 0);
+        g_assert_cmphex(mip_readl(qts, n, MIP_INT_STATUSL), ==, 0);
+        g_assert_cmphex(mip_readl(qts, n, MIP_INT_STATUSH), ==, 0);
+    }
+    qtest_quit(qts);
+}
+
+/* Level vectors follow their status and mask; CLEAR takes a vector */
+static void test_mip_level(void)
+{
+    QTestState *qts = qtest_init("-machine raspi5b");
+
+    mip_writel(qts, 0, MIP_INT_RAISE, 5);
+    g_assert_cmphex(mip_readl(qts, 0, MIP_INT_STATUSL), ==, BIT(5));
+    g_assert_cmphex(mip_readl(qts, 0, MIP_INT_STATUSL_VPU), ==, BIT(5));
+    g_assert_false(gic_spi_pending(qts, MIP0_SPI(5)));
+    mip_writel(qts, 0, MIP_INT_MASKL, (uint32_t)~BIT(5));
+    g_assert_true(gic_spi_pending(qts, MIP0_SPI(5)));
+    mip_writel(qts, 0, MIP_INT_CLEAR, 5);
+    g_assert_cmphex(mip_readl(qts, 0, MIP_INT_STATUSL), ==, 0);
+    g_assert_false(gic_spi_pending(qts, MIP0_SPI(5)));
+
+    /* The high word: vector 40 */
+    mip_writel(qts, 0, MIP_INT_MASKH, 0);
+    mip_writel(qts, 0, MIP_INT_RAISE, 40);
+    g_assert_cmphex(mip_readl(qts, 0, MIP_INT_STATUSH), ==, BIT(8));
+    g_assert_true(gic_spi_pending(qts, MIP0_SPI(40)));
+    mip_writel(qts, 0, MIP_INT_MASKH, UINT32_MAX);
+    g_assert_false(gic_spi_pending(qts, MIP0_SPI(40)));
+
+    /* Vectors past 63 do not exist; status is read-only */
+    mip_writel(qts, 0, MIP_INT_RAISE, 64);
+    mip_writel(qts, 0, MIP_INT_STATUSL, UINT32_MAX);
+    g_assert_cmphex(mip_readl(qts, 0, MIP_INT_STATUSL), ==, 0);
+    g_assert_cmphex(mip_readl(qts, 0, MIP_INT_STATUSH), ==, BIT(8));
+
+    qtest_system_reset(qts);
+    g_assert_cmphex(mip_readl(qts, 0, MIP_INT_STATUSH), ==, 0);
+    qtest_quit(qts);
+}
+
+/*
+ * Edge vectors, as Linux sets them all, pulse on each raise, the status
+ * notwithstanding; MIP1's vectors 8 to 15 are SPIs 255 to 262
+ */
+static void test_mip_edge(void)
+{
+    QTestState *qts = qtest_init("-machine raspi5b");
+
+    mip_writel(qts, 1, MIP_INT_CFGL, UINT32_MAX);
+    mip_writel(qts, 1, MIP_INT_MASKL, 0);
+    for (int v = 8; v < 16; v++) {
+        gic_spi_set_edge(qts, MIP1_SPI(v));
+        mip_writel(qts, 1, MIP_INT_RAISE, v);
+        g_assert_true(gic_spi_pending(qts, MIP1_SPI(v)));
+        gic_spi_clear_pending(qts, MIP1_SPI(v));
+        mip_writel(qts, 1, MIP_INT_RAISE, v);
+        g_assert_true(gic_spi_pending(qts, MIP1_SPI(v)));
+        gic_spi_clear_pending(qts, MIP1_SPI(v));
+    }
+    g_assert_cmphex(mip_readl(qts, 1, MIP_INT_STATUSL), ==, 0xff00);
+
+    /* A masked edge is lost */
+    mip_writel(qts, 1, MIP_INT_MASKL, BIT(9));
+    mip_writel(qts, 1, MIP_INT_RAISE, 9);
+    g_assert_false(gic_spi_pending(qts, MIP1_SPI(9)));
+    qtest_quit(qts);
+}
+
+/*
+ * An MSI from edu on PCIe1, set up as Linux sets it with the firmware's
+ * tree: the doorbell's inbound window leads to MIP1, the data is the
+ * vector
+ */
+static void test_mip_pcie_msi(void)
+{
+    QTestState *qts;
+    uint32_t msi;
+
+    if (!pcie_has_edu()) {
+        return;
+    }
+    qts = qtest_init("-machine raspi5b " EDU_ARGS);
+    pcie_setup_edu(qts);
+    pcie_set_inbound(qts, 1, 2, MIP_MSI_ADDR, MIP_BASE(1), 0x1c); /* 4K */
+    mip_writel(qts, 1, MIP_INT_CFGL, UINT32_MAX);
+    mip_writel(qts, 1, MIP_INT_MASKL, 0);
+    gic_spi_set_edge(qts, MIP1_SPI(8));
+
+    msi = pcie_ext_find_cap(qts, 1, 1, 0, 0x05);
+    pcie_ext_writel(qts, 1, 1, 0, msi + 4, (uint32_t)MIP_MSI_ADDR);
+    pcie_ext_writel(qts, 1, 1, 0, msi + 8, MIP_MSI_ADDR >> 32);
+    pcie_ext_writel(qts, 1, 1, 0, msi + 12, 8);
+    pcie_ext_writel(qts, 1, 1, 0, msi, 1 << 16 |
+                    (pcie_ext_readl(qts, 1, 1, 0, msi) & 0xffff));
+
+    qtest_writel(qts, PCIE1_WIN_CPU + EDU_IRQ_RAISE, 1);
+    g_assert_true(gic_spi_pending(qts, MIP1_SPI(8)));
+    g_assert_cmphex(mip_readl(qts, 1, MIP_INT_STATUSL), ==, BIT(8));
+    g_assert_false(gic_spi_pending(qts, PCIE_SPI_MSI(1)));
+    qtest_quit(qts);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -5970,6 +6134,10 @@ int main(int argc, char **argv)
     qtest_add_func("/raspi5b/pcie/intx", test_pcie_intx);
     qtest_add_func("/raspi5b/pcie/msi", test_pcie_msi);
     qtest_add_func("/raspi5b/pcie/migrate", test_pcie_migrate);
+    qtest_add_func("/raspi5b/mip/reset-values", test_mip_reset_values);
+    qtest_add_func("/raspi5b/mip/level", test_mip_level);
+    qtest_add_func("/raspi5b/mip/edge", test_mip_edge);
+    qtest_add_func("/raspi5b/mip/pcie-msi", test_mip_pcie_msi);
     qtest_add_func("/raspi5b/board/power-button", test_power_button);
     qtest_add_func("/raspi5b/board/power-button-reset",
                    test_power_button_reset);

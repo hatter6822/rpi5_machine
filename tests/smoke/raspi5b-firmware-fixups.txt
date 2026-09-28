@@ -28,8 +28,6 @@
 + /soc@107c000000/nvmem/nvmem_mac:status = "disabled"
 + /soc@107c000000/nvmem/nvmem_priv:status = "disabled"
 ~ /axi/pcie@1000120000/rp1/ethernet@100000:local-mac-address = [52 54 00 12 34 57] (was [00 00 00 00 00 00])
-+ /axi/msi-controller@1000130000:status = "disabled"
-+ /axi/msi-controller@1000131000:status = "disabled"
 + /axi/iommu@5100:status = "disabled"
 + /axi/iommu@5200:status = "disabled"
 + /axi/iommu@5280:status = "disabled"

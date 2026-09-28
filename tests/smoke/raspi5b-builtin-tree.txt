@@ -50,7 +50,7 @@
     partition = <0x0>
     boot-mode = <0x3>
 /sd-io-1v8-reg
-    phandle = <0x8020>
+    phandle = <0x8022>
     states = <0x1b7740 0x1 0x325aa0 0x0>
     gpios = <0x8012 0x3 0x0>
     regulator-settling-time-us = <0x1388>
@@ -61,7 +61,7 @@
     regulator-name = "vdd-sd-io"
     compatible = "regulator-gpio"
 /sd-vcc-reg
-    phandle = <0x8021>
+    phandle = <0x8023>
     gpios = <0x8012 0x4 0x0>
     enable-active-high
     regulator-boot-on
@@ -77,7 +77,7 @@
     gpios = <0x8012 0x9 0x1>
     label = "ACT"
 /gpio-keys
-    pinctrl-0 = <0x801d>
+    pinctrl-0 = <0x801f>
     pinctrl-names = "default"
     compatible = "gpio-keys"
 /gpio-keys/power-button
@@ -181,7 +181,7 @@
     #address-cells = <0x1>
     compatible = "simple-bus"
 /soc@107c000000/firmware
-    phandle = <0x801c>
+    phandle = <0x801e>
     mboxes = <0x8016>
     dma-ranges
     #size-cells = <0x1>
@@ -197,11 +197,11 @@
     compatible = "raspberrypi,firmware-reset"
 /soc@107c000000/power
     #power-domain-cells = <0x1>
-    firmware = <0x801c>
+    firmware = <0x801e>
     compatible = "raspberrypi,bcm2835-power"
 /soc@107c000000/rpi_rtc
     trickle-charge-microvolt = <0x0>
-    firmware = <0x801c>
+    firmware = <0x801e>
     compatible = "raspberrypi,rpi-rtc"
 /soc@107c000000/reset-controller@1504318
     phandle = <0x8018>
@@ -219,10 +219,10 @@
     sd-uhs-ddr50
     sd-uhs-sdr50
     bus-width = <0x4>
-    vmmc-supply = <0x8021>
-    vqmmc-supply = <0x8020>
+    vmmc-supply = <0x8023>
+    vqmmc-supply = <0x8022>
     pinctrl-names = "default"
-    pinctrl-0 = <0x801e 0x801f>
+    pinctrl-0 = <0x8020 0x8021>
     mmc-ddr-3_3v
     clock-names = "sw_sdio"
     clocks = <0x8001>
@@ -298,11 +298,11 @@
     reg = <0x7d504100 0x30>
     compatible = "brcm,bcm2712c0-pinctrl"
 /soc@107c000000/pinctrl@7d504100/emmc-sd-default-state
-    phandle = <0x801e>
+    phandle = <0x8020>
     bias-pull-up
     pins = "emmc_cmd", "emmc_dat0", "emmc_dat1", "emmc_dat2", "emmc_dat3"
 /soc@107c000000/pinctrl@7d504100/pwr-button-default-state
-    phandle = <0x801d>
+    phandle = <0x801f>
     bias-pull-up
     pins = "gpio20"
     function = "gpio"
@@ -311,7 +311,7 @@
     reg = <0x7d510700 0x20>
     compatible = "brcm,bcm2712c0-aon-pinctrl"
 /soc@107c000000/pinctrl@7d510700/emmc-aon-cd-default-state
-    phandle = <0x801f>
+    phandle = <0x8021>
     bias-pull-up
     pins = "aon_gpio5"
     function = "sd_card_g"
@@ -410,11 +410,11 @@
     #address-cells = <0x2>
     compatible = "simple-bus"
 /axi/pcie@1000100000
-    phandle = <0x801b>
+    phandle = <0x801d>
     status = "disabled"
     dma-ranges = <0x43000000 0x10 0x0 0x0 0x0 0x10 0x0>
     ranges = <0x2000000 0x0 0x0 0x17 0x0 0x0 0xfffffffc 0x43000000 0x4 0x0 0x14 0x0 0x3 0x0>
-    msi-parent = <0x801b>
+    msi-parent = <0x801d>
     msi-controller
     reset-names = "rescal", "bridge"
     resets = <0x8017 0x8018 0x2a>
@@ -432,13 +432,13 @@
     reg = <0x10 0x100000 0x0 0x9310>
     compatible = "brcm,bcm2712-pcie"
 /axi/pcie@1000110000
-    phandle = <0x801a>
+    phandle = <0x801c>
     status = "okay"
     brcm,clkreq-mode = "safe"
     brcm,fifo-qos-map = <0x3030303>
-    dma-ranges = <0x43000000 0x10 0x0 0x0 0x0 0x10 0x0>
+    dma-ranges = <0x3000000 0x10 0x0 0x0 0x0 0x10 0x0 0x3000000 0xff 0xfffff000 0x10 0x131000 0x0 0x1000>
     ranges = <0x2000000 0x0 0x80000000 0x1b 0x80000000 0x0 0x80000000 0x43000000 0x4 0x0 0x18 0x0 0x3 0x80000000>
-    msi-parent = <0x801a>
+    msi-parent = <0x8019>
     msi-controller
     reset-names = "rescal", "bridge"
     resets = <0x8017 0x8018 0x2b>
@@ -456,13 +456,13 @@
     reg = <0x10 0x110000 0x0 0x9310>
     compatible = "brcm,bcm2712-pcie"
 /axi/pcie@1000120000
-    phandle = <0x8019>
+    phandle = <0x801b>
     status = "disabled"
     aspm-no-l0s
     brcm,vdm-qos-map = <0x8080809 0xa0a0b0b>
-    dma-ranges = <0x43000000 0x10 0x0 0x0 0x0 0x10 0x0>
+    dma-ranges = <0x2000000 0x0 0x0 0x1f 0x0 0x0 0x400000 0x43000000 0x10 0x0 0x0 0x0 0x10 0x0 0x3000000 0xff 0xfffff000 0x10 0x130000 0x0 0x1000>
     ranges = <0x2000000 0x0 0x0 0x1f 0x0 0x0 0xfffffffc 0x43000000 0x4 0x0 0x1c 0x0 0x3 0x0>
-    msi-parent = <0x8019>
+    msi-parent = <0x801a>
     msi-controller
     reset-names = "rescal", "bridge"
     resets = <0x8017 0x8018 0x2c>
@@ -479,3 +479,17 @@
     device_type = "pci"
     reg = <0x10 0x120000 0x0 0x9310>
     compatible = "brcm,bcm2712-pcie"
+/axi/msi-controller@1000130000
+    phandle = <0x801a>
+    brcm,msi-offset = <0x0>
+    msi-ranges = <0x8009 0x0 0x80 0x1 0x40>
+    msi-controller
+    reg = <0x10 0x130000 0x0 0xc0 0xff 0xfffff000 0x0 0x1000>
+    compatible = "brcm,bcm2712-mip"
+/axi/msi-controller@1000131000
+    phandle = <0x8019>
+    brcm,msi-offset = <0x8>
+    msi-ranges = <0x8009 0x0 0xf7 0x1 0x8>
+    msi-controller
+    reg = <0x10 0x131000 0x0 0xc0 0xff 0xfffff000 0x0 0x1000>
+    compatible = "brcm,bcm2712-mip"

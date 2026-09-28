@@ -115,9 +115,14 @@ Implemented devices
   reports its link down, as a Pi 5 does with nothing in the connector,
   and Linux gives up on it. Each maps a 16 GiB aperture of the AXI bus
   into PCI memory and reaches all of RAM through the inbound windows
-  Linux sets. Message-signalled interrupts go to the root complex's own
-  MSI target; the MIP controllers the firmware's tree points them at are
-  not modelled yet
+  Linux sets
+* The two MIPs, at ``0x10_0013_0000`` and ``0x10_0013_1000``, which turn
+  MSIs from PCIe2 and PCIe1 into SPIs: a device's MSI writes its vector
+  to the MIP's first register, through the root complex's inbound window
+  for the MIP's page. MIP0's 64 vectors raise SPIs 128 to 191, MIP1's
+  vectors 8 to 15 SPIs 255 to 262, each an edge unless configured as a
+  level. PCIe0 has no MIP: its devices' MSIs go to the root complex's
+  own MSI target, as they can on the others
 * 1, 2, 4, 8 or 16 GiB of RAM at physical address 0 (``-m``; default 2 GiB)
 
 Every other block of the BCM2712 memory map is an ``unimplemented-device``
@@ -128,7 +133,6 @@ Missing devices
 ---------------
 
 * The RP1 south bridge
-* The MIP MSI controllers
 * The Bluetooth radio on UARTA and the Wi-Fi radio on SDIO2
 * The power LED, which RP1 drives
 * Power domains (only V3D's is driven by Linux on this SoC)
@@ -362,7 +366,8 @@ the GPIO blocks
 and their pin controllers, the HDMI ports' DDC I2C controllers, the PCIe
 root complexes under ``/axi`` with their reset controllers (PCIe1, the
 external connector, enabled; PCIe0 and PCIe2 disabled, as the tree is
-made before any device is plugged in), the power
+made before any device is plugged in) and the MIPs that take PCIe1's and
+PCIe2's MSIs, the power
 button with the state of its pin (GPIO, pulled up), the activity LED,
 UART10 (``serial10``, the ``stdout-path``) and UARTA, the SD hosts (the
 card slot on SDIO1, ``mmc0``, with its card-detect line and the

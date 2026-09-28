@@ -407,6 +407,8 @@ static void bcm2712_init(Object *obj)
         object_initialize_child(obj, bcm2712_pcies[i].name, &s->pcie[i],
                                 TYPE_BRCMSTB_PCIE_HOST);
     }
+    object_initialize_child(obj, "mip0", &s->mip[0], TYPE_BCM2712_MIP);
+    object_initialize_child(obj, "mip1", &s->mip[1], TYPE_BCM2712_MIP);
     object_initialize_child(obj, "systimer", &s->systimer,
                             TYPE_BCM2835_SYSTIMER);
     object_initialize_child(obj, "pm", &s->pm, TYPE_BCM2835_POWERMGT);
@@ -550,6 +552,30 @@ static bool bcm2712_realize_sdios(BCM2712State *s, Error **errp)
         }
         bcm2712_map(sbd, 0, bcm2712_sdios[i].dev);
         sysbus_connect_irq(sbd, 0, bcm2712_spi(s, bcm2712_sdios[i].spi));
+    }
+    return true;
+}
+
+/*
+ * The MIPs: an MSI from PCIe2 (through MIP0) or PCIe1 (MIP1) raises an
+ * SPI of its own. MIP1's first vectors are not connected, as the SPIs
+ * they would raise belong to other blocks.
+ */
+static bool bcm2712_realize_mips(BCM2712State *s, Error **errp)
+{
+    for (int i = 0; i < BCM2712_NUM_MIP; i++) {
+        if (!sysbus_realize(SYS_BUS_DEVICE(&s->mip[i]), errp)) {
+            return false;
+        }
+        bcm2712_map(SYS_BUS_DEVICE(&s->mip[i]), 0, BCM2712_MIP0 + i);
+    }
+    for (int n = 0; n < BCM2712_MIP_NUM_IRQS; n++) {
+        qdev_connect_gpio_out(DEVICE(&s->mip[0]), n,
+                              bcm2712_spi(s, BCM2712_SPI_MIP0_BASE + n));
+    }
+    for (int n = BCM2712_MIP1_FIRST_VECTOR; n < 16; n++) {
+        qdev_connect_gpio_out(DEVICE(&s->mip[1]), n,
+                              bcm2712_spi(s, BCM2712_SPI_MIP1_BASE + n));
     }
     return true;
 }
@@ -815,7 +841,7 @@ static void bcm2712_realize(DeviceState *dev, Error **errp)
         !bcm2712_realize_pinctrl(&s->pinctrl, BCM2712_PINCTRL, errp) ||
         !bcm2712_realize_pinctrl(&s->pinctrl_aon, BCM2712_PINCTRL_AON, errp) ||
         !bcm2712_realize_ddcs(s, errp) || !bcm2712_realize_sdios(s, errp) ||
-        !bcm2712_realize_pcie(s, errp) ||
+        !bcm2712_realize_mips(s, errp) || !bcm2712_realize_pcie(s, errp) ||
         !bcm2712_realize_systimer(s, errp) || !bcm2712_realize_pm(s, errp) ||
         !bcm2712_realize_rng(s, errp) || !bcm2712_realize_avs(s, errp) ||
         !bcm2712_realize_vc(s, errp) || !bcm2712_realize_uarts(s, errp)) {
@@ -1208,6 +1234,22 @@ static void bcm2712_fdt_pcie(void *fdt, uint32_t gic)
         { { 0x0, 0x1f00000000, 0xfffffffc },
           { 0x400000000, 0x1c00000000, 0x300000000 } },
     };
+    /*
+     * The inbound windows beyond RAM at PCI 0x10_0000_0000: PCIe1's and
+     * PCIe2's to their MIP's registers, at the MSI address the MIP gives,
+     * and PCIe2's to RP1's shared SRAM
+     */
+    static const uint32_t dma_ranges[BCM2712_NUM_PCIE][21] = {
+        { 0x43000000, 0x10, 0x0, 0x0, 0x0, 0x10, 0x0 },
+        { 0x03000000, 0x10, 0x0, 0x0, 0x0, 0x10, 0x0,
+          0x03000000, 0xff, 0xfffff000, 0x10, 0x131000, 0x0, 0x1000 },
+        { 0x02000000, 0x0, 0x0, 0x1f, 0x0, 0x0, 0x400000,
+          0x43000000, 0x10, 0x0, 0x0, 0x0, 0x10, 0x0,
+          0x03000000, 0xff, 0xfffff000, 0x10, 0x130000, 0x0, 0x1000 },
+    };
+    static const int dma_ranges_len[BCM2712_NUM_PCIE] = { 7, 14, 21 };
+    /* The MSI controller of each: its own (below), MIP1 and MIP0 */
+    uint32_t msi_parent[BCM2712_NUM_PCIE] = { 0 };
     uint32_t rescal, reset;
     g_autofree char *rescal_path = NULL, *reset_path = NULL;
 
@@ -1224,12 +1266,37 @@ static void bcm2712_fdt_pcie(void *fdt, uint32_t gic)
     qemu_fdt_setprop_cell(fdt, reset_path, "#reset-cells", 1);
     qemu_fdt_setprop_cell(fdt, reset_path, "phandle", reset);
 
+    /* The MIPs, after the root complexes on the bus, as in the firmware's */
+    for (int i = BCM2712_NUM_MIP - 1; i >= 0; i--) {
+        hwaddr base = bcm2712_memmap[BCM2712_MIP0 + i].base;
+        g_autofree char *path = g_strdup_printf(BCM2712_FDT_AXI_PATH
+            "/msi-controller@%" HWADDR_PRIx, base);
+        uint32_t phandle = qemu_fdt_alloc_phandle(fdt);
+
+        qemu_fdt_add_subnode(fdt, path);
+        qemu_fdt_setprop_string(fdt, path, "compatible", "brcm,bcm2712-mip");
+        qemu_fdt_setprop_sized_cells(fdt, path, "reg",
+            2, base, 2, bcm2712_memmap[BCM2712_MIP0 + i].size,
+            2, BCM2712_MIP_MSI_ADDR, 2, 4 * KiB);
+        qemu_fdt_setprop(fdt, path, "msi-controller", NULL, 0);
+        qemu_fdt_setprop_cells(fdt, path, "msi-ranges",
+            gic, GIC_FDT_IRQ_TYPE_SPI,
+            i ? BCM2712_SPI_MIP1_BASE : BCM2712_SPI_MIP0_BASE,
+            GIC_FDT_IRQ_FLAGS_EDGE_LO_HI,
+            i ? 16 - BCM2712_MIP1_FIRST_VECTOR : BCM2712_MIP_NUM_IRQS);
+        qemu_fdt_setprop_cell(fdt, path, "brcm,msi-offset",
+                              i ? BCM2712_MIP1_FIRST_VECTOR : 0);
+        qemu_fdt_setprop_cell(fdt, path, "phandle", phandle);
+        msi_parent[i ? 1 : 2] = phandle;
+    }
+
     for (int i = BCM2712_NUM_PCIE - 1; i >= 0; i--) {
         hwaddr base = bcm2712_memmap[bcm2712_pcies[i].dev].base;
         g_autofree char *path = g_strdup_printf(BCM2712_FDT_AXI_PATH
                                                 "/pcie@%" HWADDR_PRIx, base);
         uint32_t phandle = qemu_fdt_alloc_phandle(fdt);
         uint32_t map[BRCMSTB_PCIE_NUM_INTX * 8];
+        uint32_t dma[ARRAY_SIZE(dma_ranges[0])];
 
         for (int n = 0; n < BRCMSTB_PCIE_NUM_INTX; n++) {
             uint32_t entry[8] = { 0, 0, 0, n + 1, gic, GIC_FDT_IRQ_TYPE_SPI,
@@ -1266,7 +1333,8 @@ static void bcm2712_fdt_pcie(void *fdt, uint32_t gic)
         qemu_fdt_setprop(fdt, path, "reset-names", reset_names,
                          sizeof(reset_names));
         qemu_fdt_setprop(fdt, path, "msi-controller", NULL, 0);
-        qemu_fdt_setprop_cell(fdt, path, "msi-parent", phandle);
+        qemu_fdt_setprop_cell(fdt, path, "msi-parent",
+                              msi_parent[i] ? msi_parent[i] : phandle);
         qemu_fdt_setprop_cells(fdt, path, "ranges",
             0x02000000, outbound[i][0][0] >> 32, outbound[i][0][0],
             outbound[i][0][1] >> 32, outbound[i][0][1],
@@ -1274,9 +1342,11 @@ static void bcm2712_fdt_pcie(void *fdt, uint32_t gic)
             0x43000000, outbound[i][1][0] >> 32, outbound[i][1][0],
             outbound[i][1][1] >> 32, outbound[i][1][1],
             outbound[i][1][2] >> 32, outbound[i][1][2]);
-        /* PCI 0x10_0000_0000 onwards is the first 64 GiB of RAM */
-        qemu_fdt_setprop_cells(fdt, path, "dma-ranges",
-                               0x43000000, 0x10, 0, 0, 0, 0x10, 0);
+        for (int k = 0; k < dma_ranges_len[i]; k++) {
+            dma[k] = cpu_to_be32(dma_ranges[i][k]);
+        }
+        qemu_fdt_setprop(fdt, path, "dma-ranges", dma,
+                         dma_ranges_len[i] * sizeof(dma[0]));
         if (bcm2712_pcies[i].dev == BCM2712_PCIE1) {
             qemu_fdt_setprop_cell(fdt, path, "brcm,fifo-qos-map", 0x3030303);
             qemu_fdt_setprop_string(fdt, path, "brcm,clkreq-mode", "safe");

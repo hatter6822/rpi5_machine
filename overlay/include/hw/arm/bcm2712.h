@@ -17,6 +17,7 @@
 #include "hw/gpio/brcmstb_pinctrl.h"
 #include "hw/i2c/brcmstb_i2c.h"
 #include "hw/intc/arm_gic.h"
+#include "hw/intc/bcm2712_mip.h"
 #include "hw/intc/brcmstb_l2_intc.h"
 #include "hw/misc/bcm2711_avs_monitor.h"
 #include "hw/misc/bcm2711_rng200.h"
@@ -161,7 +162,7 @@ enum {
     BCM2712_SPI_L2_INTC         = 247,
     BCM2712_SPI_V3D_CORE0       = 249,
     BCM2712_SPI_V3D_HUB         = 250,
-    /* 247..254: MSIs from PCIe1, on the SPI of the L2 controller too */
+    /* MIP1's vector n is SPI 247 + n: 255..262 for vectors 8..15 */
     BCM2712_SPI_MIP1_BASE       = 247,
     BCM2712_SPI_SDIO1           = 273,
     BCM2712_SPI_SDIO2           = 274,
@@ -199,6 +200,15 @@ enum {
  * the external connector; PCIe2, RP1's link
  */
 #define BCM2712_NUM_PCIE            3
+
+/*
+ * The MIPs, which take MSIs from PCIe2 (MIP0) and PCIe1 (MIP1). MIP1's
+ * vectors 0..7 would share SPIs with other blocks; its device tree has
+ * Linux use 8..15 only.
+ */
+#define BCM2712_NUM_MIP             2
+#define BCM2712_MIP1_FIRST_VECTOR   8
+#define BCM2712_MIP_MSI_ADDR        0xfffffff000ULL /* a PCI address */
 
 /* The bridge reset lines of the PCIe root complexes, in bcm_reset */
 #define BCM2712_RESET_PCIE0_BRIDGE  42  /* 42..44: PCIe0..PCIe2 */
@@ -239,6 +249,7 @@ struct BCM2712State {
     BrcmstbResetState reset;    /* bcm_reset, the software-init resets */
     BrcmstbRescalState rescal;  /* the PCIe PHYs' resistor calibration */
     BrcmstbPCIeHostState pcie[BCM2712_NUM_PCIE];
+    BCM2712MIPState mip[BCM2712_NUM_MIP];
     BCM2835SystemTimerState systimer;
     BCM2835PowerMgtState pm;
     BCM2711Rng200State rng;

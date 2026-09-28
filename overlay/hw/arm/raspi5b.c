@@ -238,7 +238,6 @@ static uint32_t raspi5b_board_rev(uint64_t ram_size)
  * does a device whose driver needs one that is not. See docs/PLAN.md.
  */
 static const char *const raspi5b_unmodelled_compatibles[] = {
-    "brcm,bcm2712-mip",
     "brcm,2712-v3d",
     "brcm,bcm2712-vc6",
     "brcm,bcm2712-hvs",

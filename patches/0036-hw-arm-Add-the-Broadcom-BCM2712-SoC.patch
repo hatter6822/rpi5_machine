@@ -17,15 +17,18 @@ RNG200, the AVS monitor's temperature register, the seven level 2
 interrupt controllers, the two GPIO blocks and their pin controllers,
 the HDMI ports' two DDC I2C controllers, the two SD/eMMC host
 controllers, the reset controller and PHY calibration block the PCIe
-driver uses, the three PCIe root complexes, and the VideoCore mailbox
-with the firmware property and framebuffer channels. UART10 is the first
-serial port and UARTA the second. The first SD host's bus is the SoC's
-sd-bus, for the board's card slot. The root complexes' root ports have
-the buses pcie0.0, pcie1.0 and pcie2.0: PCIe1's is the board's external
-connector, and PCIe2's holds the RP1 I/O chip on a Pi 5. Each maps a 16
-GiB aperture of the AXI bus into PCI memory, its inbound windows lead to
-system memory, and the reset controller's lines 42 to 44 reset their
-root ports. The firmware reaches buffers through a VideoCore bus view
+driver uses, the three PCIe root complexes and the two MIPs that take
+their MSIs, and the VideoCore mailbox with the firmware property and
+framebuffer channels. UART10 is the first serial port and UARTA the
+second. The first SD host's bus is the SoC's sd-bus, for the board's
+card slot. The root complexes' root ports have the buses pcie0.0,
+pcie1.0 and pcie2.0: PCIe1's is the board's external connector, and
+PCIe2's holds the RP1 I/O chip on a Pi 5. Each maps a 16 GiB aperture of
+the AXI bus into PCI memory, its inbound windows lead to system memory,
+and the reset controller's lines 42 to 44 reset their root ports. MIP0's
+64 vectors raise SPIs 128 to 191, and MIP1's vectors 8 to 15 SPIs 255 to
+262; its first eight would share SPIs with other blocks and are not
+connected. The firmware reaches buffers through a VideoCore bus view
 that holds the first GiB of RAM at 0x0 and at 0xc000_0000. Every other
 block in the device tree is an unimplemented-device placeholder of its
 size, and two catch-all windows log accesses anywhere else in the
@@ -34,23 +37,24 @@ peripheral ranges.
 bcm2712_fdt_populate() describes the modelled devices in a device tree,
 from the same constants as the memory map, for boards that generate one.
 The second SD host serves the Pi 5's Wi-Fi radio, so its node is left
-for the board to enable. The root complexes' nodes sit on an /axi bus
-as in the firmware's tree; only PCIe1's is enabled, since the tree is
-built before any device is plugged in, and Linux finds its link down
-while nothing is.
+for the board to enable. The root complexes' and MIPs' nodes sit on an
+/axi bus as in the firmware's tree, PCIe1 and PCIe2 sending their MSIs
+to MIP1 and MIP0; only PCIe1's is enabled, since the tree is built
+before any device is plugged in, and Linux finds its link down while
+nothing is.
 
 Addresses, interrupts and compatibles follow Linux's bcm2712.dtsi;
 values not documented publicly are marked for checking on hardware.
 ---
- hw/arm/Kconfig     | 23 +++++++++++++++++++++++
+ hw/arm/Kconfig     | 24 ++++++++++++++++++++++++
  hw/arm/meson.build |  1 +
- 2 files changed, 24 insertions(+)
+ 2 files changed, 25 insertions(+)
 
 diff --git a/hw/arm/Kconfig b/hw/arm/Kconfig
-index 16f83f0..d48bbd0 100644
+index 16f83f0..1f900fa 100644
 --- a/hw/arm/Kconfig
 +++ b/hw/arm/Kconfig
-@@ -384,6 +384,29 @@ config RASPI
+@@ -384,6 +384,30 @@ config RASPI
      select BCM2836_CONTROL
      select BCM2838_GPIO
  
@@ -59,6 +63,7 @@ index 16f83f0..d48bbd0 100644
 +    select ARM_GIC
 +    select BCM2711_AVS_MONITOR
 +    select BCM2711_RNG200
++    select BCM2712_MIP
 +    select BCM2712_PROPERTY
 +    select BCM2712_SDHCI
 +    select BCM2835_FB

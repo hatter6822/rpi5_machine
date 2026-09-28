@@ -47,8 +47,8 @@ OS Lite boots from an SD card to its login prompt) are done.
 | SD card images booted as a Pi 5's firmware boots them (`scripts/rpi5-boot`): `config.txt` with its filters, the kernel, device tree, overlays and parameters (the blob the firmware's `dtmerge` makes), initramfs and command line it names, the card read again at each reboot with what the reboot left (tryboot, the boot count, the partition asked for) | done: Raspberry Pi OS Lite (2026-09-15, trixie) boots to its login prompt, and `reboot` and `poweroff` work (by hand); smoke-tested in CI with Raspberry Pi OS's kernel, overlays and boot files |
 | VideoCore mailbox and firmware property channel: BCM283x tag set, board and firmware identity, and the Pi 5's own answers: its clocks (cpufreq), power domains, reboot flags (tryboot), real-time clock (`hwclock`) and the SoC's temperature (`GET_TEMPERATURE`), and `vcgencmd`'s text commands for them (`measure_temp`, `measure_clock`, `get_config`, `get_throttled`, `version`); the framebuffer, the machine's display, within the VideoCore's 4 MiB | done |
 | System DMA controller | deferred: no modelled device uses it yet ([docs/PLAN.md](docs/PLAN.md), WS5.2) |
-| PCIe root complexes: the three root ports as a Pi 5 C1 shows them, with PERST# and bridge resets, configuration access, outbound and inbound windows, INTx and the root complex's own MSI target; a device on `pcie1.0`, the external connector, such as `-device nvme,bus=pcie1.0`, works under Linux | in progress (M4) |
-| MIP MSI controllers, RP1 (with the 40-pin header's GPIO), … | see [docs/PLAN.md](docs/PLAN.md) |
+| PCIe root complexes: the three root ports as a Pi 5 C1 shows them, with PERST# and bridge resets, configuration access, outbound and inbound windows, INTx, the root complex's own MSI target and the MIPs that turn MSIs into SPIs; a device on `pcie1.0`, the external connector, such as `-device nvme,bus=pcie1.0`, works under Linux | in progress (M4) |
+| RP1 (with the 40-pin header's GPIO), … | see [docs/PLAN.md](docs/PLAN.md) |
 
 ## Repository layout
 
