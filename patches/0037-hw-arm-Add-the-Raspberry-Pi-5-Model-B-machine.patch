@@ -49,6 +49,12 @@ machine implies PCI_DEVICES, so QEMU's PCI Express devices and switches
 can plug into it; the documentation's example puts an NVMe drive and an
 igb network card behind a switch there.
 
+pcie2-preinit=on starts PCIe2, RP1's link, as the firmware leaves it
+with pciex4_reset=0 in config.txt, for bare-metal code that uses RP1
+without setting up PCIe; by default it starts in reset, as the firmware
+resets it. PCI address 0 is a valid BAR address on the board, since the
+firmware puts RP1's peripherals there.
+
 The stock Raspberry Pi OS kernel mounts its root file system from an SD
 card on either device tree, or from an NVMe drive on PCIe1.
 ---

@@ -407,6 +407,9 @@ static void bcm2712_init(Object *obj)
         object_initialize_child(obj, bcm2712_pcies[i].name, &s->pcie[i],
                                 TYPE_BRCMSTB_PCIE_HOST);
     }
+    /* PCIe2 as the boot firmware leaves it with pciex4_reset=0 */
+    object_property_add_alias(obj, "pcie2-preinit", OBJECT(&s->pcie[2]),
+                              "preinit");
     object_initialize_child(obj, "mip0", &s->mip[0], TYPE_BCM2712_MIP);
     object_initialize_child(obj, "mip1", &s->mip[1], TYPE_BCM2712_MIP);
     object_initialize_child(obj, "systimer", &s->systimer,

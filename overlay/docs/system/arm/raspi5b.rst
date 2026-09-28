@@ -238,6 +238,15 @@ MIP1 has 8 vectors for the whole connector, which the devices behind it
 share: a device that cannot get the MSI-X vectors it asks for falls back
 to MSI or INTx, as ``igb`` does next to an NVMe drive.
 
+PCIe2 holds RP1 on a Pi 5. The firmware resets it before starting the
+OS unless ``config.txt`` has ``pciex4_reset=0`` (or ``enable_rp1_uart=1``),
+when it leaves the link trained for code that uses RP1 without setting
+up PCIe. ``-machine raspi5b,pcie2-preinit=on`` starts PCIe2 that way:
+PERST# released, CPU ``0x1f_0000_0000`` onwards mapped to PCI address
+0, where the firmware puts RP1's peripherals, RAM at PCI
+``0x10_0000_0000`` and the root port forwarding to bus 1. Linux resets
+the root complex and starts over either way.
+
 Firmware property interface
 ---------------------------
 

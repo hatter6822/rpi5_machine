@@ -60,6 +60,12 @@ struct BrcmstbPCIeRootPortClass {
  * device's DMA reaches "dma-memory" through the inbound windows.
  * The named GPIO input "bridge-reset" is the bridge's software-init reset
  * line, as the SoC's reset controller drives it.
+ *
+ * With "preinit", a reset leaves the root complex as the boot firmware
+ * leaves it for the OS when told to keep the link: PERST# released,
+ * outbound window 0 mapping the aperture's last 4 GiB to PCI 0, inbound
+ * RC_BAR2 mapping PCI 0x10_0000_0000 to "dma-memory" from 0, 64 GiB,
+ * and the root port forwarding memory accesses to its secondary bus.
  */
 struct BrcmstbPCIeHostState {
     /*< private >*/
@@ -93,6 +99,7 @@ struct BrcmstbPCIeHostState {
     uint32_t max_link_speed;    /* PCIe generation */
     bool aspm_l0s;
     bool l1ss;                  /* L1 PM Substates */
+    bool preinit;               /* start as the boot firmware leaves it */
     uint32_t hw_revision;       /* MISC_REVISION */
     MemoryRegion *dma_mr;
 

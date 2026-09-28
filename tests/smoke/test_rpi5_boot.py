@@ -1401,6 +1401,26 @@ class PrintTest(unittest.TestCase):
         self.assertEqual((out / "cmdline.txt").read_text(),
                          "console=serial0,115200 root=/dev/sda2\n")
 
+    def test_pcie2_preinit(self):
+        """PCIe2 starts as the firmware leaves it with pciex4_reset=0, the
+        default with enable_rp1_uart=1"""
+        for n, (config, preinit) in enumerate((
+                ("", False), ("pciex4_reset=0\n", True),
+                ("enable_rp1_uart=1\n", True),
+                ("enable_rp1_uart=1\npciex4_reset=1\n", False))):
+            with self.subTest(config=config):
+                image = self.tmp / f"pcie{n}.img"
+                make_card(image, {
+                    "config.txt": config, "cmdline.txt": "quiet\n",
+                    "kernel_2712.img": b"kernel",
+                    "bcm2712-rpi-5-b.dtb": dtc(BASE_DTS)})
+                status, stdout, stderr = run_boot(
+                    "--print", "-o", self.tmp / "out", image)
+                self.assertEqual((status, stderr), (0, ""))
+                self.assertEqual(
+                    "pcie2-preinit=on" in shlex.split(stdout)[2].split(","),
+                    preinit)
+
     def test_output_directory(self):
         """Files go to a new or empty directory, or one rpi5-boot made:
         ./rpi5-boot-files by default with --print"""

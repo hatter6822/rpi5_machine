@@ -25,7 +25,9 @@ card slot. The root complexes' root ports have the buses pcie0.0,
 pcie1.0 and pcie2.0: PCIe1's is the board's external connector, and
 PCIe2's holds the RP1 I/O chip on a Pi 5. Each maps a 16 GiB aperture of
 the AXI bus into PCI memory, its inbound windows lead to system memory,
-and the reset controller's lines 42 to 44 reset their root ports. MIP0's
+and the reset controller's lines 42 to 44 reset their root ports.
+"pcie2-preinit" starts PCIe2 as the firmware leaves it for RP1 when told
+to keep the link: CPU 0x1f_0000_0000 is PCI 0 there. MIP0's
 64 vectors raise SPIs 128 to 191, and MIP1's vectors 8 to 15 SPIs 255 to
 262; its first eight would share SPIs with other blocks and are not
 connected. The firmware reaches buffers through a VideoCore bus view

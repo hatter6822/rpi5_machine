@@ -387,13 +387,16 @@ static void brcmstb_pcie_update_perst(BrcmstbPCIeHostState *s)
     }
 }
 
-/* The bridge reset resets the root port as it is asserted */
+/*
+ * The bridge reset resets the root port as it is asserted, its command
+ * register and BARs as well as its bridge registers and capabilities
+ */
 static void brcmstb_pcie_set_bridge_reset(BrcmstbPCIeHostState *s,
                                           bool was_in_reset)
 {
     if (!was_in_reset && brcmstb_pcie_bridge_in_reset(s)) {
         trace_brcmstb_pcie_bridge_reset(s->domain);
-        device_cold_reset(DEVICE(&s->root));
+        pci_device_reset(brcmstb_pcie_root(s));
     }
 }
 
@@ -991,6 +994,52 @@ static void brcmstb_pcie_host_realize(DeviceState *dev, Error **errp)
     qbus_mark_full(BUS(pci->bus));
 }
 
+/*
+ * What the boot firmware programs when it keeps the link for the OS.
+ * TODO(WS0.4): compare with a register dump taken with pciex4_reset=0.
+ */
+#define BRCMSTB_PCIE_PREINIT_OUT_SIZE   (4 * GiB)
+#define BRCMSTB_PCIE_PREINIT_IN_BAR     2
+#define BRCMSTB_PCIE_PREINIT_IN_PCI     0x1000000000ULL
+#define BRCMSTB_PCIE_PREINIT_IN_SIZE    21          /* 64 GiB */
+
+static void brcmstb_pcie_preinit(BrcmstbPCIeHostState *s)
+{
+    PCIDevice *d = brcmstb_pcie_root(s);
+    uint64_t cpu = s->outbound_base + s->outbound_size -
+                   BRCMSTB_PCIE_PREINIT_OUT_SIZE;
+    uint64_t base_mb = cpu / MiB;
+    uint64_t limit_mb = (cpu + BRCMSTB_PCIE_PREINIT_OUT_SIZE) / MiB - 1;
+    hwaddr bar = brcmstb_pcie_in_bar(BRCMSTB_PCIE_PREINIT_IN_BAR);
+    hwaddr remap = brcmstb_pcie_in_remap(BRCMSTB_PCIE_PREINIT_IN_BAR);
+    uint32_t bl = 0;
+
+    R(s, MISC_PCIE_CTRL) = R_MISC_PCIE_CTRL_PERSTB_MASK;
+
+    /* Window 0 starts at PCI 0: WIN0_LO and WIN0_HI stay zero */
+    bl = FIELD_DP32(bl, MISC_MEM_WIN_BASE_LIMIT, BASE, base_mb);
+    bl = FIELD_DP32(bl, MISC_MEM_WIN_BASE_LIMIT, LIMIT, limit_mb);
+    s->reg[brcmstb_pcie_out_base_limit(0) / 4] = bl;
+    s->reg[brcmstb_pcie_out_base_hi(0) / 4] = base_mb >> 12;
+    s->reg[brcmstb_pcie_out_base_hi(0) / 4 + 1] = limit_mb >> 12;
+
+    s->reg[bar / 4] = (uint32_t)BRCMSTB_PCIE_PREINIT_IN_PCI |
+                      BRCMSTB_PCIE_PREINIT_IN_SIZE;
+    s->reg[bar / 4 + 1] = BRCMSTB_PCIE_PREINIT_IN_PCI >> 32;
+    s->reg[remap / 4] = R_MISC_UBUS_BAR_CONFIG_REMAP_ACCESS_EN_MASK;
+
+    /*
+     * The root port: bus 1 behind it, PCI 0 to 4 GiB forwarded, memory
+     * and bus mastering on. TODO(WS0.4): the firmware's window.
+     */
+    pci_host_config_write_common(d, PCI_PRIMARY_BUS, pci_config_size(d),
+                                 0x010100, 4);
+    pci_host_config_write_common(d, PCI_MEMORY_BASE, pci_config_size(d),
+                                 0xfff00000, 4);
+    pci_host_config_write_common(d, PCI_COMMAND, pci_config_size(d),
+                                 PCI_COMMAND_MEMORY | PCI_COMMAND_MASTER, 2);
+}
+
 static void brcmstb_pcie_host_reset_enter(Object *obj, ResetType type)
 {
     BrcmstbPCIeHostState *s = BRCMSTB_PCIE_HOST(obj);
@@ -999,13 +1048,18 @@ static void brcmstb_pcie_host_reset_enter(Object *obj, ResetType type)
     s->perst = true;
 }
 
+/* The root port and the devices behind it have been reset already */
 static void brcmstb_pcie_host_reset_hold(Object *obj, ResetType type)
 {
     BrcmstbPCIeHostState *s = BRCMSTB_PCIE_HOST(obj);
 
+    if (s->preinit) {
+        brcmstb_pcie_preinit(s);
+    }
     brcmstb_pcie_update_outbound(s);
     brcmstb_pcie_update_inbound(s);
     brcmstb_pcie_update_msi(s);
+    brcmstb_pcie_update_perst(s);
 }
 
 static int brcmstb_pcie_host_post_load(void *opaque, int version_id)
@@ -1044,6 +1098,7 @@ static const Property brcmstb_pcie_host_properties[] = {
                        max_link_speed, 2),
     DEFINE_PROP_BOOL("aspm-l0s", BrcmstbPCIeHostState, aspm_l0s, false),
     DEFINE_PROP_BOOL("l1ss", BrcmstbPCIeHostState, l1ss, false),
+    DEFINE_PROP_BOOL("preinit", BrcmstbPCIeHostState, preinit, false),
     DEFINE_PROP_UINT32("hw-revision", BrcmstbPCIeHostState, hw_revision,
                        0x0304),
     DEFINE_PROP_LINK("dma-memory", BrcmstbPCIeHostState, dma_mr,

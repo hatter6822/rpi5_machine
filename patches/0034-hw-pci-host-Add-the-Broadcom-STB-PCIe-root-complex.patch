@@ -26,7 +26,8 @@ bridge is out of reset, the PHY is powered and a device is on the
 secondary bus. An empty port stays down, as the driver expects of a
 connector with nothing in it. Asserting PERST# resets the secondary
 bus; the "bridge-reset" GPIO input, or the RGR1 bit that the driver
-uses without a reset controller, resets the root port. Configuration
+uses without a reset controller, resets the root port, its command
+register included. Configuration
 reads and writes while the link is down, and accesses outside every
 window, fail as the error-reporting controls ask: a bus error, or data
 of all ones or of 0xdeadbeef.
@@ -38,6 +39,13 @@ IOMMU address space. The MSI target decodes writes whose data matches
 the driver's pattern into one of 32 vectors. INTA to INTD and the two
 level-2 controllers' outputs are the model's six interrupt outputs.
 MISC_REVISION reads as "hw-revision".
+
+With "preinit", a reset leaves the root complex as the boot firmware
+leaves one it keeps trained for the OS: PERST# released, outbound
+window 0 mapping the aperture's last 4 GiB to PCI 0, inbound RC_BAR2
+mapping PCI 0x10_0000_0000 onto "dma-memory" from 0, 64 GiB, and the
+root port forwarding memory to bus 1. The OS may use the link as it is
+or reset the bridge and start over, as Linux does.
 ---
  hw/pci-host/Kconfig      | 7 +++++++
  hw/pci-host/meson.build  | 1 +

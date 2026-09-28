@@ -5310,6 +5310,8 @@ static void test_bios_old_kernel(void)
 #define PCIE1_WIN_PCI           0x80000000ULL
 #define PCIE1_WIN_SIZE          0x80000000ULL
 #define PCIE_DMA_BASE           0x1000000000ULL
+/* Where pcie2-preinit puts PCI 0: RP1's BAR1 on a Pi 5 */
+#define PCIE2_PREINIT_CPU       0x1f00000000ULL
 #define PCIE_MSI_TARGET         0x0fffffffcULL
 
 static uint32_t pcie_readl(QTestState *qts, int n, uint32_t reg)
@@ -5589,12 +5591,16 @@ static void test_pcie_resets(void)
     pcie_writel(qts, 1, PCIE_CTRL, PCIE_CTRL_PERSTB);
     g_assert_cmphex(pcie_ext_readl(qts, 1, 1, 0, CFG_BAR0), ==, 0);
     g_assert_cmphex(pcie_readl(qts, 1, CFG_BUSES), ==, 0x010100);
+    g_assert_cmphex(pcie_readl(qts, 1, CFG_COMMAND) & 0xffff, ==,
+                    CFG_CMD_MEM | CFG_CMD_MASTER);
 
+    /* The bridge reset resets the root port's header too */
     qtest_writel(qts, RESET_BASE + RESET_SET(1),
                  BIT(RESET_PCIE_BRIDGE(1) - 32));
     qtest_writel(qts, RESET_BASE + RESET_CLEAR(1),
                  BIT(RESET_PCIE_BRIDGE(1) - 32));
     g_assert_cmphex(pcie_readl(qts, 1, CFG_BUSES), ==, 0);
+    g_assert_cmphex(pcie_readl(qts, 1, CFG_COMMAND) & 0xffff, ==, 0);
 
     /* The resistor calibration finishes at once */
     g_assert_cmphex(qtest_readl(qts, RESCAL_BASE + 8), ==, 0);
@@ -5734,6 +5740,87 @@ static void test_pcie_inbound(void)
     edu_dma(qts, EDU_DMA_BUF, PCIE_DMA_BASE + 0x300010, EDU_DMA_TO_PCI);
     qtest_memread(qts, 0x300010, buf, sizeof(buf));
     g_assert_cmphex(buf[0], ==, 0);
+    qtest_quit(qts);
+}
+
+/* edu's DMA, with its BAR0 where pcie2-preinit puts PCI 0 */
+static void edu2_dma(QTestState *qts, uint64_t src, uint64_t dst,
+                     uint32_t cmd)
+{
+    qtest_writeq(qts, PCIE2_PREINIT_CPU + EDU_DMA_SRC, src);
+    qtest_writeq(qts, PCIE2_PREINIT_CPU + EDU_DMA_DST, dst);
+    qtest_writeq(qts, PCIE2_PREINIT_CPU + EDU_DMA_COUNT, 16);
+    qtest_writeq(qts, PCIE2_PREINIT_CPU + EDU_DMA_CMD, EDU_DMA_RUN | cmd);
+    qtest_clock_step(qts, 200 * SCALE_MS);
+    g_assert_cmphex(qtest_readq(qts, PCIE2_PREINIT_CPU + EDU_DMA_CMD) &
+                    EDU_DMA_RUN, ==, 0);
+}
+
+/*
+ * pcie2-preinit: PCIe2 as the firmware leaves it with pciex4_reset=0, the
+ * link up and the windows set, so that once the device's BAR is at PCI 0,
+ * as the firmware puts RP1's, the CPU reaches it at 0x1f_0000_0000 and
+ * it reaches RAM, without touching the root complex
+ */
+static void test_pcie_preinit(void)
+{
+    static const uint8_t pattern[16] = "pcie2 preinit";
+    uint8_t buf[16];
+    QTestState *qts;
+
+    if (!pcie_has_edu()) {
+        return;
+    }
+    qts = qtest_init("-machine raspi5b -device edu,bus=pcie2.0");
+    g_assert_cmphex(pcie_readl(qts, 2, PCIE_CTRL), ==, 0);
+    g_assert_false(pcie_link_is_up(qts, 2));
+    g_assert_cmphex(pcie_readl(qts, 2, PCIE_BASE_LIMIT(0)), ==, 0);
+    qtest_quit(qts);
+
+    qts = qtest_init("-machine raspi5b,pcie2-preinit=on -m 1G "
+                     "-device edu,bus=pcie2.0,dma_mask=0xffffffffff");
+    for (int reset = 0; reset < 2; reset++) {
+        g_assert_cmphex(pcie_readl(qts, 2, PCIE_CTRL), ==, PCIE_CTRL_PERSTB);
+        g_assert_true(pcie_link_is_up(qts, 2));
+        g_assert_cmphex(pcie_readl(qts, 2, PCIE_WIN_LO(0)), ==, 0);
+        g_assert_cmphex(pcie_readl(qts, 2, PCIE_WIN_HI(0)), ==, 0);
+        g_assert_cmphex(pcie_readl(qts, 2, PCIE_BASE_LIMIT(0)), ==,
+                        0xfff00000);
+        g_assert_cmphex(pcie_readl(qts, 2, PCIE_BASE_HI(0)), ==, 0x1f);
+        g_assert_cmphex(pcie_readl(qts, 2, PCIE_LIMIT_HI(0)), ==, 0x1f);
+        g_assert_cmphex(pcie_readl(qts, 2, PCIE_BAR_LO(2)), ==, 21);
+        g_assert_cmphex(pcie_readl(qts, 2, PCIE_BAR_HI(2)), ==, 0x10);
+        g_assert_cmphex(pcie_readl(qts, 2, PCIE_REMAP_LO(2)), ==,
+                        PCIE_REMAP_ACCESS_EN);
+        g_assert_cmphex(pcie_readl(qts, 2, CFG_BUSES), ==, 0x010100);
+        g_assert_cmphex(pcie_readl(qts, 2, CFG_MEM_WINDOW), ==, 0xfff00000);
+        g_assert_cmphex(pcie_readl(qts, 2, CFG_COMMAND) & 0xffff, ==,
+                        CFG_CMD_MEM | CFG_CMD_MASTER);
+
+        /* What the firmware does for RP1: BAR at PCI 0, decoding on */
+        pcie_ext_writel(qts, 2, 1, 0, CFG_BAR0, 0);
+        pcie_ext_writel(qts, 2, 1, 0, CFG_COMMAND,
+                        CFG_CMD_MEM | CFG_CMD_MASTER);
+        g_assert_cmphex(qtest_readl(qts, PCIE2_PREINIT_CPU + EDU_ID), ==,
+                        EDU_ID_VALUE);
+
+        /* RAM at PCI 0x10_0000_0000, through RC_BAR2, both ways */
+        qtest_memwrite(qts, 0x100000, pattern, sizeof(pattern));
+        memset(buf, 0, sizeof(buf));
+        qtest_memwrite(qts, 0x200000, buf, sizeof(buf));
+        edu2_dma(qts, PCIE_DMA_BASE + 0x100000, EDU_DMA_BUF, 0);
+        edu2_dma(qts, EDU_DMA_BUF, PCIE_DMA_BASE + 0x200000,
+                 EDU_DMA_TO_PCI);
+        qtest_memread(qts, 0x200000, buf, sizeof(buf));
+        g_assert_cmpmem(buf, sizeof(buf), pattern, sizeof(pattern));
+
+        /* A reset starts it the same way */
+        qtest_system_reset(qts);
+    }
+
+    /* PCIe0 and PCIe1 start in reset whatever pcie2-preinit says */
+    g_assert_cmphex(pcie_readl(qts, 0, PCIE_CTRL), ==, 0);
+    g_assert_cmphex(pcie_readl(qts, 1, PCIE_CTRL), ==, 0);
     qtest_quit(qts);
 }
 
@@ -6134,6 +6221,7 @@ int main(int argc, char **argv)
     qtest_add_func("/raspi5b/pcie/intx", test_pcie_intx);
     qtest_add_func("/raspi5b/pcie/msi", test_pcie_msi);
     qtest_add_func("/raspi5b/pcie/migrate", test_pcie_migrate);
+    qtest_add_func("/raspi5b/pcie/preinit", test_pcie_preinit);
     qtest_add_func("/raspi5b/mip/reset-values", test_mip_reset_values);
     qtest_add_func("/raspi5b/mip/level", test_mip_level);
     qtest_add_func("/raspi5b/mip/edge", test_mip_edge);

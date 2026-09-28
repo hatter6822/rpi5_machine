@@ -1881,7 +1881,6 @@ def prepare(image, args, reset):
     kernel_cmdline(boot, args.root, args.append)
     for name, default, why in (
             ("arm_64bit", 1, "a Pi 5 runs only 64-bit kernels"),
-            ("pciex4_reset", 1, "RP1 and its PCIe link are not modelled"),
             ("kernel_address", None, "the kernel goes where a Pi 5's "
              "firmware puts it by default"),
             ("upstream_kernel", 0, "the firmware's own device tree names "
@@ -1955,6 +1954,11 @@ def qemu_command(args, image, boot, files, reset):
             machine.append(f"dtb-address={c_strtoul(address)[0]:#x}")
     if boot.tree is None:
         machine.append("builtin-dtb=off")
+    # The firmware resets PCIe2 for the OS unless told to keep it, which
+    # enable_rp1_uart also does
+    rp1_uart = boot.config.number("enable_rp1_uart", 0)
+    if not boot.config.number("pciex4_reset", 0 if rp1_uart else 1):
+        machine.append("pcie2-preinit=on")
     machine.append(f"boot-partition={boot.partition}")
     machine += reset.machine_options()
     cmd = [args.qemu, "-M", ",".join(machine)]
