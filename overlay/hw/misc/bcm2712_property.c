@@ -31,6 +31,8 @@
  *   reset, an alarm, and the backup battery's charger. The alarm powers a
  *   Pi 5 that is off back on; QEMU has no such state, and only reports
  *   the alarm pending.
+ * - the text commands of GET_GENCMD_RESULT, through which vcgencmd asks,
+ *   for the state above: see bcm2712_property_gencmd().
  *
  * A request for a clock or device that does not exist gets a rate of 0,
  * or state bit 1 set, as the firmware answers; one for a power domain
@@ -47,6 +49,7 @@
 #include "hw/core/qdev-properties.h"
 #include "migration/vmstate.h"
 #include "qapi/qapi-events-misc.h"
+#include "system/dma.h"
 #include "system/rtc.h"
 #include "system/system.h"
 #include "trace.h"
@@ -62,14 +65,15 @@
  */
 static const struct {
     uint32_t id;
+    const char *name;           /* in vcgencmd and config.txt */
     uint32_t min_mhz;
     uint32_t max_mhz;
 } bcm2712_property_clocks[BCM2712_PROPERTY_NUM_CLOCKS] = {
-    { RPI_FIRMWARE_ARM_CLK_ID,  1500, 2400 },
-    { RPI_FIRMWARE_CORE_CLK_ID,  500,  910 },
-    { RPI_FIRMWARE_V3D_CLK_ID,   500,  960 },
-    { RPI_FIRMWARE_ISP_CLK_ID,   500,  910 },
-    { RPI_FIRMWARE_HEVC_CLK_ID,  500,  910 },
+    { RPI_FIRMWARE_ARM_CLK_ID,  "arm",  1500, 2400 },
+    { RPI_FIRMWARE_CORE_CLK_ID, "core",  500,  910 },
+    { RPI_FIRMWARE_V3D_CLK_ID,  "v3d",   500,  960 },
+    { RPI_FIRMWARE_ISP_CLK_ID,  "isp",   500,  910 },
+    { RPI_FIRMWARE_HEVC_CLK_ID, "hevc",  500,  910 },
 };
 
 #define MHZ_TO_HZ(mhz)          ((mhz) * 1000000u)
@@ -93,6 +97,17 @@ static const struct {
 
 /* GET_MAX_TEMPERATURE, in thousandths of a degree C */
 #define TEMP_LIMIT              85000
+
+/*
+ * GET_GENCMD_RESULT: a command as text, from the second word of the value
+ * buffer on; the firmware answers in its place, after an error code in the
+ * first word. vcgencmd sends a 4 KiB buffer, the longest text it takes.
+ */
+#define RPI_FWREQ_GET_GENCMD_RESULT     0x00030080
+#define GENCMD_MAX                      4096
+
+/* The firmware's release time, as GET_FIRMWARE_REVISION answers it */
+#define FIRMWARE_REVISION               346337
 
 /* The real-time clock's registers, as Linux's rtc-rpi driver numbers them */
 enum {
@@ -253,6 +268,169 @@ static uint32_t bcm2712_property_rtc(BCM2712PropertyState *s, uint32_t reg,
     }
 }
 
+/* Append the setting @key=@value to the "get_config int" list @out */
+static gboolean bcm2712_property_config_line(gpointer key, gpointer value,
+                                             gpointer out)
+{
+    g_string_append_printf(out, "%s%s=%u", ((GString *)out)->len ? "\n" : "",
+                           (char *)key, GPOINTER_TO_UINT(value));
+    return false;
+}
+
+/*
+ * The integer settings of config.txt that the machine decides, as
+ * "get_config int" lists them (in order of name, without the ones that
+ * are 0): each clock's range, the temperature limit and the memory size.
+ * config.txt itself is the bootloader's, which QEMU does not run, so
+ * every other setting reads as unset, 0.
+ */
+static void bcm2712_property_config(BCM2712PropertyState *s, GString *out,
+                                    const char *name)
+{
+    BCM2835PropertyState *ps = BCM2835_PROPERTY(s);
+    /* The board revision's memory size field: 256 MiB << n */
+    uint32_t total_mem = 256 << extract32(ps->board_rev, 20, 3);
+    g_autoptr(GTree) settings =
+        g_tree_new_full((GCompareDataFunc)strcmp, NULL, g_free, NULL);
+
+    for (int i = 0; i < ARRAY_SIZE(bcm2712_property_clocks); i++) {
+        g_tree_insert(settings,
+                      g_strdup_printf("%s_freq",
+                                      bcm2712_property_clocks[i].name),
+                      GUINT_TO_POINTER(bcm2712_property_clocks[i].max_mhz));
+        g_tree_insert(settings,
+                      g_strdup_printf("%s_freq_min",
+                                      bcm2712_property_clocks[i].name),
+                      GUINT_TO_POINTER(bcm2712_property_clocks[i].min_mhz));
+    }
+    g_tree_insert(settings, g_strdup("temp_limit"),
+                  GUINT_TO_POINTER(TEMP_LIMIT / 1000));
+    g_tree_insert(settings, g_strdup("total_mem"),
+                  GUINT_TO_POINTER(total_mem));
+
+    if (strcmp(name, "int") == 0) {
+        g_tree_foreach(settings, bcm2712_property_config_line, out);
+    } else if (strcmp(name, "str") != 0) {
+        g_string_append_printf(out, "%s=%u", name,
+                               GPOINTER_TO_UINT(g_tree_lookup(settings,
+                                                              name)));
+    }
+}
+
+/*
+ * Answer the vcgencmd command @argv (@argc words) into @out; returns the
+ * error code. The firmware answers the commands below as the Raspberry
+ * Pi 5's does, in the forms its documentation and vcgencmd's show:
+ *
+ * - commands: the commands answered;
+ * - measure_temp: the AVS monitor's temperature, as GET_TEMPERATURE;
+ * - measure_clock NAME: a clock's rate as GET_CLOCK_MEASURED answers it.
+ *   Any other name measures 0, as a clock that is off does: the firmware
+ *   also measures the SD hosts', the UARTs' and the display's clocks,
+ *   which it does not list and the model does not have;
+ * - get_config NAME, get_config int, get_config str: the settings of
+ *   bcm2712_property_config();
+ * - get_throttled: no under-voltage and no throttling, which the model
+ *   has neither of;
+ * - version: the release and hash GET_FIRMWARE_REVISION and
+ *   GET_FIRMWARE_HASH answer.
+ *
+ * Any other command is not registered, as the firmware answers a command
+ * it lacks. That includes bootloader_version, bootloader_config and
+ * otp_dump, which ask about the EEPROM bootloader QEMU does not have:
+ * rpi-eeprom-update, which asks for the bootloader's version, then skips
+ * the update it would otherwise offer.
+ */
+static int32_t bcm2712_property_gencmd(BCM2712PropertyState *s,
+                                       GString *out, int argc, char **argv)
+{
+    const char *cmd = argc ? argv[0] : "";
+
+    if (strcmp(cmd, "commands") == 0) {
+        g_string_append(out, "commands=\"commands, measure_clock, "
+                        "measure_temp, get_config, get_throttled, "
+                        "version\"");
+    } else if (strcmp(cmd, "measure_temp") == 0 && s->avs_monitor) {
+        int32_t mc = bcm2711_avs_monitor_get_temperature(s->avs_monitor);
+        /* To the nearest tenth of a degree */
+        int32_t tenths = (mc + (mc < 0 ? -50 : 50)) / 100;
+
+        g_string_append_printf(out, "temp=%s%d.%d'C",
+                               tenths < 0 ? "-" : "",
+                               abs(tenths) / 10, abs(tenths) % 10);
+    } else if (strcmp(cmd, "measure_clock") == 0 && argc >= 2) {
+        uint32_t hz = 0;
+
+        for (int i = 0; i < ARRAY_SIZE(bcm2712_property_clocks); i++) {
+            if (strcmp(argv[1], bcm2712_property_clocks[i].name) == 0) {
+                hz = extract32(s->clocks_on, i, 1) ? s->clock_rate[i] : 0;
+                break;
+            }
+        }
+        /* The Pi 5's firmware numbers every clock 0 in its answer */
+        g_string_append_printf(out, "frequency(0)=%u", hz);
+    } else if (strcmp(cmd, "get_config") == 0 && argc >= 2) {
+        bcm2712_property_config(s, out, argv[1]);
+    } else if (strcmp(cmd, "get_throttled") == 0) {
+        g_string_append(out, "throttled=0x0");
+    } else if (strcmp(cmd, "version") == 0) {
+        time_t t = FIRMWARE_REVISION;
+        struct tm tm;
+        char date[32];
+
+        gmtime_r(&t, &tm);
+        strftime(date, sizeof(date), "%Y/%m/%d %H:%M:%S", &tm);
+        /* The hash's first four bytes, all zero as it is */
+        g_string_append_printf(out, "%s\nCopyright (c) 2012 Broadcom\n"
+                               "version 00000000 (release) (embedded)",
+                               date);
+    } else {
+        qemu_log_mask(LOG_UNIMP, "%s: vcgencmd command '%s' not "
+                      "implemented\n", __func__, cmd);
+        g_string_append(out, "error=1 error_msg=\"Command not registered\"");
+        return -1;
+    }
+    return 0;
+}
+
+/*
+ * GET_GENCMD_RESULT: the command, split into words at spaces, and the
+ * answer written in its place, cut to the buffer with its NUL kept.
+ * Returns the response length, which is the whole answer's.
+ */
+static size_t bcm2712_property_gencmd_tag(BCM2712PropertyState *s,
+                                          hwaddr value, uint32_t bufsize)
+{
+    BCM2835PropertyState *ps = BCM2835_PROPERTY(s);
+    uint32_t textsize = bufsize < 4 ? 0 : MIN(bufsize - 4, GENCMD_MAX - 1);
+    g_autofree char *text = g_malloc0(textsize + 1);
+    g_autoptr(GString) out = g_string_new(NULL);
+    g_autoptr(GPtrArray) argv = g_ptr_array_new();
+    char *saveptr;
+    int32_t err;
+
+    dma_memory_read(&ps->dma_as, value + 12 + 4, text, textsize,
+                    MEMTXATTRS_UNSPECIFIED);
+    for (char *word = strtok_r(text, " ", &saveptr); word;
+         word = strtok_r(NULL, " ", &saveptr)) {
+        g_ptr_array_add(argv, word);
+    }
+    err = bcm2712_property_gencmd(s, out, argv->len, (char **)argv->pdata);
+    trace_bcm2712_property_gencmd(argv->len ? (char *)argv->pdata[0] : "",
+                                  err);
+
+    bcm2835_property_put32(ps, value, bufsize, 0, err);
+    if (textsize) {
+        size_t len = MIN(out->len, textsize - 1);
+
+        dma_memory_write(&ps->dma_as, value + 12 + 4, out->str, len,
+                         MEMTXATTRS_UNSPECIFIED);
+        address_space_set(&ps->dma_as, value + 12 + 4 + len, 0, 1,
+                          MEMTXATTRS_UNSPECIFIED);
+    }
+    return 4 + out->len + 1;
+}
+
 static bool bcm2712_property_answer_tag(BCM2835PropertyState *ps,
                                         uint32_t tag, hwaddr value,
                                         uint32_t bufsize, size_t *resplen)
@@ -361,6 +539,10 @@ static bool bcm2712_property_answer_tag(BCM2835PropertyState *ps,
     case RPI_FWREQ_GET_REBOOT_FLAGS:
         *resplen = bcm2835_property_answer32(ps, value, bufsize,
                                              s->reboot_flags);
+        return true;
+
+    case RPI_FWREQ_GET_GENCMD_RESULT:
+        *resplen = bcm2712_property_gencmd_tag(s, value, bufsize);
         return true;
 
     default:

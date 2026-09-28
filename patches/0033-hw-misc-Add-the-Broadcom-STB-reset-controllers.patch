@@ -1,0 +1,65 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: A7om <hatter6822@gmail.com>
+Date: Sat, 26 Sep 2026 00:00:00 +0000
+Subject: [PATCH] hw/misc: Add the Broadcom STB reset controllers
+
+Broadcom's set-top-box chips, among them the BCM2712 (Raspberry Pi 5),
+have two small reset blocks that Linux's PCIe driver depends on. The
+"brcm,brcmstb-reset" controller holds blocks of the chip in software
+init: each bank of 0x18 bytes drives 32 lines through SET, CLEAR and
+STATUS words. The "brcm,bcm7216-pcie-sata-rescal" block calibrates the
+PCIe and SATA PHYs' termination resistors: Linux sets START, polls
+STATUS for completion and clears START again.
+
+Add a model of each. brcmstb-reset has "num-banks" banks and one
+"reset" GPIO output per line, high while the line is asserted, so a
+board can wire a line to the reset input of the block it holds; every
+line is deasserted at reset. brcmstb-rescal completes a calibration at
+once: STATUS reads as done from START until reset. The words neither
+model knows read as zero, ignore writes and log as unimplemented.
+---
+ hw/misc/Kconfig      | 3 +++
+ hw/misc/meson.build  | 1 +
+ hw/misc/trace-events | 6 ++++++
+ 3 files changed, 10 insertions(+)
+
+diff --git a/hw/misc/Kconfig b/hw/misc/Kconfig
+index 00327b7..781a40e 100644
+--- a/hw/misc/Kconfig
++++ b/hw/misc/Kconfig
+@@ -292,3 +292,6 @@ config BCM2835_RNG
+ 
+ config BCM2835_THERMAL
+     bool
++
++config BRCMSTB_RESET
++    bool
+diff --git a/hw/misc/meson.build b/hw/misc/meson.build
+index 0505f5f..57698b9 100644
+--- a/hw/misc/meson.build
++++ b/hw/misc/meson.build
+@@ -96,6 +96,7 @@ system_ss.add(when: 'CONFIG_BCM2835_POWERMGT', if_true: files('bcm2835_powermgt.
+ system_ss.add(when: 'CONFIG_BCM2835_PROPERTY', if_true: files('bcm2835_property.c'))
+ system_ss.add(when: 'CONFIG_BCM2835_RNG', if_true: files('bcm2835_rng.c'))
+ system_ss.add(when: 'CONFIG_BCM2835_THERMAL', if_true: files('bcm2835_thermal.c'))
++system_ss.add(when: 'CONFIG_BRCMSTB_RESET', if_true: files('brcmstb_reset.c'))
+ system_ss.add(when: 'CONFIG_SLAVIO', if_true: files('slavio_misc.c'))
+ system_ss.add(when: 'CONFIG_ZYNQ', if_true: files('zynq_slcr.c'))
+ system_ss.add(when: 'CONFIG_XLNX_ZYNQ_DDRC', if_true: files('xlnx-zynq-ddrc.c'))
+diff --git a/hw/misc/trace-events b/hw/misc/trace-events
+index 132c076..02b3510 100644
+--- a/hw/misc/trace-events
++++ b/hw/misc/trace-events
+@@ -402,6 +402,12 @@ bcm2835_cprman_read(uint64_t offset, uint64_t value) "offset:0x%" PRIx64 " value
+ bcm2835_cprman_write(uint64_t offset, uint64_t value) "offset:0x%" PRIx64 " value:0x%" PRIx64
+ bcm2835_cprman_write_invalid_magic(uint64_t offset, uint64_t value) "offset:0x%" PRIx64 " value:0x%" PRIx64
+ 
++# brcmstb_reset.c
++brcmstb_reset_read(uint64_t offset, uint32_t value) "[0x%02" PRIx64 "] -> 0x%08" PRIx32
++brcmstb_reset_write(uint64_t offset, uint64_t value) "[0x%02" PRIx64 "] <- 0x%08" PRIx64
++brcmstb_rescal_read(uint64_t offset, uint32_t value) "[0x%02" PRIx64 "] -> 0x%08" PRIx32
++brcmstb_rescal_write(uint64_t offset, uint64_t value) "[0x%02" PRIx64 "] <- 0x%08" PRIx64
++
+ # virt_ctrl.c
+ virt_ctrl_read(void *dev, unsigned int addr, unsigned int size, uint64_t value) "ctrl: %p reg: 0x%02x size: %d value: 0x%"PRIx64
+ virt_ctrl_write(void *dev, unsigned int addr, unsigned int size, uint64_t value) "ctrl: %p reg: 0x%02x size: %d value: 0x%"PRIx64

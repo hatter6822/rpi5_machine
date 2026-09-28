@@ -8,14 +8,16 @@ RAM sizes, the placeholders of unmodelled blocks, the UART10 IDs, the
 GIC's geometry, priority bits and Security Extensions, the system
 timer's counter, comparators, reset and migration, the watchdog and
 reset status, the mailbox through both VideoCore aliases (including a
-buffer outside them), the firmware's identity, clock, power, temperature,
-reboot, real-time clock and framebuffer tags, the RNG200, the AVS
-monitor, the level 2 interrupt controllers, the GPIO blocks and their
-pin controllers, the DDC I2C controllers with the EDID on HDMI0's bus,
-UARTA, the SD hosts with the card's detection, PIO, SDMA and ADMA2
-transfers, reset and migration, the power button, the activity LED and
-the machine's reset state. Also test how -bios hands firmware the kernel
-and the device tree.
+buffer outside them), the firmware's identity, clock, power,
+temperature, reboot, real-time clock and framebuffer tags, the RNG200,
+the AVS monitor, the level 2 interrupt controllers, the GPIO blocks and
+their pin controllers, the DDC I2C controllers with the EDID on HDMI0's
+bus, UARTA, the SD hosts with the card's detection, PIO, SDMA and ADMA2
+transfers, reset and migration, the PCIe root complexes with an edu
+device (configuration, windows, INTx, MSIs, resets, migration and
+PCIe2's firmware state), the MIPs, the power button, the activity LED
+and the machine's reset state. Also test how -bios hands firmware the
+kernel and the device tree.
 ---
  MAINTAINERS             | 1 +
  tests/qtest/meson.build | 1 +

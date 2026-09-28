@@ -12,7 +12,7 @@ Linux.
 | `hello/` | the original smoke guest: boot EL, MPIDR, CNTFRQ, PSCI `CPU_ON` of every core, `SYSTEM_OFF` |
 | `suite/` | the bare-metal test suite (WS9.2), one file per area |
 | `reboot/` | the guest of the `rpi5-boot` reboot tests: it reports the boot `/chosen/bootloader` describes and ends it as its command line's `bootN=` word says (a reboot, a tryboot, a reboot to a partition or a halt through the watchdog, or a power-off) |
-| `linux/` | `firstboot`, a Linux program without a C library: the `/init` with which the `rpi5-boot` tests boot Raspberry Pi OS's kernel, which plays the OS's first boot (it rewrites the card's disk identifier and `cmdline.txt`, and reboots) |
+| `linux/` | `firstboot`, a Linux program without a C library: the `/init` with which the `rpi5-boot` tests boot Raspberry Pi OS's kernel, which plays the OS's first boot (it rewrites the card's disk identifier and `cmdline.txt`, and reboots); and `pcie`, the `/init` of the PCIe test's NVMe root file system, which loads the igb Ethernet driver and exchanges frames with the test |
 
 ## Runtime
 
@@ -159,7 +159,7 @@ one, which checks that `sd/mbr` skips without a card.
 | Generic timers | frequency; the EL1, EL2 and Secure physical timers; the EL1 physical and virtual timers on every core, with a virtual offset above the count |
 | SMP | each core's `MPIDR_EL1`, PSCI `CPU_ON` of every core, SGIs between every pair of cores and to all others, an SPI routed to each core in turn; `CPU_ON`/`CPU_OFF`/`AFFINITY_INFO` statuses |
 | System timer | rate against the generic counter, every comparator's interrupt |
-| Firmware | the mailbox's board revision, the identity tags, the clocks and the temperature limit as vcgencmd reports them, a tryboot's reboot flag, the real-time clock's count, time, alarm and charger range, a framebuffer allocated in the VideoCore's memory |
+| Firmware | the mailbox's board revision, the identity tags, the clocks and the temperature limit through the firmware's tags, a tryboot's reboot flag, the real-time clock's count, time, alarm and charger range, a framebuffer allocated in the VideoCore's memory |
 | PM, reset | watchdog countdown and reset, three PSCI `SYSTEM_RESET`s and a watchdog reset that must restore the boot state |
 | RNG | a 1 KiB draw, Linux's recovery sequence |
 | Temperature | the AVS monitor's sensor read as Linux's thermal driver reads it, converted with its thermal zone's coefficients and below the critical trip, and the firmware's temperature within 2 degrees of it |

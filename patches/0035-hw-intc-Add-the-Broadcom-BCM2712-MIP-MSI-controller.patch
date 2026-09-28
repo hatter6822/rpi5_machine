@@ -1,0 +1,69 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: A7om <hatter6822@gmail.com>
+Date: Sat, 26 Sep 2026 00:00:00 +0000
+Subject: [PATCH] hw/intc: Add the Broadcom BCM2712 MIP MSI controller
+
+The BCM2712 (Raspberry Pi 5) has two MIPs ("brcm,bcm2712-mip"), which
+turn message-signalled interrupts from PCIe into SPIs: MIP0 takes the
+MSIs of PCIe2, where the RP1 I/O chip is, and MIP1 those of PCIe1, the
+external connector. The device tree gives a device the MIP's register
+page as its MSI address, which the root complex's inbound window for
+it leads to, and the vector number as its data, so an MSI is a write
+of the vector to INT_RAISE. Linux's irq-bcm2712-mip driver unmasks
+every vector for the host, masks it for the VideoCore and makes it an
+edge.
+
+Add a model of it with 64 vectors, one GPIO output each. A raised
+vector sets its status bit; an edge vector (a set bit in
+INT_CFGL/H_HOST) pulses its output unless masked for the host, and a
+level vector drives its output while it is raised and unmasked.
+INT_CLEAR takes a vector number, as INT_RAISE does, and clears its
+status bit. The VideoCore's mask is kept, to no effect, and its status
+reads as the host's. Every vector is masked and a level at reset.
+---
+ hw/intc/Kconfig      | 3 +++
+ hw/intc/meson.build  | 1 +
+ hw/intc/trace-events | 5 +++++
+ 3 files changed, 9 insertions(+)
+
+diff --git a/hw/intc/Kconfig b/hw/intc/Kconfig
+index ef03dc7..b0fcf7f 100644
+--- a/hw/intc/Kconfig
++++ b/hw/intc/Kconfig
+@@ -124,5 +124,8 @@ config BCM2835_IC
+ config BCM2836_CONTROL
+     bool
+ 
++config BCM2712_MIP
++    bool
++
+ config BRCMSTB_L2_INTC
+     bool
+diff --git a/hw/intc/meson.build b/hw/intc/meson.build
+index 6793fe8..8ac64d0 100644
+--- a/hw/intc/meson.build
++++ b/hw/intc/meson.build
+@@ -30,6 +30,7 @@ system_ss.add(when: 'CONFIG_OPENPIC', if_true: files('openpic.c'))
+ system_ss.add(when: 'CONFIG_PL190', if_true: files('pl190.c'))
+ system_ss.add(when: 'CONFIG_BCM2835_IC', if_true: files('bcm2835_ic.c'))
+ system_ss.add(when: 'CONFIG_BCM2836_CONTROL', if_true: files('bcm2836_control.c'))
++system_ss.add(when: 'CONFIG_BCM2712_MIP', if_true: files('bcm2712_mip.c'))
+ system_ss.add(when: 'CONFIG_BRCMSTB_L2_INTC', if_true: files('brcmstb_l2_intc.c'))
+ system_ss.add(when: 'CONFIG_REALVIEW', if_true: files('realview_gic.c'))
+ system_ss.add(when: 'CONFIG_SLAVIO', if_true: files('slavio_intctl.c'))
+diff --git a/hw/intc/trace-events b/hw/intc/trace-events
+index 16af32e..31d3643 100644
+--- a/hw/intc/trace-events
++++ b/hw/intc/trace-events
+@@ -276,6 +276,11 @@ heathrow_set_irq(int num, int level) "set_irq: num=0x%02x level=%d"
+ bcm2835_ic_set_gpu_irq(int irq, int level) "GPU irq #%d level %d"
+ bcm2835_ic_set_cpu_irq(int irq, int level) "CPU irq #%d level %d"
+ 
++# bcm2712_mip.c
++bcm2712_mip_raise(uint32_t vector) "vector %u"
++bcm2712_mip_read(uint64_t offset, uint32_t value) "offset 0x%02" PRIx64 " value 0x%08" PRIx32
++bcm2712_mip_write(uint64_t offset, uint64_t value) "offset 0x%02" PRIx64 " value 0x%08" PRIx64
++
+ # brcmstb_l2_intc.c
+ brcmstb_l2_intc_set_irq(const char *id, int line, int level) "%s: input %d level %d"
+ brcmstb_l2_intc_update(const char *id, uint32_t pending) "%s: pending 0x%08" PRIx32

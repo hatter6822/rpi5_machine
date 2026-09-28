@@ -11,7 +11,7 @@ south bridge behind PCIe, which is not modelled yet.
 
 The machine is under active development. Bare-metal code, the Pi's boot
 firmware (TF-A, U-Boot, the EDK2 port) and Linux run on it, the latter
-with its root file system on an SD card.
+with its root file system on an SD card or an NVMe drive.
 
 Implemented devices
 -------------------
@@ -101,6 +101,28 @@ Implemented devices
   8250 ports only when its command line asks for them, which the
   firmware's tree does with ``8250.nr_uarts=1``; with the built-in tree,
   add it to ``-append``
+* The three PCIe root complexes, PCIe0 to PCIe2 at ``0x10_0010_0000``,
+  ``0x10_0011_0000`` and ``0x10_0012_0000``, with the reset controller
+  and PHY calibration block their Linux driver uses. Each has a
+  ``BCM2712 PCIe Bridge`` root port, rev 0x21 as on a C1 stepping, whose
+  capabilities are those ``lspci`` shows on a Pi 5: PCIe1's link is x1
+  at up to 5 GT/s with ASPM L0s and L1, the external connector;
+  PCIe2's is x4 at 5 GT/s with ASPM L1 and L1 PM substates, and holds
+  RP1 on a Pi 5, which is not modelled, so its bus is empty; PCIe0's is
+  taken to be PCIe1's. A device goes on a root port's bus,
+  ``pcie0.0``, ``pcie1.0`` or ``pcie2.0``, with ``-device ...,bus=``,
+  and the link trains at once when the driver lets it; an empty port
+  reports its link down, as a Pi 5 does with nothing in the connector,
+  and Linux gives up on it. Each maps a 16 GiB aperture of the AXI bus
+  into PCI memory and reaches all of RAM through the inbound windows
+  Linux sets
+* The two MIPs, at ``0x10_0013_0000`` and ``0x10_0013_1000``, which turn
+  MSIs from PCIe2 and PCIe1 into SPIs: a device's MSI writes its vector
+  to the MIP's first register, through the root complex's inbound window
+  for the MIP's page. MIP0's 64 vectors raise SPIs 128 to 191, MIP1's
+  vectors 8 to 15 SPIs 255 to 262, each an edge unless configured as a
+  level. PCIe0 has no MIP: its devices' MSIs go to the root complex's
+  own MSI target, as they can on the others
 * 1, 2, 4, 8 or 16 GiB of RAM at physical address 0 (``-m``; default 2 GiB)
 
 Every other block of the BCM2712 memory map is an ``unimplemented-device``
@@ -110,7 +132,7 @@ with ``-d unimp``.
 Missing devices
 ---------------
 
-* PCIe root complexes and the RP1 south bridge
+* The RP1 south bridge
 * The Bluetooth radio on UARTA and the Wi-Fi radio on SDIO2
 * The power LED, which RP1 drives
 * Power domains (only V3D's is driven by Linux on this SoC)
@@ -131,7 +153,11 @@ QEMU's built-in PSCI emulation:
 
 With ``-machine raspi5b,secure=on`` the guest owns EL3 instead: CPUs and the
 GIC implement the Security Extensions, PSCI is not emulated for guests that
-start in EL3, and every CPU starts at the image entry point.
+start in EL3, and every CPU starts at the image entry point. The guest
+starts in EL3 when it is firmware given with ``-bios`` (see below) or an
+ELF file given with ``-kernel``; a Linux ``Image`` given with ``-kernel``
+alone still starts in EL2 with QEMU's PSCI, as the Linux boot protocol
+asks, whatever ``secure`` says.
 
 ``-kernel`` accepts an AArch64 Linux ``Image`` (booted using the Linux boot
 protocol, with the device tree address in ``x0``) or an ELF file (entered at
@@ -185,6 +211,41 @@ the device tree its release ships with ``-dtb``, and
 the only place U-Boot and EDK2 can find something to boot on their own:
 U-Boot boots, for example, by the ``extlinux.conf`` it finds on one, and
 EDK2 maps the card's partitions.
+
+PCIe devices
+------------
+
+PCIe1 is the board's external connector, and QEMU's PCI Express devices
+plug into it, on bus ``pcie1.0``. Its root port links to one device, so
+more than one takes a switch. Raspberry Pi OS's kernel has drivers for
+NVMe drives built in and Intel's ``igb`` Ethernet as a module; it has no
+virtio. For example, an NVMe drive holding the root file system and an
+``igb`` network card behind a switch::
+
+  $ qemu-system-aarch64 -M raspi5b -m 2G -kernel kernel_2712.img \
+      -append "console=ttyAMA10,115200 root=/dev/nvme0n1 rootwait" \
+      -drive if=none,id=nvme0,file=root.img,format=raw \
+      -device x3130-upstream,id=up0,bus=pcie1.0 \
+      -device xio3130-downstream,id=dn0,bus=up0,chassis=8,slot=0 \
+      -device xio3130-downstream,id=dn1,bus=up0,chassis=8,slot=1 \
+      -device nvme,serial=raspi5b,drive=nvme0,bus=dn0 \
+      -netdev user,id=net0 -device igb,netdev=net0,bus=dn1
+
+The root ports take chassis 0 to 2, slot 0, so a switch's downstream
+ports need another chassis.
+There is no PCI I/O space, as on the Pi 5, so I/O BARs stay unassigned.
+MIP1 has 8 vectors for the whole connector, which the devices behind it
+share: a device that cannot get the MSI-X vectors it asks for falls back
+to MSI or INTx, as ``igb`` does next to an NVMe drive.
+
+PCIe2 holds RP1 on a Pi 5. The firmware resets it before starting the
+OS unless ``config.txt`` has ``pciex4_reset=0`` (or ``enable_rp1_uart=1``),
+when it leaves the link trained for code that uses RP1 without setting
+up PCIe. ``-machine raspi5b,pcie2-preinit=on`` starts PCIe2 that way:
+PERST# released, CPU ``0x1f_0000_0000`` onwards mapped to PCI address
+0, where the firmware puts RP1's peripherals, RAM at PCI
+``0x10_0000_0000`` and the root port forwarding to bus 1. Linux resets
+the root complex and starts over either way.
 
 Firmware property interface
 ---------------------------
@@ -244,9 +305,29 @@ only when it fits, as the firmware does). A request that is cut short
 inside a tag, or whose tag runs past the request's own length, is answered
 with the interface's error code, ``0x80000001``; a request the VideoCore
 cannot reach is not answered at all. A tag the model lacks is answered
-with no value and logged as unimplemented: ``GET_GENCMD_RESULT``, through
-which ``vcgencmd`` sends its commands as text, is one, so ``vcgencmd``
-gets no answers.
+with no value and logged as unimplemented.
+
+``vcgencmd`` sends its commands as text through ``GET_GENCMD_RESULT``,
+and the firmware answers these in the Pi 5's forms:
+
+* ``measure_temp``: the temperature the AVS monitor reads, as
+  ``temp=24.9'C``;
+* ``measure_clock NAME``: the rate of the clock ``arm``, ``core``,
+  ``v3d``, ``isp`` or ``hevc`` as its tags set it, as
+  ``frequency(0)=2400000000``, and 0 for any other clock, which the model
+  does not have;
+* ``get_config NAME`` and ``get_config int``: the settings the machine
+  decides, each clock's range (``arm_freq``, ``arm_freq_min`` and so on),
+  ``temp_limit`` and ``total_mem``; the machine does not read
+  ``config.txt``, so every other setting reads 0;
+* ``get_throttled``: ``throttled=0x0``, as nothing is throttled;
+* ``version``: the firmware release and hash the identity tags report;
+* ``commands``: the list above.
+
+Any other command gets error ``-1`` and ``error=1 error_msg="Command not
+registered"``, as the firmware answers a command it lacks, and is logged
+as unimplemented. That includes ``bootloader_version``, so
+``rpi-eeprom-update`` finds no bootloader to update.
 
 Reset and power-off
 -------------------
@@ -317,7 +398,11 @@ with its clocks, reset controller, power domains and real-time clock, the
 PM block, the RNG, the AVS monitor with its temperature sensor and the
 thermal zone Linux reads it through, the level 2 interrupt controllers,
 the GPIO blocks
-and their pin controllers, the HDMI ports' DDC I2C controllers, the power
+and their pin controllers, the HDMI ports' DDC I2C controllers, the PCIe
+root complexes under ``/axi`` with their reset controllers (PCIe1, the
+external connector, enabled; PCIe0 and PCIe2 disabled, as the tree is
+made before any device is plugged in) and the MIPs that take PCIe1's and
+PCIe2's MSIs, the power
 button with the state of its pin (GPIO, pulled up), the activity LED,
 UART10 (``serial10``, the ``stdout-path``) and UARTA, the SD hosts (the
 card slot on SDIO1, ``mmc0``, with its card-detect line and the

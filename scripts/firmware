@@ -22,6 +22,7 @@
 #   kernel_2712.img             the Raspberry Pi OS kernel for the Pi 5
 #   bcm2712-rpi-5-b.dtb         and its device tree
 #   overlays/                   and the overlays, with their map and README
+#   modules/                    the kernel's igb and i2c-algo-bit modules
 #   dtmerge                     the utility, for the host
 # An output is made again only when its pin changes (DIR/.pins records
 # what each was made from). DIR must be new, empty, or made by an earlier
@@ -47,6 +48,11 @@ RPI_FIRMWARE_COMMIT=6f0881cba8bea8ec24956a5718714730e9936ec5
 RPI_FIRMWARE_URL=https://raw.githubusercontent.com/raspberrypi/firmware/$RPI_FIRMWARE_TAG/boot
 KERNEL_SHA256=6efbcb3e7ba6687424dda8ba44ba151d6c76533a74cf3e1437156c85f68e9975
 DTB_SHA256=a5165cb562035f479ea9f5a81cedf7b6596ea32a0598608c4dc3b77ada909c60
+# The kernel's modules for the Intel igb Ethernet driver, which the PCIe
+# test loads
+RPI_MODULES_URL=https://raw.githubusercontent.com/raspberrypi/firmware/$RPI_FIRMWARE_TAG/modules/6.18.50-v8-16k%2B/kernel/drivers
+IGB_SHA256=cbedf99c086598829f143987aaea985f58955fc3911edf9f01cc243e93f19a7c
+I2C_ALGO_BIT_SHA256=ee793aca106c27d542401714761ff56b0384f3e5aabd99b38438ef94f5bd6299
 
 # No release tags: a commit of the default branch
 RPI_UTILS_URL=https://github.com/raspberrypi/utils.git
@@ -160,6 +166,19 @@ for f in kernel_2712.img:$KERNEL_SHA256 bcm2712-rpi-5-b.dtb:$DTB_SHA256; do
     pin="$RPI_FIRMWARE_URL/$name ${f#*:}"
     if ! made "$name" "$pin"; then
         fetch "$name" "$RPI_FIRMWARE_URL/$name" "${f#*:}"
+        cp "$dir/src/$name" "$dir/$name"
+        record "$name" "$pin"
+    fi
+done
+
+for f in net/ethernet/intel/igb/igb.ko.xz:$IGB_SHA256 \
+         i2c/algos/i2c-algo-bit.ko.xz:$I2C_ALGO_BIT_SHA256; do
+    path=${f%%:*}
+    name=modules/${path##*/}
+    pin="$RPI_MODULES_URL/$path ${f#*:}"
+    if ! made "$name" "$pin"; then
+        fetch "$name" "$RPI_MODULES_URL/$path" "${f#*:}"
+        mkdir -p "$dir/modules"
         cp "$dir/src/$name" "$dir/$name"
         record "$name" "$pin"
     fi

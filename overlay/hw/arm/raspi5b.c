@@ -66,6 +66,7 @@ struct Raspi5bMachineState {
     uint64_t armstub_size;
     bool secure;
     bool builtin_dtb;
+    bool pcie2_preinit;
     /*
      * The firmware's boot count: boots since power-on, in 8 bits, which it
      * keeps in a register a reset leaves alone
@@ -238,8 +239,6 @@ static uint32_t raspi5b_board_rev(uint64_t ram_size)
  * does a device whose driver needs one that is not. See docs/PLAN.md.
  */
 static const char *const raspi5b_unmodelled_compatibles[] = {
-    "brcm,bcm2712-pcie",
-    "brcm,bcm2712-mip",
     "brcm,2712-v3d",
     "brcm,bcm2712-vc6",
     "brcm,bcm2712-hvs",
@@ -250,8 +249,6 @@ static const char *const raspi5b_unmodelled_compatibles[] = {
     "brcm,bcm2712-mop",
     "brcm,bcm2712-moplet",
     "brcm,bcm2712-pispbe",
-    "brcm,brcmstb-reset",
-    "brcm,bcm7216-pcie-sata-rescal",
     /* Nodes only present in the Raspberry Pi downstream device tree */
     "brcm,bcm2712-iommu",
     "brcm,bcm2712-iommuc",
@@ -1261,6 +1258,7 @@ static void raspi5b_machine_init(MachineState *machine)
     soc = DEVICE(&s->soc);
     qdev_prop_set_uint32(soc, "num-cpus", machine->smp.cpus);
     qdev_prop_set_bit(soc, "has-el3", s->secure);
+    qdev_prop_set_bit(soc, "pcie2-preinit", s->pcie2_preinit);
     object_property_set_link(OBJECT(soc), "ram", OBJECT(machine->ram),
                              &error_abort);
     qdev_prop_set_uint32(soc, "board-rev", s->board_rev);
@@ -1329,6 +1327,16 @@ static void raspi5b_set_dtb_addr(Object *obj, Visitor *v, const char *name,
     if (visit_type_uint64(v, name, &s->dtb_addr, errp)) {
         s->dtb_addr_set = true;
     }
+}
+
+static bool raspi5b_get_pcie2_preinit(Object *obj, Error **errp)
+{
+    return RASPI5B_MACHINE(obj)->pcie2_preinit;
+}
+
+static void raspi5b_set_pcie2_preinit(Object *obj, bool value, Error **errp)
+{
+    RASPI5B_MACHINE(obj)->pcie2_preinit = value;
 }
 
 static bool raspi5b_get_builtin_dtb(Object *obj, Error **errp)
@@ -1468,13 +1476,17 @@ static void raspi5b_machine_class_init(ObjectClass *oc, const void *data)
     /* -drive goes in the SD card slot, which is empty by default */
     mc->block_default_type = IF_SD;
     mc->auto_create_sdcard = true;
+    /* PCI address 0 is decoded: RP1's peripherals are there on PCIe2 */
+    mc->pci_allow_0_address = true;
 
     object_class_property_add_bool(oc, "secure", raspi5b_get_secure,
                                    raspi5b_set_secure);
     object_class_property_set_description(oc, "secure",
         "Expose EL3 and the GIC Security Extensions to the guest. "
         "When off (the default), QEMU provides PSCI in place of the "
-        "firmware's TF-A BL31, which -bios loads when on");
+        "firmware's TF-A BL31, which -bios loads when on. A Linux "
+        "Image given with -kernel starts at EL2 either way; EL3 "
+        "needs -bios or an ELF -kernel");
 
     object_class_property_add_bool(oc, "builtin-dtb",
                                    raspi5b_get_builtin_dtb,
@@ -1483,6 +1495,16 @@ static void raspi5b_machine_class_init(ObjectClass *oc, const void *data)
         "Without -dtb, give the guest a device tree generated from the "
         "model (the default); when off, give it none, like an empty "
         "device_tree= line in the firmware's config.txt");
+
+    object_class_property_add_bool(oc, "pcie2-preinit",
+                                   raspi5b_get_pcie2_preinit,
+                                   raspi5b_set_pcie2_preinit);
+    object_class_property_set_description(oc, "pcie2-preinit",
+        "Start PCIe2, RP1's link, as the firmware leaves it with "
+        "pciex4_reset=0 in config.txt: PERST# released, CPU "
+        "0x1f_0000_0000 mapped to PCI 0 and RAM at PCI 0x10_0000_0000. "
+        "When off (the default, as the firmware resets it), PCIe2 starts "
+        "in reset");
 
     object_class_property_add(oc, "dtb-address", "uint64",
                               raspi5b_get_dtb_addr, raspi5b_set_dtb_addr,
