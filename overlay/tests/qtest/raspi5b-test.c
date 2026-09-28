@@ -1969,6 +1969,224 @@ static void test_avs_migrate(void)
 }
 
 /*
+ * vcgencmd's GET_GENCMD_RESULT: the command as text after an error word,
+ * in a @size-byte value buffer (vcgencmd's is 4 KiB). Returns the error
+ * word and the answer, as vcgencmd reads it, in @answer; checks that the
+ * response length is the whole answer's.
+ */
+#define FW_TAG_GENCMD           0x00030080
+
+static int32_t fw_gencmd_sized(QTestState *qts, const char *cmd,
+                               uint32_t size, char **answer)
+{
+    const uint64_t buf = 0x10000;
+    const uint32_t words = DIV_ROUND_UP(size, 4);
+    g_autofree char *text = g_malloc0(size);
+    uint32_t resplen;
+
+    qtest_writel(qts, buf, (6 + words) * 4);
+    qtest_writel(qts, buf + 4, FW_REQUEST);
+    qtest_writel(qts, buf + 8, FW_TAG_GENCMD);
+    qtest_writel(qts, buf + 12, size);
+    qtest_writel(qts, buf + 16, 0);
+    qtest_writel(qts, buf + 20, 0);
+    qtest_memset(qts, buf + 24, 0xa5, size - 4);
+    qtest_memwrite(qts, buf + 24, cmd, MIN(strlen(cmd) + 1, size - 4));
+    qtest_writel(qts, buf + 20 + 4 * words, 0);
+    qtest_writel(qts, MBOX_BASE + MBOX_WRITE,
+                 VC_BUS_RAM | buf | MBOX_CHAN_PROPERTY);
+
+    g_assert_true(mbox_has_response(qts));
+    g_assert_cmphex(qtest_readl(qts, MBOX_BASE + MBOX_READ), ==,
+                    VC_BUS_RAM | buf | MBOX_CHAN_PROPERTY);
+    g_assert_cmphex(qtest_readl(qts, buf + 4), ==, FW_SUCCESS);
+    resplen = qtest_readl(qts, buf + 16);
+    g_assert_true(resplen & FW_TAG_RESPONSE);
+
+    qtest_memread(qts, buf + 24, text, size - 4);
+    g_assert_nonnull(memchr(text, 0, size - 4));
+    *answer = g_strdup(text);
+    if (strlen(text) + 1 < size - 4) {
+        g_assert_cmpuint(resplen & ~FW_TAG_RESPONSE, ==, 4 + strlen(text) + 1);
+    }
+    return qtest_readl(qts, buf + 20);
+}
+
+static int32_t fw_gencmd(QTestState *qts, const char *cmd, char **answer)
+{
+    return fw_gencmd_sized(qts, cmd, 4096, answer);
+}
+
+static void check_gencmd(QTestState *qts, const char *cmd,
+                         const char *expected)
+{
+    g_autofree char *answer = NULL;
+
+    g_assert_cmpint(fw_gencmd(qts, cmd, &answer), ==, 0);
+    g_assert_cmpstr(answer, ==, expected);
+}
+
+/* A command the firmware lacks, as the Pi 5's answers it */
+static void check_gencmd_unregistered(QTestState *qts, const char *cmd)
+{
+    g_autofree char *answer = NULL;
+
+    g_assert_cmpint(fw_gencmd(qts, cmd, &answer), ==, -1);
+    g_assert_cmpstr(answer, ==, "error=1 error_msg=\"Command not registered\"");
+}
+
+/* vcgencmd's commands, list and version */
+static void test_gencmd_commands(void)
+{
+    QTestState *qts = qtest_init("-machine raspi5b");
+
+    check_gencmd(qts, "commands", "commands=\"commands, measure_clock, "
+                 "measure_temp, get_config, get_throttled, version\"");
+    /* GET_FIRMWARE_REVISION's time and GET_FIRMWARE_HASH's zeros */
+    check_gencmd(qts, "version", "1970/01/05 00:12:17\n"
+                 "Copyright (c) 2012 Broadcom\n"
+                 "version 00000000 (release) (embedded)");
+    check_gencmd(qts, "get_throttled", "throttled=0x0");
+    /* Words are split at any number of spaces */
+    check_gencmd(qts, "  get_throttled  ", "throttled=0x0");
+
+    /*
+     * No EEPROM bootloader to report on: rpi-eeprom-update then offers
+     * no update
+     */
+    check_gencmd_unregistered(qts, "bootloader_version");
+    check_gencmd_unregistered(qts, "bootloader_config");
+    check_gencmd_unregistered(qts, "display_power 0");
+    check_gencmd_unregistered(qts, "");
+    check_gencmd_unregistered(qts, "Version");
+
+    qtest_quit(qts);
+}
+
+/*
+ * measure_temp: the AVS monitor's reading, as GET_TEMPERATURE answers it,
+ * to the nearest tenth of a degree (halves away from 0). The sensor reads
+ * in steps of 0.55 degrees, so each temperature here is one of its steps.
+ */
+static void test_gencmd_temperature(void)
+{
+    static const struct {
+        int64_t mc;
+        const char *answer;
+    } temps[] = {
+        { 24850, "temp=24.9'C" },       /* the step 25 degrees C reads as */
+        { 25400, "temp=25.4'C" },
+        { 45200, "temp=45.2'C" },
+        { 110100, "temp=110.1'C" },
+        { 100, "temp=0.1'C" },
+        { -450, "temp=-0.5'C" },
+        { -1000, "temp=-1.0'C" },
+    };
+    QTestState *qts = qtest_init("-machine raspi5b");
+
+    check_gencmd(qts, "measure_temp", "temp=24.9'C");
+    for (int i = 0; i < ARRAY_SIZE(temps); i++) {
+        g_assert_true(avs_set_temperature(qts, temps[i].mc));
+        g_assert_cmpint((int32_t)fw_request(qts, FW_TAG_TEMPERATURE, 0, 0),
+                        ==, temps[i].mc);
+        check_gencmd(qts, "measure_temp", temps[i].answer);
+    }
+
+    qtest_quit(qts);
+}
+
+/* measure_clock: the rate a clock runs at, 0 when it is off or unknown */
+static void test_gencmd_clocks(void)
+{
+    QTestState *qts = qtest_init("-machine raspi5b");
+
+    check_gencmd(qts, "measure_clock arm", "frequency(0)=2400000000");
+    check_gencmd(qts, "measure_clock core", "frequency(0)=910000000");
+    check_gencmd(qts, "measure_clock v3d", "frequency(0)=960000000");
+    check_gencmd(qts, "measure_clock isp", "frequency(0)=910000000");
+    check_gencmd(qts, "measure_clock hevc", "frequency(0)=910000000");
+    check_gencmd(qts, "measure_clock emmc", "frequency(0)=0");
+    check_gencmd(qts, "measure_clock nonsense", "frequency(0)=0");
+    check_gencmd_unregistered(qts, "measure_clock");
+
+    /* As cpufreq and the V3D driver leave them */
+    g_assert_cmpuint(fw_set_clock_rate(qts, FW_CLK_ARM, 1500000000), ==,
+                     1500000000);
+    g_assert_cmphex(fw_request(qts, FW_TAG_SET_CLOCK_STATE, FW_CLK_V3D, 0),
+                    ==, 0);
+    check_gencmd(qts, "measure_clock arm", "frequency(0)=1500000000");
+    check_gencmd(qts, "measure_clock v3d", "frequency(0)=0");
+
+    qtest_quit(qts);
+}
+
+/* get_config: the machine's own settings; anything else is unset */
+static void test_gencmd_config(void)
+{
+    QTestState *qts = qtest_init("-machine raspi5b -m 8G");
+
+    check_gencmd(qts, "get_config total_mem", "total_mem=8192");
+    check_gencmd(qts, "get_config arm_freq", "arm_freq=2400");
+    check_gencmd(qts, "get_config arm_freq_min", "arm_freq_min=1500");
+    check_gencmd(qts, "get_config temp_limit", "temp_limit=85");
+    check_gencmd(qts, "get_config enable_uart", "enable_uart=0");
+    check_gencmd(qts, "get_config int",
+                 "arm_freq=2400\narm_freq_min=1500\n"
+                 "core_freq=910\ncore_freq_min=500\n"
+                 "hevc_freq=910\nhevc_freq_min=500\n"
+                 "isp_freq=910\nisp_freq_min=500\n"
+                 "temp_limit=85\ntotal_mem=8192\n"
+                 "v3d_freq=960\nv3d_freq_min=500");
+    check_gencmd(qts, "get_config str", "");
+    check_gencmd_unregistered(qts, "get_config");
+    qtest_quit(qts);
+
+    qts = qtest_init("-machine raspi5b -m 1G");
+    check_gencmd(qts, "get_config total_mem", "total_mem=1024");
+    qtest_quit(qts);
+}
+
+/*
+ * A buffer too short for the answer gets as much of it as fits before a
+ * NUL, and the response length of the whole; one too short for the error
+ * word gets nothing written past it
+ */
+static void test_gencmd_short_buffer(void)
+{
+    QTestState *qts = qtest_init("-machine raspi5b");
+    const uint64_t buf = 0x10000;
+    g_autofree char *answer = NULL;
+
+    const char *commands = "commands=\"commands, measure_clock, "
+        "measure_temp, get_config, get_throttled, version\"";
+
+    /* 20 bytes of text: 19 of the answer and its NUL */
+    g_assert_cmpint(fw_gencmd_sized(qts, "commands", 24, &answer), ==, 0);
+    g_assert_cmpstr(answer, ==, "commands=\"commands,");
+    g_assert_cmphex(qtest_readl(qts, buf + 16), ==,
+                    FW_TAG_RESPONSE | (4 + strlen(commands) + 1));
+
+    qtest_writel(qts, buf, 7 * 4);
+    qtest_writel(qts, buf + 4, FW_REQUEST);
+    qtest_writel(qts, buf + 8, FW_TAG_GENCMD);
+    qtest_writel(qts, buf + 12, 4);
+    qtest_writel(qts, buf + 16, 0);
+    qtest_writel(qts, buf + 20, 0x5a5a5a5a);
+    qtest_writel(qts, buf + 24, 0);
+    qtest_writel(qts, buf + 28, 0x5a5a5a5a);
+    qtest_writel(qts, MBOX_BASE + MBOX_WRITE,
+                 VC_BUS_RAM | buf | MBOX_CHAN_PROPERTY);
+    g_assert_true(mbox_has_response(qts));
+    qtest_readl(qts, MBOX_BASE + MBOX_READ);
+    g_assert_cmphex(qtest_readl(qts, buf + 4), ==, FW_SUCCESS);
+    /* An empty command, which is not registered */
+    g_assert_cmphex(qtest_readl(qts, buf + 20), ==, 0xffffffff);
+    g_assert_cmphex(qtest_readl(qts, buf + 28), ==, 0x5a5a5a5a);
+
+    qtest_quit(qts);
+}
+
+/*
  * brcmstb level 2 interrupt controllers (Linux irq-brcmstb-l2.c), of the
  * three variants the driver knows: the edge-latching brcm,l2-intc, with
  * SET and CLEAR; the brcm,bcm7271-l2-intc level controller, without
@@ -5031,6 +5249,13 @@ int main(int argc, char **argv)
     qtest_add_func("/raspi5b/avs/registers", test_avs_registers);
     qtest_add_func("/raspi5b/avs/reset", test_avs_reset);
     qtest_add_func("/raspi5b/avs/migrate", test_avs_migrate);
+    qtest_add_func("/raspi5b/mbox/gencmd-commands", test_gencmd_commands);
+    qtest_add_func("/raspi5b/mbox/gencmd-temperature",
+                   test_gencmd_temperature);
+    qtest_add_func("/raspi5b/mbox/gencmd-clocks", test_gencmd_clocks);
+    qtest_add_func("/raspi5b/mbox/gencmd-config", test_gencmd_config);
+    qtest_add_func("/raspi5b/mbox/gencmd-short-buffer",
+                   test_gencmd_short_buffer);
     qtest_add_func("/raspi5b/l2-intc/reset-values",
                    test_l2_intc_reset_values);
     qtest_add_func("/raspi5b/l2-intc/outputs", test_l2_intc_outputs);

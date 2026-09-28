@@ -244,9 +244,29 @@ only when it fits, as the firmware does). A request that is cut short
 inside a tag, or whose tag runs past the request's own length, is answered
 with the interface's error code, ``0x80000001``; a request the VideoCore
 cannot reach is not answered at all. A tag the model lacks is answered
-with no value and logged as unimplemented: ``GET_GENCMD_RESULT``, through
-which ``vcgencmd`` sends its commands as text, is one, so ``vcgencmd``
-gets no answers.
+with no value and logged as unimplemented.
+
+``vcgencmd`` sends its commands as text through ``GET_GENCMD_RESULT``,
+and the firmware answers these in the Pi 5's forms:
+
+* ``measure_temp``: the temperature the AVS monitor reads, as
+  ``temp=24.9'C``;
+* ``measure_clock NAME``: the rate of the clock ``arm``, ``core``,
+  ``v3d``, ``isp`` or ``hevc`` as its tags set it, as
+  ``frequency(0)=2400000000``, and 0 for any other clock, which the model
+  does not have;
+* ``get_config NAME`` and ``get_config int``: the settings the machine
+  decides, each clock's range (``arm_freq``, ``arm_freq_min`` and so on),
+  ``temp_limit`` and ``total_mem``; the machine does not read
+  ``config.txt``, so every other setting reads 0;
+* ``get_throttled``: ``throttled=0x0``, as nothing is throttled;
+* ``version``: the firmware release and hash the identity tags report;
+* ``commands``: the list above.
+
+Any other command gets error ``-1`` and ``error=1 error_msg="Command not
+registered"``, as the firmware answers a command it lacks, and is logged
+as unimplemented. That includes ``bootloader_version``, so
+``rpi-eeprom-update`` finds no bootloader to update.
 
 Reset and power-off
 -------------------
