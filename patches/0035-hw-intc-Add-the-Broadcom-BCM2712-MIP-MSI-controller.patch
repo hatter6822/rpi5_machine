@@ -1,6 +1,6 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
-From: Claude <noreply@anthropic.com>
-Date: Mon, 28 Sep 2026 02:04:50 +0000
+From: A7om <hatter6822@gmail.com>
+Date: Sat, 26 Sep 2026 00:00:00 +0000
 Subject: [PATCH] hw/intc: Add the Broadcom BCM2712 MIP MSI controller
 
 The BCM2712 (Raspberry Pi 5) has two MIPs ("brcm,bcm2712-mip"), which

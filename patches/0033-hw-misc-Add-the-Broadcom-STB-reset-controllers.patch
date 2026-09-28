@@ -1,6 +1,6 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
-From: Claude <noreply@anthropic.com>
-Date: Mon, 28 Sep 2026 01:30:14 +0000
+From: A7om <hatter6822@gmail.com>
+Date: Sat, 26 Sep 2026 00:00:00 +0000
 Subject: [PATCH] hw/misc: Add the Broadcom STB reset controllers
 
 Broadcom's set-top-box chips, among them the BCM2712 (Raspberry Pi 5),
