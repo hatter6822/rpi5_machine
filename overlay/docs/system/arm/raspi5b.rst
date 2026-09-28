@@ -11,7 +11,7 @@ south bridge behind PCIe, which is not modelled yet.
 
 The machine is under active development. Bare-metal code, the Pi's boot
 firmware (TF-A, U-Boot, the EDK2 port) and Linux run on it, the latter
-with its root file system on an SD card.
+with its root file system on an SD card or an NVMe drive.
 
 Implemented devices
 -------------------
@@ -211,6 +211,32 @@ the device tree its release ships with ``-dtb``, and
 the only place U-Boot and EDK2 can find something to boot on their own:
 U-Boot boots, for example, by the ``extlinux.conf`` it finds on one, and
 EDK2 maps the card's partitions.
+
+PCIe devices
+------------
+
+PCIe1 is the board's external connector, and QEMU's PCI Express devices
+plug into it, on bus ``pcie1.0``. Its root port links to one device, so
+more than one takes a switch. Raspberry Pi OS's kernel has drivers for
+NVMe drives built in and Intel's ``igb`` Ethernet as a module; it has no
+virtio. For example, an NVMe drive holding the root file system and an
+``igb`` network card behind a switch::
+
+  $ qemu-system-aarch64 -M raspi5b -m 2G -kernel kernel_2712.img \
+      -append "console=ttyAMA10,115200 root=/dev/nvme0n1 rootwait" \
+      -drive if=none,id=nvme0,file=root.img,format=raw \
+      -device x3130-upstream,id=up0,bus=pcie1.0 \
+      -device xio3130-downstream,id=dn0,bus=up0,chassis=8,slot=0 \
+      -device xio3130-downstream,id=dn1,bus=up0,chassis=8,slot=1 \
+      -device nvme,serial=raspi5b,drive=nvme0,bus=dn0 \
+      -netdev user,id=net0 -device igb,netdev=net0,bus=dn1
+
+The root ports take chassis 0 to 2, slot 0, so a switch's downstream
+ports need another chassis.
+There is no PCI I/O space, as on the Pi 5, so I/O BARs stay unassigned.
+MIP1 has 8 vectors for the whole connector, which the devices behind it
+share: a device that cannot get the MSI-X vectors it asks for falls back
+to MSI or INTx, as ``igb`` does next to an NVMe drive.
 
 Firmware property interface
 ---------------------------

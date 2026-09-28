@@ -1,10 +1,10 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 #
 # Bare-metal guests: the test library in lib/, the hello smoke guest and
-# the test suite (tests/guest/README.md), and for the rpi5-boot tests a
-# guest that reboots as its command line says and a Linux /init. Built
-# with clang and lld by default so that no aarch64 GCC cross toolchain is
-# required.
+# the test suite (tests/guest/README.md), for the rpi5-boot tests a
+# guest that reboots as its command line says and a Linux /init, and a
+# Linux /init for the PCIe test. Built with clang and lld by default so
+# that no aarch64 GCC cross toolchain is required.
 
 # Make's built-in defaults (cc, ld) are host tools; prefer clang and lld
 ifeq ($(origin CC),default)
@@ -36,7 +36,7 @@ LINUX_CFLAGS  := --target=aarch64-linux-gnu -mcpu=cortex-a76 -std=gnu11 -O2 \
                  -fno-pic -fno-stack-protector -mgeneral-regs-only
 LINUX_LDFLAGS := -nostdlib -static --no-dynamic-linker -e _start
 
-GUESTS  := hello suite reboot firstboot
+GUESTS  := hello suite reboot firstboot pcie
 
 .PHONY: all clean
 all: $(GUESTS:%=$(OUT)/%.elf)
@@ -51,6 +51,9 @@ $(OUT)/reboot.elf: $(LIB_OBJS) $(OUT)/reboot/reboot.o lib/link.ld
 	$(LD) $(LDFLAGS) -o $@ $(filter %.o,$^)
 
 $(OUT)/firstboot.elf: $(OUT)/linux/firstboot.o
+	$(LD) $(LINUX_LDFLAGS) -o $@ $<
+
+$(OUT)/pcie.elf: $(OUT)/linux/pcie.o
 	$(LD) $(LINUX_LDFLAGS) -o $@ $<
 
 $(OUT)/linux/%.o: linux/%.c

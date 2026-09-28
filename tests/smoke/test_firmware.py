@@ -7,12 +7,15 @@
 # check-firmware', which builds and fetches the firmware at pinned
 # versions (scripts/firmware) and points FIRMWARE at it; skipped otherwise.
 
+import lzma
 import os
 import select
 import shutil
+import socket
 import struct
 import subprocess
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -28,6 +31,7 @@ UBOOT = FIRMWARE / "u-boot.bin"
 EDK2 = FIRMWARE / "RPI_EFI.fd"
 EDK2_DTB = FIRMWARE / "edk2" / "bcm2712-rpi-5-b.dtb"
 KERNEL = FIRMWARE / "kernel_2712.img"
+MODULES = FIRMWARE / "modules"
 FIRMWARE_DTB = FIRMWARE / "bcm2712-rpi-5-b.dtb"
 
 # What TF-A prints each time it starts
@@ -61,6 +65,20 @@ SD_CMDLINE = "console=ttyAMA10,115200 root=/dev/mmcblk0p1 rootwait"
 SD_FOUND = "mmc0: new high speed SDHC card at address"
 # Where these boots end: the root has no init to run
 ROOT_MOUNTED = "VFS: Mounted root (ext4 filesystem) readonly on device 179:1."
+
+# The PCIe test: behind a switch on PCIe1, an NVMe drive whose root file
+# system has the /init (tests/guest/linux/pcie.c) and the igb modules, and
+# an igb Ethernet controller whose frames go over a UDP socket to the test
+PCIE_INIT = GUEST.with_name("pcie.elf")
+PCIE_MODULES = ("i2c-algo-bit.ko", "igb.ko")
+PCIE_CMDLINE = "console=ttyAMA10,115200 root=/dev/nvme0n1 rootwait init=/init"
+PCIE_ROOT_SIZE = 16 << 20
+PCIE_ROOT_MOUNTED = ("VFS: Mounted root (ext4 filesystem) readonly on "
+                     "device 259:0.")
+PCIE_PING = b"raspi5b pcie ping"
+PCIE_PONG = b"raspi5b pcie pong"
+PCIE_ETH_TYPE = b"\x88\xb5"
+PCIE_TEST_MAC = bytes.fromhex("525400000001")
 
 # What the machine changes in the firmware's tree, checked in
 FIXUPS = Path(__file__).with_name("raspi5b-firmware-fixups.txt")
@@ -367,6 +385,103 @@ class SdBootTest(unittest.TestCase):
         self.assertIn("/SD(0x0)", mapped)
         self.assertIn(f"/HD(1,MBR,0x00000000,{SD_ROOT_START:#x},"
                       f"{SD_ROOT_SIZE // 512:#x})", mapped)
+
+
+class PcieEcho:
+    """The other end of the igb controller's link: a UDP socket that
+    QEMU's dgram network backend sends the guest's frames to, which
+    answers each ping frame with a pong"""
+
+    def __init__(self, test):
+        self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        test.addCleanup(self.sock.close)
+        self.sock.bind(("127.0.0.1", 0))
+        self.sock.settimeout(0.5)
+        # A free port for QEMU's end
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
+            probe.bind(("127.0.0.1", 0))
+            self.qemu_port = probe.getsockname()[1]
+        self.pings = 0
+        self.stop = threading.Event()
+        self.thread = threading.Thread(target=self.serve, daemon=True)
+        self.thread.start()
+        test.addCleanup(self.stop.set)
+
+    def netdev(self):
+        return ("dgram,id=net0,"
+                "local.type=inet,local.host=127.0.0.1,"
+                f"local.port={self.qemu_port},"
+                "remote.type=inet,remote.host=127.0.0.1,"
+                f"remote.port={self.sock.getsockname()[1]}")
+
+    def serve(self):
+        while not self.stop.is_set():
+            try:
+                frame, addr = self.sock.recvfrom(2048)
+            except socket.timeout:
+                continue
+            if frame[12:14] != PCIE_ETH_TYPE or \
+               not frame[14:].startswith(PCIE_PING):
+                continue
+            self.pings += 1
+            reply = frame[6:12] + PCIE_TEST_MAC + PCIE_ETH_TYPE + PCIE_PONG
+            self.sock.sendto(reply.ljust(60, b"\0"), addr)
+
+
+@unittest.skipUnless(os.environ.get("FIRMWARE"),
+                     "run through 'make check-firmware'")
+@unittest.skipUnless(QEMU.exists() and PCIE_INIT.exists(),
+                     "build QEMU and the guests first (make build guest)")
+@unittest.skipUnless(shutil.which("mkfs.ext4"), "needs mkfs.ext4 (e2fsprogs)")
+class PcieTest(unittest.TestCase):
+    """Linux on PCIe1, the external connector: behind a PCIe switch, it
+    runs from an NVMe drive's root file system, and an igb Ethernet
+    controller sends and receives frames, with their MSIs through MIP1"""
+
+    def make_root(self, path):
+        root = path.parent / "root"
+        (root / "dev").mkdir(parents=True)
+        (root / "lib/modules").mkdir(parents=True)
+        shutil.copy(PCIE_INIT, root / "init")
+        for name in PCIE_MODULES:
+            with lzma.open(MODULES / f"{name}.xz") as src:
+                (root / "lib/modules" / name).write_bytes(src.read())
+        with open(path, "wb") as f:
+            f.truncate(PCIE_ROOT_SIZE)
+        subprocess.run(["mkfs.ext4", "-q", "-F", "-d", str(root), str(path)],
+                       check=True)
+
+    def test_nvme_root_and_network(self):
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tmp)
+        self.make_root(tmp / "root.img")
+        echo = PcieEcho(self)
+        args = ["-M", "raspi5b", "-m", "1G", "-kernel", str(KERNEL),
+                "-append", PCIE_CMDLINE,
+                "-device", "x3130-upstream,id=up,bus=pcie1.0",
+                "-device", "xio3130-downstream,id=dn0,bus=up,chassis=8,slot=0",
+                "-device", "xio3130-downstream,id=dn1,bus=up,chassis=8,slot=1",
+                "-drive", f"if=none,id=root,file={tmp / 'root.img'},"
+                          "format=raw",
+                "-device", "nvme,drive=root,serial=raspi5b,bus=dn0",
+                "-netdev", echo.netdev(),
+                "-device", "igb,netdev=net0,bus=dn1"]
+        reached, out = converse(args, [("pcie: powering off", None, None)])
+        self.assertTrue(reached, out)
+        out = out.replace("\r\n", "\n")
+        self.assertIn("brcm-pcie 1000110000.pcie: link up, 2.5 GT/s PCIe x1",
+                      out)
+        self.assertIn("PCIe Switch Upstream Port", out)
+        self.assertIn("nvme nvme0: pci function 0001:03:00.0", out)
+        self.assertIn(PCIE_ROOT_MOUNTED, out)
+        self.assertIn("pcie: running from the root file system", out)
+        self.assertIn("igb 0001:04:00.0: Intel(R) Gigabit Ethernet Network "
+                      "Connection", out)
+        self.assertRegex(out, r"eth0: igb: eth0 NIC Link is Up 1000 Mbps")
+        self.assertIn("pcie: received raspi5b pcie pong", out)
+        self.assertGreater(echo.pings, 0)
+        for line in out.splitlines():
+            self.assertNotRegex(line, r"WARNING|Oops|BUG:|Call trace")
 
 
 if __name__ == "__main__":
