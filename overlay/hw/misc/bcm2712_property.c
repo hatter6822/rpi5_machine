@@ -61,7 +61,7 @@
  * They are the clocks the Pi 5's device trees take from the firmware and
  * whose rates the Raspberry Pi documentation gives, which leaves out the
  * display's: M2MC, PIXEL_BVB and DISP.
- * TODO(WS0.4): read GET_CLOCKS and the rates on hardware.
+ * Unverified (PLAN.md P09): GET_CLOCKS and the rates on hardware.
  */
 static const struct {
     uint32_t id;
@@ -124,7 +124,7 @@ enum {
 /*
  * The charging voltages the Raspberry Pi documentation gives for the
  * battery, in microvolts. No battery is fitted: it reads 0 V.
- * TODO(WS0.4): read the registers on hardware without a battery.
+ * Unverified (PLAN.md P10): the registers on hardware without a battery.
  */
 #define RTC_CHARGE_MIN_UV       1300000
 #define RTC_CHARGE_MAX_UV       4400000
@@ -242,7 +242,7 @@ static uint32_t bcm2712_property_rtc(BCM2712PropertyState *s, uint32_t reg,
         return s->rtc_alarm_enabled;
 
     case RTC_BBAT_CHG_VOLTS:
-        /* TODO(WS0.4): what the firmware does with a voltage out of range */
+        /* Unverified (PLAN.md P11): a voltage out of range */
         if (write) {
             s->rtc_charge_uv = value ? MIN(MAX(value, RTC_CHARGE_MIN_UV),
                                            RTC_CHARGE_MAX_UV) : 0;

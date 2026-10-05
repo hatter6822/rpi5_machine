@@ -147,7 +147,7 @@ TEST(mbox_identity, "mbox/identity")
 /*
  * The clocks the Raspberry Pi 5's firmware lists, with config.txt's
  * defaults for their least and most rates: the table the model starts
- * from (TODO(WS0.4): check it against a hardware transcript)
+ * from (unverified, PLAN.md P09)
  */
 static const struct {
     uint32_t id;
@@ -245,8 +245,8 @@ static bool rtc_reg(uint32_t reg, bool write, uint32_t *value)
 /*
  * The real-time clock as Linux's rtc-rpi driver, and through it hwclock,
  * use it: it counts seconds, takes a new time and an alarm, and reports
- * the range of the backup battery's charger (TODO(WS0.4): check the range
- * on hardware). The test puts back what it changes, as on hardware the
+ * the range of the backup battery's charger (unverified, PLAN.md
+ * P10). The test puts back what it changes, as on hardware the
  * time is the board's and an enabled alarm powers it on, and leaves the
  * charger alone, which would harm a battery that is not rechargeable.
  */

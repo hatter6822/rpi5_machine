@@ -7,10 +7,10 @@
 
 # Processed device-tree bindings (make check-dt)
 /build-dt-schema/
-/build-series/
 
 # Firmware built for make check-firmware
 /build-firmware/
 
 __pycache__/
+.ruff_cache/
 *.py[co]

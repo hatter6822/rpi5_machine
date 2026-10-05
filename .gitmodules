@@ -2,7 +2,14 @@
 	path = qemu
 	url = https://gitlab.com/qemu-project/qemu.git
 	shallow = true
-	# The overlay and patch series are applied into this work tree, so
+	# The overlay and patches are applied into this work tree, so
 	# local modifications there are expected; only the pinned commit is
 	# tracked by this repository.
 	ignore = dirty
+[submodule "rpi-utils"]
+	# The Raspberry Pi utilities, for dtmerge: the firmware's dtoverlay
+	# code, which scripts/rpi5-boot applies overlays with ('make build'
+	# builds it). A commit of the default branch, which has no tags.
+	path = rpi-utils
+	url = https://github.com/raspberrypi/utils.git
+	shallow = true

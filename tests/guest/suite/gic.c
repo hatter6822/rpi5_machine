@@ -13,10 +13,10 @@
 #include <bm/world.h>
 
 /*
- * 288 SPIs + 32 private interrupts: TODO(WS1.3) until GICD_TYPER is read
- * on hardware. Five priority bits: GIC-400 TRM, section 3.1, of which
- * the Non-secure side of a GIC with the Security Extensions sees the top
- * four, as below TF-A.
+ * 288 SPIs + 32 private interrupts, unverified (PLAN.md P01) until
+ * GICD_TYPER is read on hardware. Five priority bits: GIC-400 TRM,
+ * section 3.1, of which the Non-secure side of a GIC with the Security
+ * Extensions sees the top four, as below TF-A.
  */
 TEST(gic_geometry, "gic/geometry")
 {

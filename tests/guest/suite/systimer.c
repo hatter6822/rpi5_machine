@@ -33,10 +33,10 @@ static void st_write(uint32_t reg, uint32_t val)
  * is bracketed by generic counter reads, so the time it reports must lie
  * between the inner and outer brackets however slow MMIO accesses are.
  *
- * TODO(WS1.7): QEMU derives the generic counter from a whole number of
- * nanoseconds per tick, 18 for 54 MHz, so it runs 2.9% fast (55.6 MHz)
- * against every other clock. Allow 4% until that is fixed; the note
- * reports the measured rate.
+ * Deferred (PLAN.md P22): QEMU derives the generic counter from a whole
+ * number of nanoseconds per tick, 18 for 54 MHz, so it runs 2.9% fast
+ * (55.6 MHz) against every other clock. Allow 4% until that is fixed;
+ * the note reports the measured rate.
  */
 TEST(systimer_rate, "systimer/rate")
 {

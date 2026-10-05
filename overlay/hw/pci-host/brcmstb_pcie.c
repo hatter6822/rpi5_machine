@@ -40,8 +40,8 @@
  * controls, statistics, QoS maps, timeouts) keep what is written to
  * them. The MDIO bus completes each access at once and reads as zero.
  * Reset clears every register but those noted.
- * TODO(WS0.4): take the reset values, the PHY's MDIO registers and
- * MISC_REVISION from hardware.
+ * Unverified (PLAN.md P07): the reset values, the PHY's MDIO registers
+ * and MISC_REVISION.
  */
 
 #include "qemu/osdep.h"
@@ -996,7 +996,7 @@ static void brcmstb_pcie_host_realize(DeviceState *dev, Error **errp)
 
 /*
  * What the boot firmware programs when it keeps the link for the OS.
- * TODO(WS0.4): compare with a register dump taken with pciex4_reset=0.
+ * Unverified (PLAN.md P08): a register dump taken with pciex4_reset=0.
  */
 #define BRCMSTB_PCIE_PREINIT_OUT_SIZE   (4 * GiB)
 #define BRCMSTB_PCIE_PREINIT_IN_BAR     2
@@ -1030,7 +1030,7 @@ static void brcmstb_pcie_preinit(BrcmstbPCIeHostState *s)
 
     /*
      * The root port: bus 1 behind it, PCI 0 to 4 GiB forwarded, memory
-     * and bus mastering on. TODO(WS0.4): the firmware's window.
+     * and bus mastering on. Unverified (PLAN.md P08): the firmware's window.
      */
     pci_host_config_write_common(d, PCI_PRIMARY_BUS, pci_config_size(d),
                                  0x010100, 4);

@@ -25,9 +25,6 @@ ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 QEMU="$ROOT/qemu"
 OVERLAY="$ROOT/overlay"
 PATCHES="$ROOT/patches"
-SERIES="$ROOT/series"
-EXPORT_MARKER=.qemu-tree-export     # marks a directory export may empty
-                                    # (and 'make distclean' remove)
 
 die() { printf 'qemu-tree: %s\n' "$*" >&2; exit 1; }
 info() { printf '  %-8s %s\n' "$1" "$2"; }
@@ -45,14 +42,6 @@ usage: scripts/qemu-tree <command> [args]
   refresh <patch> [<file>...]
                         regenerate <patch> from the qemu/ work tree, from
                         the files it changes plus any <file> named
-  export [-v <n>] [--signoff] [--build] <dir>
-                        write the upstream series to <dir>: each patch
-                        with the overlay files series/series.map assigns
-                        to it, as one commit on the pinned revision, plus
-                        a cover letter from series/cover.txt; check that
-                        it applies with git am and passes checkpatch.
-                        --build builds every commit, --signoff adds your
-                        Signed-off-by (git config user.name and .email)
 EOF
 }
 
@@ -432,179 +421,11 @@ write_patch() {
         "$commit" >"$out"
 }
 
-# patch_slug <patch>: its file name without the number and extension
-patch_slug() {
-    local n
-    n=$(basename "$1" .patch)
-    printf '%s\n' "${n#[0-9][0-9][0-9][0-9]-}"
-}
-
-cmd_export() {
-    local version=1 signoff='' build='' out
-    while [ $# -gt 0 ]; do
-        case $1 in
-        -v) [ $# -ge 2 ] || die "-v needs a number"
-            version=$2; shift 2 ;;
-        --signoff) signoff=1; shift ;;
-        --build) build=1; shift ;;
-        -*) die "export: unknown option $1" ;;
-        *) break ;;
-        esac
-    done
-    [ $# -eq 1 ] || die "usage: export [-v <n>] [--signoff] [--build] <dir>"
-    [[ $version =~ ^[1-9][0-9]*$ ]] || die "-v needs a number"
-    out=$(realpath -m "$1")
-    # The directory is emptied first, so it must be new, empty, or one an
-    # earlier export made and marked. Nothing else is export's to empty,
-    # however much it looks like a series: patches/ itself is one.
-    [ ! -e "$out" ] || [ -d "$out" ] || die "$out is not a directory"
-    if [ -e "$out" ] && [ ! -f "$out/$EXPORT_MARKER" ] &&
-       [ -n "$(find "$out" -mindepth 1 -maxdepth 1 -print -quit 2>&1)" ]; then
-        die "$out exists and was not made by 'export'; give a new or empty directory"
-    fi
-    local map="$SERIES/series.map" cover="$SERIES/cover.txt"
-    [ -f "$map" ] || die "needs $map"
-    [ -f "$cover" ] || die "needs $cover"
-
-    # Which overlay files each patch brings; each file exactly once
-    local -A files_of=() owner=() slugs=()
-    local line slug f p
-    while IFS= read -r line; do
-        line=${line%%#*}
-        [ -n "${line//[[:space:]]/}" ] || continue
-        [[ $line == *:* ]] || die "series.map: no ':' in: $line"
-        slug=${line%%:*}
-        slug=${slug//[[:space:]]/}
-        [ -z "${files_of[$slug]+x}" ] || die "series.map: $slug listed twice"
-        files_of[$slug]=${line#*:}
-        for f in ${files_of[$slug]}; do
-            [ -f "$OVERLAY/$f" ] || die "series.map: no overlay/$f"
-            [ -z "${owner[$f]:-}" ] ||
-                die "series.map: $f is in both ${owner[$f]} and $slug"
-            owner[$f]=$slug
-        done
-    done <"$map"
-    while IFS= read -r f; do
-        [ -n "${owner[$f]:-}" ] || die "series.map: overlay/$f is in no patch"
-    done < <(overlay_list)
-    while IFS= read -r p; do
-        slugs[$(patch_slug "$p")]=1
-    done < <(patch_list)
-    for slug in "${!files_of[@]}"; do
-        [ -n "${slugs[$slug]:-}" ] || die "series.map: no patch named $slug"
-    done
-
-    # Commits need a committer, and a Signed-off-by must be the user's own.
-    # They are made in a worktree of qemu/, which has a config of its own,
-    # so resolve the identity here and hand it on explicitly.
-    local ident name email
-    if ident=$(git -C "$ROOT" -c user.useConfigOnly=true \
-               var GIT_COMMITTER_IDENT 2>/dev/null); then
-        name=${ident% <*}
-        email=${ident#*<}
-        email=${email%%>*}
-    elif [ -n "$signoff" ]; then
-        die "--signoff needs git config user.name and user.email"
-    else
-        name=qemu-tree
-        email=qemu-tree@localhost
-    fi
-    export GIT_COMMITTER_NAME=$name GIT_COMMITTER_EMAIL=$email
-
-    # The series is based on the revision the superproject pins, whatever
-    # qemu/ has checked out
-    local base tmp tree
-    base=$(git -C "$ROOT" ls-tree HEAD qemu | awk '{ print $3 }')
-    [ -n "$base" ] || die "the superproject does not pin a qemu/ revision"
-    qgit cat-file -e "$base^{commit}" 2>/dev/null ||
-        die "pinned revision ${base:0:12} is not in qemu/; run 'git submodule update qemu'"
-    tmp=$(mktemp -d)
-    tree="$tmp/tree"
-    # shellcheck disable=SC2064 # expand now: $tmp is local
-    trap "qgit worktree remove --force '$tree' 2>/dev/null; \
-          qgit worktree remove --force '$tmp/check' 2>/dev/null; \
-          rm -rf '$tmp'" EXIT
-    qgit worktree add -q --detach "$tree" "$base"
-
-    if [ -n "$build" ]; then
-        info configure "$tmp/build"
-        mkdir "$tmp/build"
-        (cd "$tmp/build" && "$tree/configure" --target-list=aarch64-softmmu \
-            --disable-docs --disable-user >"$tmp/configure.log" 2>&1) ||
-            { cat "$tmp/configure.log" >&2; die "configure failed"; }
-    fi
-
-    local -a am=(am --quiet)
-    [ -z "$signoff" ] || am+=(--signoff)
-    while IFS= read -r p; do
-        git -C "$tree" "${am[@]}" "$p" ||
-            die "$(basename "$p") does not apply to the pinned revision"
-        slug=$(patch_slug "$p")
-        if [ -n "${files_of[$slug]:-}" ]; then
-            for f in ${files_of[$slug]}; do
-                mkdir -p "$(dirname "$tree/$f")"
-                cp "$OVERLAY/$f" "$tree/$f"
-                git -C "$tree" add "$f"
-            done
-            git -C "$tree" commit --quiet --amend --no-edit
-        fi
-        info commit "$(git -C "$tree" log -1 --format=%s)"
-        if [ -n "$build" ]; then
-            ninja -C "$tmp/build" qemu-system-aarch64 >"$tmp/build.log" 2>&1 ||
-                { tail -n 40 "$tmp/build.log" >&2
-                  die "does not build: $(basename "$p")"; }
-            info built "$(basename "$p")"
-        fi
-    done < <(patch_list)
-
-    local -a fp=(format-patch --quiet --cover-letter --base="$base"
-                 -o "$out")
-    [ "$version" = 1 ] || fp+=(-v "$version")
-    [ ! -d "$out" ] || find "$out" -mindepth 1 -delete
-    mkdir -p "$out"
-    touch "$out/$EXPORT_MARKER"
-    git -C "$tree" "${fp[@]}" "$base..HEAD"
-
-    # The cover letter: the first line of cover.txt is its subject
-    local letter subject
-    letter=$(find "$out" -name '*0000-cover-letter.patch')
-    subject=$(head -n1 "$cover")
-    awk -v subject="$subject" -v blurb="$cover" '
-        /\*\*\* SUBJECT HERE \*\*\*/ { sub(/\*\*\* SUBJECT HERE \*\*\*/, subject) }
-        $0 == "*** BLURB HERE ***" {
-            getline l < blurb       # the subject line
-            while ((getline l < blurb) > 0) {
-                if (started || l != "") { print l; started = 1 }
-            }
-            next
-        }
-        { print }' "$letter" >"$tmp/letter"
-    mv "$tmp/letter" "$letter"
-
-    # What reviewers get: it applies to the pinned revision as is...
-    local -a patches
-    mapfile -t patches < <(find "$out" -name '*.patch' ! -name '*0000-*' |
-                           LC_ALL=C sort)
-    qgit worktree add -q --detach "$tmp/check" "$base"
-    git -C "$tmp/check" am --quiet "${patches[@]}" ||
-        die "the exported series does not apply with git am"
-    [ "$(git -C "$tmp/check" rev-parse 'HEAD^{tree}')" = \
-      "$(git -C "$tree" rev-parse 'HEAD^{tree}')" ] ||
-        die "the exported series does not reproduce the tree"
-
-    # ...and passes checkpatch (from the result, for its MAINTAINERS)
-    local -a cp=()
-    [ -n "$signoff" ] || cp+=(--no-signoff)
-    (cd "$tree" && scripts/checkpatch.pl --terse "${cp[@]}" "${patches[@]}") ||
-        die "checkpatch found errors"
-    info exported "${#patches[@]} patches and a cover letter in $out"
-}
-
 [ $# -ge 1 ] || { usage; exit 1; }
 cmd=$1
 shift
 case "$cmd" in
-apply | unapply | status | new | refresh | export) "cmd_$cmd" "$@" ;;
+apply | unapply | status | new | refresh) "cmd_$cmd" "$@" ;;
 -h | --help | help) usage ;;
 *) usage >&2; exit 1 ;;
 esac

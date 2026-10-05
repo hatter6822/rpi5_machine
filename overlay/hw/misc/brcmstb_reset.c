@@ -12,8 +12,8 @@
  * init. Each bank of 0x18 bytes drives 32 reset lines: a write of ones to
  * SET asserts lines, to CLEAR deasserts them, and STATUS reads which are
  * asserted. The bank's other three words are unknown and read as zero;
- * Linux never touches them. Every line is deasserted at reset: TODO(WS0.4)
- * check the lines the boot firmware leaves asserted.
+ * Linux never touches them. Every line is deasserted at reset.
+ * Unverified (PLAN.md P16): the lines the boot firmware leaves asserted.
  *
  * brcmstb-rescal (brcm,bcm7216-pcie-sata-rescal) calibrates the PHYs'
  * termination resistors. Setting START runs the calibration, which in the

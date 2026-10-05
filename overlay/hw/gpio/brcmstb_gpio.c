@@ -31,8 +31,8 @@
  * STAT & MASK. Reset makes every line an input, with
  * every interrupt disabled and falling-edge detection; STAT is cleared.
  * Bits beyond a bank's width read as zero and ignore writes.
- * TODO(WS0.4): check the reset values and the level of DATA for an
- * open-drain line on hardware.
+ * Unverified (PLAN.md P15): the reset values and the level of DATA for
+ * an open-drain line.
  */
 
 #include "qemu/osdep.h"
