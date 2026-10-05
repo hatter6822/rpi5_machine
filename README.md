@@ -184,9 +184,11 @@ raw image whose size is a power of two up to 2 GiB, or a multiple of
 command instead of running it, `--root` and `--append` change the command
 line, and anything after `--` goes to QEMU; `scripts/rpi5-boot --help` has
 the rest. It runs this checkout's `build/qemu-system-aarch64`, or the QEMU
-that `QEMU` or `--qemu` names, and applies overlays with this checkout's
-`build/dtmerge`, or the one `DTMERGE` or `--dtmerge` names (which
-needs the fix in `patches/rpi-utils/`: it reads what is on the card).
+that `QEMU` or `--qemu` names, and prepares the device tree (overlays,
+parameters, and what the firmware does to every tree) with this
+checkout's `build/dtmerge`, or the one `DTMERGE` or `--dtmerge` names
+(which needs the fix in `patches/rpi-utils/`: it reads what is on the
+card).
 
 ## Documentation
 

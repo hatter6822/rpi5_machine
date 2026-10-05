@@ -1088,7 +1088,30 @@ reference agrees. `fdtget` and `fdtput` read the aliases and write
 `/chosen`'s prefixes. (Until the cleanup that retired
 the upstream work, the script carried a 1,000-line Python port of
 `dtoverlay.c` and libfdt's editing, checked against `dtmerge` byte for
-byte.) The command line is `cmdline.txt`'s first
+byte.) *What the port did, and where it is now* (`OverlayTest` and
+`ParityTest` in `test_rpi5_boot.py` pin it): reading a blob and refusing one that is not
+valid, or too large, which now refuses the boot from a base tree that
+`dtmerge` cannot load (its limit is 200,000 bytes, against the port's
+2 MiB) and skips an overlay it cannot load; libfdt's edits (where new
+properties and nodes go, padding, packing), the overlay map and the
+platform it is read for, fix-ups and phandles, fragments (dormant ones,
+`target`, `target-path`, aliases, exported labels), every kind of
+parameter, a parameter looked up in the open overlay and then the base
+tree, the map's parameters before the line's, and the `i2c_arm`/`i2c_vc`
+synonyms, all of which `dtmerge` does; the order of the lines, what
+fails being reported and skipped, `"dtoverlay="` closing the overlay,
+`/chosen`'s prefixes (the node made where libfdt makes it) and the
+command line's `serial0`/`serial1`, which rpi5-boot does. Three had
+been lost with the port and are back: a tree with no `dtoverlay` or
+`dtparam` line now goes through `dtmerge` too, for the synonyms and the
+check; an alias may name an alias, followed eight times, so a cycle
+ends; and a `serialN` alias names the console's node however either
+path is written (unit addresses left out, a slash after), which libfdt
+decides. One was dropped on purpose: the port refused a tree nested
+more than 64 deep, which the firmware's code passes on and Linux
+reports. Two differ from the firmware, as rows: P26 (what a failing
+target or fragment leaves) and P27 (synonyms made again on each run).
+The command line is `cmdline.txt`'s first
 line with `serial0` and `serial1` turned into the UARTs the tree's
 aliases name (`ttyAMA10` on a Pi 5), `root=` replaced by `--root` and
 `--append` added. QEMU runs with `-action reboot=shutdown` and a QMP
@@ -2193,4 +2216,5 @@ pin them check the model against itself, not against silicon.
 | P23 | *deferred:* split `overlay/tests/qtest/raspi5b-test.c` (127 tests, every device) into a test per device beside a small board test. Its helpers (GIC pending checks, mailbox requests, PCIe and SD set-up) are shared across devices, so the split needs a common header or source and per-test meson entries in `patches/0038-*`; left out of the cleanup that retired the upstream work | — | — | WS9.1 |
 | P24 | *deferred:* `make check-minimal` configures the `raspi5b`-only QEMU but no longer builds or boots it, so a device the machine uses but its Kconfig fails to `select` shows only at run time, in a build without the other boards. A cheap check that derives the symbols of the types `bcm2712.c` creates from the build's own meson rules would close it | — | — | WS0.6 |
 | P25 | *deferred:* `dtmerge` (Raspberry Pi utilities, `dtoverlay_extract_override()`) read an override's cell offset with `atoi()`, so a negative one (`"prop:-4"`) made `dtoverlay_override_one_target()` write before the property's buffer, and one near `INT_MAX` overflowed the length it computes. rpi5-boot runs `dtmerge` on the trees and overlays of the card it boots, so a crafted image could corrupt the host process's heap; upstream (checked at `e0484c8`) has no fix. `make build` builds `dtmerge` with `patches/rpi-utils/0001-*.patch`, which refuses such an offset as a malformed override; a `dtmerge` named with `DTMERGE` or `--dtmerge` must carry it too. Report upstream, move to the fixed commit and drop the patch | `Makefile` (`DTMERGE_PATCH`) | `test_rpi5_boot.OverlayTest.test_failures` (`neg`) | WS3.5 |
-| P26 | *deferred:* a parameter with several `__overrides__` targets is skipped whole when one target fails: `dtmerge` stops at the first error and writes nothing, where the firmware sets the targets in the tree in place and keeps those it set before the failing one. Matching it needs `dtmerge` to keep going past a non-fatal error (a patch to `dtmerge.c`, with rpi5-boot reading the errors from its output), not a parser of the overrides here | `scripts/rpi5-boot` (`compose_tree`) | — | WS3.5 |
+| P26 | *deferred:* a parameter with several `__overrides__` targets is skipped whole when one target fails, and an overlay one of whose fragments cannot be merged is skipped whole: `dtmerge` stops at the first error and writes nothing, where the firmware changes the tree in place and keeps the targets it set and the fragments it merged before the failing one. Matching it needs `dtmerge` to keep going past a non-fatal error (a patch to `dtmerge.c`, with rpi5-boot reading the errors from its output), not a parser of the overrides here | `scripts/rpi5-boot` (`compose_tree`) | — | WS3.5 |
+| P27 | *deferred:* `dtmerge` makes the `i2c_arm`/`i2c_vc` synonyms (when the tree has no `i2c` alias) at the start of every run, and rpi5-boot runs it once for the tree and once per overlay or parameter, where the firmware makes them once, before the first overlay: an overlay that changes the `i2c0` or `i2c1` alias, label or parameter of such a tree has the synonyms follow it. A Pi 5's own tree has an `i2c` alias, so it never gets them. Matching it needs every line applied in one `dtmerge` run (with P26's patch), not a copy of the synonyms here | `scripts/rpi5-boot` (`compose_tree`) | `test_rpi5_boot.ParityTest` (the synonyms) | WS3.5 |

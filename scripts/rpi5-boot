@@ -165,9 +165,9 @@ class Dtmerge:
         if os.path.lexists(out):
             os.remove(out)
         proc = run_tool([self.path, "-d", self.tree, out, overlay, *params],
-                        "config.txt's dtoverlay and dtparam lines need "
-                        "dtmerge: run 'make build', or name one with "
-                        "--dtmerge or DTMERGE")
+                        "the device tree is prepared by dtmerge: run "
+                        "'make build', or name one with --dtmerge or "
+                        "DTMERGE")
         said = []
         self.mapped = None
         for line in (proc.stdout + proc.stderr).decode(
@@ -635,6 +635,10 @@ class Config:
 # the command line
 
 AMBA_UARTS = (b"arm,pl011", b"arm,pl011-axi", b"arm,primecell")
+# How many aliases naming aliases a path is followed through
+ALIAS_HOPS = 8
+# The property serial_tty() marks a node with, in a copy of the tree
+PROBE = "rpi5-boot,probe"
 
 
 class Boot:
@@ -840,7 +844,21 @@ def compose_tree(boot, verbose, dtmerge=None):
             map_file = None
         merge = Dtmerge(dtmerge or os.environ.get("DTMERGE") or
                         repo_dtmerge() or "dtmerge", tree,
-                        {overlays + "/": boot.overlay_dir})
+                        {overlays + "/": boot.overlay_dir,
+                         tree: boot.dtb})
+        # The tree as the firmware starts from it, whatever config.txt
+        # says: read and checked (a blob that is not one, or larger than
+        # the firmware's code takes, is no device tree to boot with),
+        # given the i2c_arm and i2c_vc synonyms when it has no "i2c"
+        # alias, and packed. dtmerge does each of these on every run;
+        # this run is the one a config.txt without dtoverlay and dtparam
+        # lines gets. Deferred (PLAN.md P27): the later runs make the
+        # synonyms again from the tree the earlier ones left.
+        ok, said = merge.run("-", [], trial)
+        if not ok:
+            raise BootError(f"device tree {boot.dtb}: "
+                            f"{'; '.join(said) or 'dtmerge failed'}")
+        os.replace(trial, tree)
 
         def report(param, said):
             unknown = unknown_parameter(said)
@@ -885,6 +903,8 @@ def compose_tree(boot, verbose, dtmerge=None):
                 else:
                     ok, said = False, ["not an overlay's name"]
                 if not ok:
+                    # Deferred (PLAN.md P26): an overlay one of whose
+                    # fragments cannot be merged is skipped whole
                     for line in said or ["dtmerge failed"]:
                         log(line if f"'{name}'" in line else
                             f"failed to load overlay '{name}': {line}")
@@ -920,10 +940,10 @@ def serial_tty(tree, which):
     when that UART has no serialN alias"""
     if tree is None:
         return None
-    with tempfile.NamedTemporaryFile(prefix=f"{PROG}-", suffix=".dtb") as f:
-        f.write(tree)
-        f.flush()
-        dtb = f.name
+    with tempfile.TemporaryDirectory(prefix=f"{PROG}-") as tmp:
+        dtb = os.path.join(tmp, "tree.dtb")
+        with open(dtb, "wb") as f:
+            f.write(tree)
         aliases = fdtget(dtb, "/aliases")
         if aliases is None:
             return None
@@ -933,15 +953,19 @@ def serial_tty(tree, which):
                 if name in aliases else None
 
         def resolve(path):
-            """@path with an alias it starts with replaced, as libfdt
-            resolves one, and no trailing slash"""
-            if not path.startswith("/"):
+            """@path with the alias it starts with replaced by the
+            alias's value, as libfdt's fdt_path_offset() replaces it,
+            and again while that starts with an alias: at most
+            ALIAS_HOPS times, so that a cycle of aliases names nothing"""
+            for _ in range(ALIAS_HOPS + 1):
+                if path.startswith("/"):
+                    return path
                 first, slash, rest = path.partition("/")
-                target = alias(first)
-                if target is None or not target.startswith("/"):
+                path = alias(first)
+                if not path:
                     return None
-                path = target.rstrip("/") + slash + rest
-            return path.rstrip("/") or "/"
+                path += slash + rest
+            return None
 
         if which == 0:
             path = alias("console") or alias("serial0")
@@ -951,9 +975,19 @@ def serial_tty(tree, which):
         node = resolve(path) if path else None
         if node is None or fdtget(dtb, node) is None:
             return None
+        # Which serialN names that node, however its path is written
+        # (with or without unit addresses, through other aliases): libfdt
+        # decides, finding the node marked through each alias's path
+        marked = os.path.join(tmp, "marked.dtb")
+        shutil.copyfile(dtb, marked)
+        proc = run_tool(["fdtput", "-t", "x", marked, node, PROBE, "1"],
+                        FDT_TOOLS)
+        if proc.returncode:
+            return None
         for name in aliases:
             m = re.fullmatch(r"serial(\d+)", name)
-            if m and resolve(alias(name) or "") == node:
+            other = resolve(alias(name) or "") if m else None
+            if other and fdtget(marked, other, PROBE) is not None:
                 compatible = (fdtget(dtb, node, "compatible") or
                               b"").split(b"\0")
                 amba = any(c in AMBA_UARTS for c in compatible)

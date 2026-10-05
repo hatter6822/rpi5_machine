@@ -80,17 +80,43 @@ RPI_UTILS_SRCS := rpi-utils/dtmerge/dtmerge.c rpi-utils/dtmerge/dtoverlay.c
 DTMERGE_PATCH  := patches/rpi-utils/0001-dtoverlay-Refuse-an-override-s-offset-outside-a-property.patch
 DTOVERLAY_SRC  := $(BUILD_DIR)/dtmerge-src/dtoverlay.c
 
-# A grouped target: one 'git submodule update' for both files, even with -j
-$(RPI_UTILS_SRCS) &:
-	git submodule update --init --depth 1 rpi-utils
+RPI_UTILS_STAMP := $(BUILD_DIR)/.rpi-utils-commit
 
-$(DTOVERLAY_SRC): rpi-utils/dtmerge/dtoverlay.c $(DTMERGE_PATCH)
+# Holds the rpi-utils commit this checkout pins (its gitlink in the index,
+# which 'git submodule update' checks out) and is rewritten only when that
+# changes. Every make checks the submodule against it: one that is not
+# checked out, or at another commit (after switching to a revision that
+# pins another), is updated first, so dtmerge is never built from a stale
+# checkout. One target runs git, so -j runs it once. Outside a git
+# checkout the sources are taken as they are.
+$(RPI_UTILS_STAMP): FORCE
+	@mkdir -p $(@D)
+	@want=$$(git rev-parse -q --verify :rpi-utils 2>/dev/null); \
+	if [ -n "$$want" ]; then \
+		have=; \
+		if [ -e rpi-utils/.git ]; then \
+			have=$$(git -C rpi-utils rev-parse -q --verify HEAD); \
+		fi; \
+		if [ "$$have" != "$$want" ]; then \
+			echo "git submodule update --init --depth 1 rpi-utils"; \
+			git submodule update --init --depth 1 rpi-utils || exit 1; \
+		fi; \
+	else \
+		want=untracked; \
+	fi; \
+	printf '%s\n' "$$want" | cmp -s - $@ || printf '%s\n' "$$want" >$@
+
+# The sources are as new as the stamp says: made by its recipe
+$(RPI_UTILS_SRCS): $(RPI_UTILS_STAMP) ;
+
+$(DTOVERLAY_SRC): rpi-utils/dtmerge/dtoverlay.c $(DTMERGE_PATCH) \
+		$(RPI_UTILS_STAMP)
 	@mkdir -p $(@D)
 	patch -s -o $@ rpi-utils/dtmerge/dtoverlay.c $(DTMERGE_PATCH)
 
-$(DTMERGE): rpi-utils/dtmerge/dtmerge.c $(DTOVERLAY_SRC)
+$(DTMERGE): rpi-utils/dtmerge/dtmerge.c $(DTOVERLAY_SRC) $(RPI_UTILS_STAMP)
 	@mkdir -p $(@D)
-	$(CC) -O2 -Irpi-utils/dtmerge -o $@ $^ -lfdt
+	$(CC) -O2 -Irpi-utils/dtmerge -o $@ $(filter %.c,$^) -lfdt
 
 # After 'build', never beside it: two ninja processes must not share a
 # build directory (make -j would otherwise run both at once)

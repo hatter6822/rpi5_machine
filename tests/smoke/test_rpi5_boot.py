@@ -633,6 +633,155 @@ class OverlayTest(unittest.TestCase):
                 self.assertNotIn("/rtc@68", tree)
 
 
+# What the Python port of dtoverlay.c and libfdt that rpi5-boot carried
+# did to the tree and the command line beyond what dtmerge does with an
+# overlay or a parameter, which rpi5-boot now gets from dtmerge, fdtget
+# and fdtput: each row a fixture and the behaviour it pins (docs/PLAN.md,
+# WS3.5, has the inventory).
+
+def base_with(*edits, padding=0):
+    """BASE_DTS with each (old, new) replaced, compiled with @padding
+    bytes of free space"""
+    source = BASE_DTS
+    for old, new in edits:
+        assert old in source, old
+        source = source.replace(old, new)
+    return subprocess.run(["dtc", "-q", "-@", "-p", str(padding), "-I",
+                           "dts", "-O", "dtb", "-o", "-", "-"],
+                          input=source.encode(), capture_output=True,
+                          check=True).stdout
+
+
+def aliased_console(*chain):
+    """BASE_DTS whose console alias leads through the aliases @chain
+    (name, value) to the UART"""
+    return base_with(("console = &uart10;",
+                      "".join(f'{name} = "{value}"; '
+                              for name, value in chain)))
+
+
+def deep_base(depth):
+    """BASE_DTS with nodes nested @depth deep under the root"""
+    return base_with(("    leds {", "   " + " a {" * (depth - 1) +
+                      " };" * (depth - 1) + "\n    leds {"))
+
+
+UART10_PATH = "/soc@107c000000/serial@7d001000"
+CONSOLE = "console=serial0,115200 kgdboc=serial1"
+# (what the old code did, the card's tree, config.txt, what comes of it):
+# the tree's properties ((path, name): value, None for none, "#packed" and
+# "#first node" for the blob's layout), the command line ("cmdline"), or
+# the error that refuses the tree ("error")
+PARITY_CASES = (
+    ("i2c synonyms, with no dtoverlay or dtparam line", None, "",
+     {("/aliases", "i2c_arm"): string(UART10_PATH.replace(
+         "serial@7d001000", "i2c@7d005000")),
+      ("/aliases", "i2c_vc"): string(UART10_PATH.replace(
+          "serial@7d001000", "i2c@7d005600")),
+      ("/__symbols__", "i2c_arm"): string(UART10_PATH.replace(
+          "serial@7d001000", "i2c@7d005000")),
+      ("/__overrides__", "i2c_arm"): "i2c0",
+      ("/__overrides__", "i2c_vc"): "i2c1",
+      ("/__overrides__", "i2c_baudrate"): "i2c0_baudrate",
+      ("/__overrides__", "i2c_arm_baudrate"): "i2c0_baudrate",
+      ("/__overrides__", "i2c_vc_baudrate"): None}),
+    ("no i2c synonyms beside an \"i2c\" alias",
+     base_with(("i2c0 = &i2c0;", "i2c = &i2c0;")), "",
+     {("/aliases", "i2c_arm"): None, ("/__overrides__", "i2c_arm"): None}),
+    ("the blob packed, with no dtoverlay or dtparam line",
+     base_with(padding=4096), "", {"#packed": True}),
+    ("/chosen made, before the root's other nodes, for the prefixes",
+     base_with(("chosen {", "unchosen {")), "os_prefix=\n",
+     {("/chosen", "os_prefix"): b"\0",
+      ("/chosen", "overlay_prefix"): string("overlays/"),
+      "#first node": "/chosen"}),
+    ("nodes nested deeper than Linux reads are passed on, as the "
+     "firmware's code passes them", deep_base(65), "",
+     {("/" + "/".join(["a"] * 64), "#node"): True}),
+    ("a blob that is not one refuses the boot", b"junk" * 16, "",
+     {"error": "device tree bcm2712-rpi-5-b.dtb: "}),
+    ("a blob larger than the firmware's code takes refuses the boot",
+     base_with(padding=200000), "",
+     {"error": "device tree bcm2712-rpi-5-b.dtb: "}),
+    ("an alias naming an alias", aliased_console(("console", "serial10")),
+     "", {"cmdline": "console=ttyAMA10,115200 kgdboc=ttyS1"}),
+    ("aliases followed eight times",
+     aliased_console(*((f"console{i or ''}", f"console{i + 1}")
+                       for i in range(8)),
+                     ("console8", UART10_PATH)),
+     "", {"cmdline": "console=ttyAMA10,115200 kgdboc=ttyS1"}),
+    ("aliases followed no more than eight times",
+     aliased_console(*((f"console{i or ''}", f"console{i + 1}")
+                       for i in range(9)),
+                     ("console9", UART10_PATH)),
+     "", {"cmdline": CONSOLE.replace("serial1", "ttyS1")}),
+    ("a cycle of aliases names nothing",
+     aliased_console(("console", "ping"), ("ping", "pong/"),
+                     ("pong", "ping")),
+     "", {"cmdline": CONSOLE.replace("serial1", "ttyS1")}),
+    ("a node named without its unit address, or with a slash after it, is "
+     "the one its serialN alias names",
+     aliased_console(("console", "/soc/serial@7d001000/")),
+     "", {"cmdline": "console=ttyAMA10,115200 kgdboc=ttyS1"}),
+    ("the Bluetooth UART through an alias",
+     base_with(("bluetooth = &bt;", 'bluetooth = "serial1/bluetooth";')),
+     "", {"cmdline": "console=ttyAMA10,115200 kgdboc=ttyS1"}),
+)
+
+
+@unittest.skipUnless(HAVE_DTMERGE, "needs dtc, fdtget, fdtput and dtmerge "
+                     "(make build)")
+class ParityTest(unittest.TestCase):
+    """What the removed Python port did that dtmerge does not do with an
+    overlay or a parameter: kept, whatever config.txt holds"""
+
+    def run_case(self, blob, conf):
+        """The tree and command line of a boot from @blob with config.txt
+        @conf: (tree, its blob, command line), or the BootError"""
+        files = {"kernel_2712.img": b"", "cmdline.txt": CONSOLE,
+                 "bcm2712-rpi-5-b.dtb": blob or dtc(BASE_DTS)}
+        boot, _ = boot_files(conf, files)
+        with Logs():
+            try:
+                rb.compose_tree(boot, False, str(DTMERGE))
+            except rb.BootError as err:
+                return err
+            rb.kernel_cmdline(boot, None, "")
+        return fdt.parse(boot.tree), boot.tree, boot.cmdline
+
+    def test_parity(self):
+        for name, blob, conf, expected in PARITY_CASES:
+            with self.subTest(name):
+                result = self.run_case(blob, conf)
+                failed = isinstance(result, rb.BootError)
+                self.assertEqual(failed, "error" in expected,
+                                 result if failed else "booted")
+                if failed:
+                    self.assertTrue(str(result).startswith(
+                        expected["error"]), str(result))
+                    continue
+                tree, raw, cmdline = result
+                for key, value in expected.items():
+                    if key == "cmdline":
+                        self.assertEqual(cmdline, value)
+                    elif key == "#packed":
+                        total, _, strings = struct.unpack_from(
+                            ">III", raw, 4)
+                        size = struct.unpack_from(">I", raw, 32)[0]
+                        self.assertEqual((total, len(raw)),
+                                         (strings + size, strings + size))
+                    elif key == "#first node":
+                        self.assertEqual(list(tree)[1], value)
+                    elif key[1] == "#node":
+                        self.assertIn(key[0], tree)
+                    elif value is None:
+                        self.assertNotIn(key[1], tree.get(key[0], {}))
+                    else:
+                        if isinstance(value, str):
+                            value = tree[key[0]][value]
+                        self.assertEqual(tree[key[0]][key[1]], value, key)
+
+
 # ---------------------------------------------------------------------------
 # config.txt and the files it names
 
@@ -933,7 +1082,8 @@ class BootFilesTest(unittest.TestCase):
         self.assertEqual(boot.armstub, "bl31.bin")
 
 
-@unittest.skipUnless(HAVE_DTC, "needs dtc (device-tree-compiler)")
+@unittest.skipUnless(HAVE_DTMERGE, "needs dtc, fdtget, fdtput and dtmerge "
+                     "(make build)")
 class CommandLineTest(unittest.TestCase):
     """cmdline.txt as the kernel gets it"""
 
