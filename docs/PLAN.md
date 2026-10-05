@@ -1084,8 +1084,10 @@ does not load, is reported and skipped. Each run numbers the phandles
 an overlay adds from the highest the tree holds, where the firmware,
 applying every overlay in one run, goes on from its own count: with
 several overlays the numbers can differ from the firmware's, while every
-reference agrees. `fdtget` and `fdtput` read the aliases and write
-`/chosen`'s prefixes. (Until the cleanup that retired
+reference agrees. libfdt (through `ctypes`, the library `fdtget`
+links) reads the aliases and the overlay map, and `fdtput` writes
+`/chosen`'s prefixes, with `--` before the card's strings, which end at
+their first NUL as the firmware's C strings do. (Until the cleanup that retired
 the upstream work, the script carried a 1,000-line Python port of
 `dtoverlay.c` and libfdt's editing, checked against `dtmerge` byte for
 byte.) *What the port did, and where it is now* (`OverlayTest` and
@@ -1107,7 +1109,9 @@ been lost with the port and are back: a tree with no `dtoverlay` or
 check; an alias may name an alias, followed eight times, so a cycle
 ends; and a `serialN` alias names the console's node however either
 path is written (unit addresses left out, a slash after), which libfdt
-decides. One was dropped on purpose: the port refused a tree nested
+decides: each path is resolved to its node's offset and the offsets are
+compared, so nothing the card's tree holds (a property of any name on
+another node) changes which alias matches. One was dropped on purpose: the port refused a tree nested
 more than 64 deep, which the firmware's code passes on and Linux
 reports. Two differ from the firmware, as rows: P26 (what a failing
 target or fragment leaves) and P27 (synonyms made again on each run).

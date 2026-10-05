@@ -103,7 +103,8 @@ patches are applied to the submodule's work tree, which `.gitmodules` marks
 
 Requirements: the usual QEMU build dependencies (a C compiler, Python 3 with
 `venv`, ninja, GLib, pixman, libfdt), plus clang and lld for the test guests,
-`dtc`/`fdtget`/`fdtput` for `scripts/rpi5-boot` and the device-tree tests,
+`dtc`/`fdtget`/`fdtput` and the libfdt library for `scripts/rpi5-boot` and
+the device-tree tests,
 and mtools, which `scripts/rpi5-boot` reads SD card images with; `make
 lint` needs shellcheck and ruff.
 On Debian/Ubuntu:

@@ -24,7 +24,7 @@ watchdog's reset status (Linux passes reboot N's partition to PSCI's
 SYSTEM_RESET2, which QEMU lacks). It stops when the guest powers off or
 QEMU ends otherwise.
 
-Reading the image needs mtools; changing its device tree dtc's fdtget and
+Reading the image needs mtools; changing its device tree libfdt, dtc's
 fdtput, and dtmerge, which 'make build' builds; and running it a QEMU
 with the raspi5b machine, that is one built from this tree. The
 image is the card, which the guest writes to: a raw image, decompressed
@@ -38,6 +38,8 @@ card again.
 """
 
 import argparse
+import ctypes
+import ctypes.util
 import json
 import os
 import re
@@ -84,8 +86,8 @@ def log(message):
 # The firmware applies config.txt's overlays and parameters with its own
 # dtoverlay code, which raspberrypi/utils publishes as dtmerge. rpi5-boot
 # runs that dtmerge ('make build' builds it from the pinned rpi-utils
-# submodule) instead of carrying a copy of the code, and reads and writes
-# single properties with dtc's fdtget and fdtput.
+# submodule) instead of carrying a copy of the code, reads trees with
+# libfdt, and writes single properties with dtc's fdtput.
 
 def run_tool(cmd, need):
     """@cmd run to its end, its output captured; @need says what a
@@ -95,47 +97,121 @@ def run_tool(cmd, need):
     except OSError as err:
         raise BootError(f"cannot run {cmd[0]}: {err.strerror}: {need}") \
             from None
+    except ValueError as err:
+        # An argument no command line can hold (a NUL), which the card's
+        # strings never reach, as they end at their first NUL
+        raise BootError(f"cannot run {cmd[0]}: {err}") from None
 
 
-FDT_TOOLS = "reading and changing device trees needs dtc's fdtget and " \
-    "fdtput (device-tree-compiler)"
-
-
-def fdtget(dtb, node, prop=None):
-    """The value of @prop of @node in the blob file @dtb, as bytes, or
-    with @prop None the names of @node's properties; None when the blob
-    has no such node or property. @node may start with an alias."""
-    if prop is None:
-        proc = run_tool(["fdtget", "-p", dtb, node], FDT_TOOLS)
-        if proc.returncode:
-            return None
-        return proc.stdout.decode(errors="surrogateescape").split()
-    proc = run_tool(["fdtget", "-t", "bx", dtb, node, prop], FDT_TOOLS)
-    if proc.returncode:
-        return None
-    return bytes(int(b, 16) for b in proc.stdout.split())
-
-
-def fdtget_string(dtb, node, prop):
-    """The first string of @prop, or None"""
-    value = fdtget(dtb, node, prop)
-    if value is None:
-        return None
-    return value.split(b"\0")[0].decode(errors="surrogateescape")
+FDT_TOOLS = "changing device trees needs dtc's fdtput " \
+    "(device-tree-compiler)"
 
 
 def fdtput_string(dtb, node, prop, value):
     """@prop of @node set to the string @value, the node made if need be"""
-    if fdtget(dtb, node) is None:
-        proc = run_tool(["fdtput", "-c", dtb, node], FDT_TOOLS)
+    with open(dtb, "rb") as f:
+        exists = Fdt(f.read()).offset(node) is not None
+    if not exists:
+        proc = run_tool(["fdtput", "-c", "--", dtb, node], FDT_TOOLS)
         if proc.returncode:
             raise BootError(f"fdtput: cannot add {node}: "
                             f"{proc.stderr.decode(errors='replace').strip()}")
-    proc = run_tool(["fdtput", "-t", "s", dtb, node, prop, value],
+    proc = run_tool(["fdtput", "-t", "s", "--", dtb, node, prop, value],
                     FDT_TOOLS)
     if proc.returncode:
         raise BootError(f"fdtput: cannot set {node}/{prop}: "
                         f"{proc.stderr.decode(errors='replace').strip()}")
+
+
+class Fdt:
+    """The device tree blob @blob, read in place by libfdt, the library
+    dtc's tools and the firmware's dtoverlay code read trees with: a node
+    is its offset in the blob, so that two paths name the same node when
+    libfdt finds the same offset for them, however they are written,
+    and nothing is read from or written to the tree to tell"""
+
+    lib = None
+
+    @classmethod
+    def library(cls):
+        if cls.lib is None:
+            name = ctypes.util.find_library("fdt") or "libfdt.so.1"
+            try:
+                lib = ctypes.CDLL(name)
+            except OSError:
+                raise BootError("reading device trees needs libfdt "
+                                "(libfdt1, which device-tree-compiler "
+                                "brings)") from None
+            void, int_ = ctypes.c_void_p, ctypes.c_int
+            int_p = ctypes.POINTER(int_)
+            for func, args, res in (
+                    ("fdt_check_header", (void,), int_),
+                    ("fdt_check_full", (void, ctypes.c_size_t), int_),
+                    ("fdt_path_offset", (void, ctypes.c_char_p), int_),
+                    ("fdt_first_property_offset", (void, int_), int_),
+                    ("fdt_next_property_offset", (void, int_), int_),
+                    ("fdt_getprop_by_offset",
+                     (void, int_, ctypes.POINTER(ctypes.c_char_p), int_p),
+                     void),
+                    ("fdt_getprop", (void, int_, ctypes.c_char_p, int_p),
+                     void)):
+                if hasattr(lib, func):
+                    getattr(lib, func).argtypes = args
+                    getattr(lib, func).restype = res
+            cls.lib = lib
+        return cls.lib
+
+    def __init__(self, blob):
+        self.libfdt = self.library()
+        self.buf = ctypes.create_string_buffer(bytes(blob), len(blob))
+        size = struct.unpack_from(">I", blob, 4)[0] \
+            if len(blob) >= 8 else 0
+        if size > len(blob) or self.libfdt.fdt_check_header(self.buf):
+            raise BootError("the device tree is not one libfdt reads")
+        if hasattr(self.libfdt, "fdt_check_full") and \
+           self.libfdt.fdt_check_full(self.buf, len(blob)):
+            raise BootError("the device tree is not one libfdt reads")
+
+    def offset(self, path):
+        """The node @path names (an absolute path, as libfdt's
+        fdt_path_offset() follows it), or None"""
+        if not path.startswith("/"):
+            return None
+        path = path.encode(errors="surrogateescape").split(b"\0")[0]
+        offset = self.libfdt.fdt_path_offset(self.buf, path)
+        return offset if offset >= 0 else None
+
+    def properties(self, node):
+        """The names of @node's properties, in the order of the blob"""
+        names = []
+        lib = self.libfdt
+        offset = lib.fdt_first_property_offset(self.buf, node)
+        while offset >= 0:
+            name = ctypes.c_char_p()
+            size = ctypes.c_int()
+            if lib.fdt_getprop_by_offset(self.buf, offset,
+                                         ctypes.byref(name),
+                                         ctypes.byref(size)) and name.value:
+                names.append(name.value.decode(errors="surrogateescape"))
+            offset = lib.fdt_next_property_offset(self.buf, offset)
+        return names
+
+    def value(self, node, prop):
+        """The value of @node's property @prop, as bytes, or None"""
+        size = ctypes.c_int()
+        value = self.libfdt.fdt_getprop(
+            self.buf, node, prop.encode(errors="surrogateescape"),
+            ctypes.byref(size))
+        if not value or size.value < 0:
+            return None
+        return ctypes.string_at(value, size.value)
+
+    def string(self, node, prop):
+        """The first string of @node's property @prop, or None"""
+        value = self.value(node, prop)
+        if value is None:
+            return None
+        return value.split(b"\0")[0].decode(errors="surrogateescape")
 
 
 def repo_dtmerge():
@@ -373,6 +449,10 @@ class BootFs:
         except FileNotFoundError:
             raise BootError(f"{command} not found: reading the image "
                             "needs mtools") from None
+        except (OSError, ValueError) as err:
+            raise BootError(f"cannot run {command}: "
+                            f"{getattr(err, 'strerror', None) or err}") \
+                from None
         if proc.returncode:
             detail = proc.stderr.decode(errors="replace").strip()
             raise BootError(f"{command} failed on partition "
@@ -585,7 +665,8 @@ class Config:
             log(f"{name}: includes nest too deeply")
             return
         for raw in self.fs.read(name).split(b"\n"):
-            line = raw.rstrip(b"\r")[:CONFIG_LINE_MAX]
+            # The firmware reads each line as a C string: it ends at a NUL
+            line = raw.rstrip(b"\r")[:CONFIG_LINE_MAX].split(b"\0")[0]
             line = line.decode(errors="surrogateescape")
             comment = re.search(r"(^|\s)#", line)
             if comment:
@@ -637,8 +718,6 @@ class Config:
 AMBA_UARTS = (b"arm,pl011", b"arm,pl011-axi", b"arm,primecell")
 # How many aliases naming aliases a path is followed through
 ALIAS_HOPS = 8
-# The property serial_tty() marks a node with, in a copy of the tree
-PROBE = "rpi5-boot,probe"
 
 
 class Boot:
@@ -804,9 +883,16 @@ def overlay_files(boot, overlays, map_file, name):
     if not name or "/" in name or name in (".", ".."):
         return False
     wanted = [name]
-    entry = fdtget(map_file, "/" + name) if map_file else None
-    for prop in entry or ():
-        value = fdtget(map_file, "/" + name, prop) or b""
+    entry = fdt = None
+    if map_file:
+        with open(map_file, "rb") as f:
+            try:
+                fdt = Fdt(f.read())
+            except BootError:
+                fdt = None              # dtmerge says what is wrong
+        entry = fdt and fdt.offset("/" + name)
+    for prop in fdt.properties(entry) if entry is not None else ():
+        value = fdt.value(entry, prop) or b""
         for text in value.split(b"\0"):
             other = text.decode(errors="surrogateescape").partition(",")[0]
             if other and "/" not in other and other not in (".", ".."):
@@ -940,58 +1026,47 @@ def serial_tty(tree, which):
     when that UART has no serialN alias"""
     if tree is None:
         return None
-    with tempfile.TemporaryDirectory(prefix=f"{PROG}-") as tmp:
-        dtb = os.path.join(tmp, "tree.dtb")
-        with open(dtb, "wb") as f:
-            f.write(tree)
-        aliases = fdtget(dtb, "/aliases")
-        if aliases is None:
-            return None
+    fdt = Fdt(tree)
+    node = fdt.offset("/aliases")
+    if node is None:
+        return None
+    aliases = fdt.properties(node)
 
-        def alias(name):
-            return fdtget_string(dtb, "/aliases", name) \
-                if name in aliases else None
+    def alias(name):
+        return fdt.string(node, name) if name in aliases else None
 
-        def resolve(path):
-            """@path with the alias it starts with replaced by the
-            alias's value, as libfdt's fdt_path_offset() replaces it,
-            and again while that starts with an alias: at most
-            ALIAS_HOPS times, so that a cycle of aliases names nothing"""
-            for _ in range(ALIAS_HOPS + 1):
-                if path.startswith("/"):
-                    return path
-                first, slash, rest = path.partition("/")
-                path = alias(first)
-                if not path:
-                    return None
-                path += slash + rest
-            return None
+    def resolve(path):
+        """@path with the alias it starts with replaced by the alias's
+        value, as libfdt's fdt_path_offset() replaces it, and again while
+        that starts with an alias: at most ALIAS_HOPS times, so that a
+        cycle of aliases names nothing; the node it names, or None"""
+        for _ in range(ALIAS_HOPS + 1):
+            if path.startswith("/"):
+                return fdt.offset(path)
+            first, slash, rest = path.partition("/")
+            path = alias(first)
+            if not path:
+                return None
+            path += slash + rest
+        return None
 
-        if which == 0:
-            path = alias("console") or alias("serial0")
-        else:
-            path = alias("bluetooth")
-            path = path.rpartition("/")[0] if path else alias("serial1")
-        node = resolve(path) if path else None
-        if node is None or fdtget(dtb, node) is None:
-            return None
-        # Which serialN names that node, however its path is written
-        # (with or without unit addresses, through other aliases): libfdt
-        # decides, finding the node marked through each alias's path
-        marked = os.path.join(tmp, "marked.dtb")
-        shutil.copyfile(dtb, marked)
-        proc = run_tool(["fdtput", "-t", "x", marked, node, PROBE, "1"],
-                        FDT_TOOLS)
-        if proc.returncode:
-            return None
-        for name in aliases:
-            m = re.fullmatch(r"serial(\d+)", name)
-            other = resolve(alias(name) or "") if m else None
-            if other and fdtget(marked, other, PROBE) is not None:
-                compatible = (fdtget(dtb, node, "compatible") or
-                              b"").split(b"\0")
-                amba = any(c in AMBA_UARTS for c in compatible)
-                return ("ttyAMA" if amba else "ttyS") + m.group(1)
+    if which == 0:
+        path = alias("console") or alias("serial0")
+    else:
+        path = alias("bluetooth")
+        path = path.rpartition("/")[0] if path else alias("serial1")
+    uart = resolve(path) if path else None
+    if uart is None:
+        return None
+    # Which serialN names that node, however its path is written (with or
+    # without unit addresses, a slash after, through other aliases):
+    # libfdt finds the node of each, and the nodes are compared
+    for name in aliases:
+        m = re.fullmatch(r"serial(\d+)", name)
+        if m and resolve(alias(name) or "") == uart:
+            compatible = (fdt.value(uart, "compatible") or b"").split(b"\0")
+            amba = any(c in AMBA_UARTS for c in compatible)
+            return ("ttyAMA" if amba else "ttyS") + m.group(1)
     return None
 
 
@@ -1001,8 +1076,9 @@ def kernel_cmdline(boot, root, append):
     replaced by @root if given, and @append added"""
     name = os_file(boot.os_prefix, boot.config.get("cmdline", "cmdline.txt"))
     if boot.fs.exists(name):
-        text = boot.fs.read(name).decode(errors="replace")
-        text = text.split("\n")[0].strip()
+        # The command line is a C string, which ends at a NUL
+        text = boot.fs.read(name).split(b"\n")[0].split(b"\0")[0]
+        text = text.decode(errors="replace").strip()
     else:
         log(f"no {name}: the kernel's command line is empty")
         text = ""
@@ -1184,9 +1260,10 @@ def run_qemu(cmd, verbose):
                    "-action", "shutdown=pause",
                    "-run-with", "exit-with-parent=on"],
             pass_fds=(fd,))
-    except OSError as err:
+    except (OSError, ValueError) as err:
         ours.close()
-        raise BootError(f"cannot run {cmd[0]}: {err.strerror}") from None
+        raise BootError(f"cannot run {cmd[0]}: "
+                        f"{getattr(err, 'strerror', None) or err}") from None
     finally:
         theirs.close()
     stopped = []
@@ -1367,6 +1444,11 @@ def main(argv=None):
         return boot_loop(args)
     except BootError as err:
         log(str(err))
+        return 1
+    except ValueError as err:
+        # What the card holds is checked where it is read; one that gets
+        # past that is still refused with a message, never a traceback
+        log(f"cannot boot {args.image}: {err}")
         return 1
     except KeyboardInterrupt:
         return 128 + signal.SIGINT

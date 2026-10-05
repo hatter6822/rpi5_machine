@@ -671,62 +671,74 @@ CONSOLE = "console=serial0,115200 kgdboc=serial1"
 # (what the old code did, the card's tree, config.txt, what comes of it):
 # the tree's properties ((path, name): value, None for none, "#packed" and
 # "#first node" for the blob's layout), the command line ("cmdline"), or
-# the error that refuses the tree ("error")
-PARITY_CASES = (
-    ("i2c synonyms, with no dtoverlay or dtparam line", None, "",
-     {("/aliases", "i2c_arm"): string(UART10_PATH.replace(
-         "serial@7d001000", "i2c@7d005000")),
-      ("/aliases", "i2c_vc"): string(UART10_PATH.replace(
-          "serial@7d001000", "i2c@7d005600")),
-      ("/__symbols__", "i2c_arm"): string(UART10_PATH.replace(
-          "serial@7d001000", "i2c@7d005000")),
-      ("/__overrides__", "i2c_arm"): "i2c0",
-      ("/__overrides__", "i2c_vc"): "i2c1",
-      ("/__overrides__", "i2c_baudrate"): "i2c0_baudrate",
-      ("/__overrides__", "i2c_arm_baudrate"): "i2c0_baudrate",
-      ("/__overrides__", "i2c_vc_baudrate"): None}),
-    ("no i2c synonyms beside an \"i2c\" alias",
-     base_with(("i2c0 = &i2c0;", "i2c = &i2c0;")), "",
-     {("/aliases", "i2c_arm"): None, ("/__overrides__", "i2c_arm"): None}),
-    ("the blob packed, with no dtoverlay or dtparam line",
-     base_with(padding=4096), "", {"#packed": True}),
-    ("/chosen made, before the root's other nodes, for the prefixes",
-     base_with(("chosen {", "unchosen {")), "os_prefix=\n",
-     {("/chosen", "os_prefix"): b"\0",
-      ("/chosen", "overlay_prefix"): string("overlays/"),
-      "#first node": "/chosen"}),
-    ("nodes nested deeper than Linux reads are passed on, as the "
-     "firmware's code passes them", deep_base(65), "",
-     {("/" + "/".join(["a"] * 64), "#node"): True}),
-    ("a blob that is not one refuses the boot", b"junk" * 16, "",
-     {"error": "device tree bcm2712-rpi-5-b.dtb: "}),
-    ("a blob larger than the firmware's code takes refuses the boot",
-     base_with(padding=200000), "",
-     {"error": "device tree bcm2712-rpi-5-b.dtb: "}),
-    ("an alias naming an alias", aliased_console(("console", "serial10")),
-     "", {"cmdline": "console=ttyAMA10,115200 kgdboc=ttyS1"}),
-    ("aliases followed eight times",
-     aliased_console(*((f"console{i or ''}", f"console{i + 1}")
-                       for i in range(8)),
-                     ("console8", UART10_PATH)),
-     "", {"cmdline": "console=ttyAMA10,115200 kgdboc=ttyS1"}),
-    ("aliases followed no more than eight times",
-     aliased_console(*((f"console{i or ''}", f"console{i + 1}")
-                       for i in range(9)),
-                     ("console9", UART10_PATH)),
-     "", {"cmdline": CONSOLE.replace("serial1", "ttyS1")}),
-    ("a cycle of aliases names nothing",
-     aliased_console(("console", "ping"), ("ping", "pong/"),
-                     ("pong", "ping")),
-     "", {"cmdline": CONSOLE.replace("serial1", "ttyS1")}),
-    ("a node named without its unit address, or with a slash after it, is "
-     "the one its serialN alias names",
-     aliased_console(("console", "/soc/serial@7d001000/")),
-     "", {"cmdline": "console=ttyAMA10,115200 kgdboc=ttyS1"}),
-    ("the Bluetooth UART through an alias",
-     base_with(("bluetooth = &bt;", 'bluetooth = "serial1/bluetooth";')),
-     "", {"cmdline": "console=ttyAMA10,115200 kgdboc=ttyS1"}),
-)
+# the error that refuses the tree ("error"). The fixtures are compiled
+# when the test runs, so that the module loads without dtc and the tests
+# that need it are skipped.
+def parity_cases():
+    return (
+        ("i2c synonyms, with no dtoverlay or dtparam line", None, "",
+         {("/aliases", "i2c_arm"): string(UART10_PATH.replace(
+             "serial@7d001000", "i2c@7d005000")),
+          ("/aliases", "i2c_vc"): string(UART10_PATH.replace(
+              "serial@7d001000", "i2c@7d005600")),
+          ("/__symbols__", "i2c_arm"): string(UART10_PATH.replace(
+              "serial@7d001000", "i2c@7d005000")),
+          ("/__overrides__", "i2c_arm"): "i2c0",
+          ("/__overrides__", "i2c_vc"): "i2c1",
+          ("/__overrides__", "i2c_baudrate"): "i2c0_baudrate",
+          ("/__overrides__", "i2c_arm_baudrate"): "i2c0_baudrate",
+          ("/__overrides__", "i2c_vc_baudrate"): None}),
+        ("no i2c synonyms beside an \"i2c\" alias",
+         base_with(("i2c0 = &i2c0;", "i2c = &i2c0;")), "",
+         {("/aliases", "i2c_arm"): None, ("/__overrides__", "i2c_arm"): None}),
+        ("the blob packed, with no dtoverlay or dtparam line",
+         base_with(padding=4096), "", {"#packed": True}),
+        ("/chosen made, before the root's other nodes, for the prefixes",
+         base_with(("chosen {", "unchosen {")), "os_prefix=\n",
+         {("/chosen", "os_prefix"): b"\0",
+          ("/chosen", "overlay_prefix"): string("overlays/"),
+          "#first node": "/chosen"}),
+        ("nodes nested deeper than Linux reads are passed on, as the "
+         "firmware's code passes them", deep_base(65), "",
+         {("/" + "/".join(["a"] * 64), "#node"): True}),
+        ("a blob that is not one refuses the boot", b"junk" * 16, "",
+         {"error": "device tree bcm2712-rpi-5-b.dtb: "}),
+        ("a blob larger than the firmware's code takes refuses the boot",
+         base_with(padding=200000), "",
+         {"error": "device tree bcm2712-rpi-5-b.dtb: "}),
+        ("an alias naming an alias", aliased_console(("console", "serial10")),
+         "", {"cmdline": "console=ttyAMA10,115200 kgdboc=ttyS1"}),
+        ("aliases followed eight times",
+         aliased_console(*((f"console{i or ''}", f"console{i + 1}")
+                           for i in range(8)),
+                         ("console8", UART10_PATH)),
+         "", {"cmdline": "console=ttyAMA10,115200 kgdboc=ttyS1"}),
+        ("aliases followed no more than eight times",
+         aliased_console(*((f"console{i or ''}", f"console{i + 1}")
+                           for i in range(9)),
+                         ("console9", UART10_PATH)),
+         "", {"cmdline": CONSOLE.replace("serial1", "ttyS1")}),
+        ("a cycle of aliases names nothing",
+         aliased_console(("console", "ping"), ("ping", "pong/"),
+                         ("pong", "ping")),
+         "", {"cmdline": CONSOLE.replace("serial1", "ttyS1")}),
+        ("a node named without its unit address, or with a slash after it, is "
+         "the one its serialN alias names",
+         aliased_console(("console", "/soc/serial@7d001000/")),
+         "", {"cmdline": "console=ttyAMA10,115200 kgdboc=ttyS1"}),
+        ("the card's tree decides nothing of how its nodes are matched: a "
+         "property on another UART, whatever its name, leaves the console "
+         "the UART it is",
+         base_with(('compatible = "arm,pl011-axi";',
+                    'compatible = "arm,pl011-axi"; rpi5-boot,probe = <1>;'),
+                   ('compatible = "brcm,bcm7271-uart";',
+                    'compatible = "brcm,bcm7271-uart"; '
+                    'rpi5-boot,probe = <1>;')),
+         "", {"cmdline": "console=ttyAMA10,115200 kgdboc=ttyS1"}),
+        ("the Bluetooth UART through an alias",
+         base_with(("bluetooth = &bt;", 'bluetooth = "serial1/bluetooth";')),
+         "", {"cmdline": "console=ttyAMA10,115200 kgdboc=ttyS1"}),
+    )
 
 
 @unittest.skipUnless(HAVE_DTMERGE, "needs dtc, fdtget, fdtput and dtmerge "
@@ -750,7 +762,7 @@ class ParityTest(unittest.TestCase):
         return fdt.parse(boot.tree), boot.tree, boot.cmdline
 
     def test_parity(self):
-        for name, blob, conf, expected in PARITY_CASES:
+        for name, blob, conf, expected in parity_cases():
             with self.subTest(name):
                 result = self.run_case(blob, conf)
                 failed = isinstance(result, rb.BootError)
@@ -1500,6 +1512,35 @@ class PrintTest(unittest.TestCase):
                 self.assertEqual(
                     "pcie2-preinit=on" in shlex.split(stdout)[2].split(","),
                     preinit)
+
+    def test_card_strings(self):
+        """What the card says reaches the tools rpi5-boot runs as what it
+        is: a config.txt or cmdline.txt line ends at a NUL, as the
+        firmware's C strings do, and a value starting with "-" is no
+        option of theirs"""
+        image = self.tmp / "strings.img"
+        make_card(image, {
+            "config.txt": "dtoverlay=test,speed=9600\0,junk\n"
+                          "dtparam=\0-h\n"
+                          "overlay_prefix=-v/\0junk\n",
+            "cmdline.txt": "console=serial0,115200\0 root=/dev/sda2\n",
+            "kernel_2712.img": b"kernel",
+            "bcm2712-rpi-5-b.dtb": dtc(BASE_DTS),
+            "-v/test.dtbo": dtc(OVERLAY_DTS)})
+        out = self.tmp / "out"
+        status, stdout, stderr = run_boot("--print", "-o", out, image)
+        self.assertEqual((status, stderr), (0, ""))
+        self.assertEqual(shlex.split(stdout)[-3:-2],
+                         ["console=ttyAMA10,115200"])
+        tree = fdt.load(out / "device-tree.dtb")
+        self.assertEqual(tree["/soc@107c000000/serial@7d001000"]
+                         ["current-speed"], cells(9600))
+        self.assertEqual(tree["/chosen"]["overlay_prefix"], string("-v/"))
+
+    def test_run_tool_arguments(self):
+        """An argument no command line can hold is a BootError"""
+        with self.assertRaises(rb.BootError):
+            rb.run_tool(["true", "a\0b"], "nothing")
 
     def test_output_directory(self):
         """Files go to a new or empty directory, or one rpi5-boot made:
