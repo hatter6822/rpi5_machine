@@ -1,0 +1,45 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Mon, 5 Oct 2026 05:29:45 +0000
+Subject: [PATCH] dtoverlay: Refuse an override's offset outside a property
+
+dtoverlay_extract_override() read a cell target's offset with atoi(),
+which takes a sign: "prop:-4" makes dtoverlay_override_one_target()
+write before the property's buffer, a zero-length allocation when the
+property is absent, and an offset near INT_MAX overflows the length it
+computes. Refuse both as a malformed override, as the other malformed
+overrides are refused.
+---
+ dtmerge/dtoverlay.c | 12 +++++++++++-
+ 1 file changed, 11 insertions(+), 1 deletion(-)
+
+diff --git a/dtmerge/dtoverlay.c b/dtmerge/dtoverlay.c
+index 14a2ce1..487c7a5 100644
+--- a/dtmerge/dtoverlay.c
++++ b/dtmerge/dtoverlay.c
+@@ -25,6 +25,7 @@ ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ */
+ 
++#include <limits.h>
+ #include <stdio.h>
+ #include <stdlib.h>
+ #include <stdarg.h>
+@@ -2242,7 +2243,16 @@ static int dtoverlay_extract_override(const char *override_name,
+         else
+         {
+             /* The target is a cell/integer */
+-            *offp = atoi(prop_name + name_len + 1);
++            long off = strtol(prop_name + name_len + 1, NULL, 10);
++            /* A negative offset would patch before the property, and one
++               near INT_MAX overflows the length the patch needs */
++            if (off < 0 || off > INT_MAX - 8)
++            {
++                dtoverlay_error("  override %s: bad offset in '%.*s'",
++                                override_name, target_len, prop_name);
++                return -FDT_ERR_BADVALUE;
++            }
++            *offp = (int)off;
+             *sizep = 1 << (strchr(offset_seps, sep) - offset_seps);
+             type = DTOVERRIDE_INTEGER;
+             dtoverlay_debug("  override %s: cell target %.*s @ offset %d (size %d)",

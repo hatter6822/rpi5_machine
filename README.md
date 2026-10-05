@@ -83,6 +83,7 @@ overlay/       new files, laid out exactly as in the QEMU tree
   hw/sd/bcm2712_sdhci.c         BCM2712 SD host controller
   hw/misc/bcm2712_property.c    Raspberry Pi 5 firmware property interface
 patches/       changes to existing QEMU files (git format-patch series)
+  rpi-utils/   the fix dtmerge is built with (docs/PLAN.md, P25)
 scripts/       qemu-tree: applies the overlay and patches, creates/refreshes
                patches; firmware: builds the pinned firmware the firmware
                tests boot; rpi5-boot: boots an SD card image as a Pi 5's
@@ -184,7 +185,8 @@ command instead of running it, `--root` and `--append` change the command
 line, and anything after `--` goes to QEMU; `scripts/rpi5-boot --help` has
 the rest. It runs this checkout's `build/qemu-system-aarch64`, or the QEMU
 that `QEMU` or `--qemu` names, and applies overlays with this checkout's
-`build/dtmerge`, or the one `DTMERGE` or `--dtmerge` names.
+`build/dtmerge`, or the one `DTMERGE` or `--dtmerge` names (which
+needs the fix in `patches/rpi-utils/`: it reads what is on the card).
 
 ## Documentation
 

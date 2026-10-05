@@ -179,7 +179,7 @@ class Dtmerge:
                 if m:
                     self.mapped = m.group(1)
                 continue
-            line = re.sub(r"^(\* |DTOVERLAY\[\w+\]: )", "", line)
+            line = re.sub(r"^(\* |DTOVERLAY\[\w+\]: )", "", line).strip()
             for path, name in self.names.items():
                 line = line.replace(path, name)
             if line:
@@ -794,7 +794,9 @@ def overlay_files(boot, overlays, map_file, name):
     """The overlay @name copied from the card to the directory
     @overlays, with each one the overlay map names in its entry (the
     overlay it is renamed or remapped to), for dtmerge to choose from;
-    False for a name that cannot be an overlay's"""
+    False for a name that cannot be an overlay's. dtmerge follows one
+    entry of the map, never the entry of the name it maps to (a rename
+    stops there, so a chain of entries goes no further than its first)."""
     if not name or "/" in name or name in (".", ".."):
         return False
     wanted = [name]
@@ -850,7 +852,10 @@ def compose_tree(boot, verbose, dtmerge=None):
 
         def apply(overlay, params, base):
             """@params applied one by one with @overlay to the tree,
-            starting from the blob @base: those that fail are skipped"""
+            starting from the blob @base: those that fail are skipped.
+            Deferred (PLAN.md P26): a parameter with several targets is
+            skipped whole when one fails, where the firmware keeps the
+            targets it set before that one."""
             accepted = []
             for param in params:
                 ok, said = merge.run(overlay, accepted + [param], trial)

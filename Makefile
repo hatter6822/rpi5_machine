@@ -73,15 +73,24 @@ build: configure $(DTMERGE)
 	$(NINJA) -C $(BUILD_DIR) qemu-system-aarch64
 
 # The firmware's dtoverlay code as raspberrypi/utils builds it into
-# dtmerge, which scripts/rpi5-boot applies config.txt's overlays with
-DTMERGE_SRCS := rpi-utils/dtmerge/dtmerge.c rpi-utils/dtmerge/dtoverlay.c
+# dtmerge, which scripts/rpi5-boot applies config.txt's overlays with. It
+# reads the overlays of the cards rpi5-boot boots, so it is built with
+# patches/rpi-utils/, applied to a copy: Deferred (PLAN.md P25).
+RPI_UTILS_SRCS := rpi-utils/dtmerge/dtmerge.c rpi-utils/dtmerge/dtoverlay.c
+DTMERGE_PATCH  := patches/rpi-utils/0001-dtoverlay-Refuse-an-override-s-offset-outside-a-property.patch
+DTOVERLAY_SRC  := $(BUILD_DIR)/dtmerge-src/dtoverlay.c
 
-$(DTMERGE_SRCS):
+# A grouped target: one 'git submodule update' for both files, even with -j
+$(RPI_UTILS_SRCS) &:
 	git submodule update --init --depth 1 rpi-utils
 
-$(DTMERGE): $(DTMERGE_SRCS)
+$(DTOVERLAY_SRC): rpi-utils/dtmerge/dtoverlay.c $(DTMERGE_PATCH)
 	@mkdir -p $(@D)
-	$(CC) -O2 -o $@ $(DTMERGE_SRCS) -lfdt
+	patch -s -o $@ rpi-utils/dtmerge/dtoverlay.c $(DTMERGE_PATCH)
+
+$(DTMERGE): rpi-utils/dtmerge/dtmerge.c $(DTOVERLAY_SRC)
+	@mkdir -p $(@D)
+	$(CC) -O2 -Irpi-utils/dtmerge -o $@ $^ -lfdt
 
 # After 'build', never beside it: two ninja processes must not share a
 # build directory (make -j would otherwise run both at once)

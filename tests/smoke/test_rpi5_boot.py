@@ -436,6 +436,9 @@ OVERLAY_MAP_DTS = """
     test-old {
         renamed = "test";
     };
+    test-older {
+        renamed = "test-mapped";
+    };
     test-gone {
         deprecated = "use test instead";
     };
@@ -582,10 +585,10 @@ class OverlayTest(unittest.TestCase):
             "'overlays/nosuch.dtbo'",
             "failed to set speed=fast: invalid override value 'fast' - "
             "ignored"])
-        # dtmerge writes outside the property for a negative offset, and
-        # may crash for it; whatever it says, the parameter is skipped
-        self.assertTrue(logs[2].startswith("failed to set neg=0x55: "),
-                        logs[2])
+        # A negative offset would write before the property: the patched
+        # dtmerge refuses it (docs/PLAN.md, P25)
+        self.assertEqual(logs[2], "failed to set neg=0x55: override neg: "
+                         "bad offset in 'clock-frequency:-4'")
         self.assertTrue(logs[-1].startswith(
             "failed to load overlay 'broken': "), logs[-1])
         self.assertEqual(tree[self.UART10]["current-speed"], cells(115200))
@@ -609,6 +612,12 @@ class OverlayTest(unittest.TestCase):
         self.assertEqual(logs, ["overlay 'test-old' has been renamed "
                                 "'test'"])
         self.assertIn("/rtc@68", tree)
+        # dtmerge follows one entry: test-mapped's is not looked up
+        tree, logs = compose("dtoverlay=test-older\n")
+        self.assertEqual(logs, [
+            "overlay 'test-older' has been renamed 'test-mapped'",
+            "failed to load overlay 'test-older': failed to open "
+            "'overlays/test-mapped.dtbo'"])
         tree, logs = compose("dtoverlay=test-mapped,flow\n")
         self.assertEqual(logs, [])
         self.assertEqual(tree[self.UART10]["current-speed"], cells(1200))
