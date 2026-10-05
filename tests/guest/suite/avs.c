@@ -102,8 +102,8 @@ static bool find_avs(struct avs *avs)
 /*
  * The sensor reads valid, as Linux requires, and a temperature at which
  * the board runs, below the critical trip; the firmware reports the same
- * temperature, read from the same sensor, within 2 degrees (TODO(WS0.4):
- * check how closely it follows the sensor on hardware).
+ * temperature, read from the same sensor, within 2 degrees (unverified,
+ * PLAN.md P14: how closely it follows the sensor on hardware).
  */
 TEST(avs_temperature, "avs/temperature")
 {

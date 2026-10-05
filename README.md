@@ -1,8 +1,20 @@
 # rpi5_machine
 
 A QEMU machine model for the **Raspberry Pi 5 Model B** (Broadcom BCM2712),
-developed out of tree against a pinned upstream QEMU and shaped for upstream
-submission.
+maintained as an out-of-tree fork of a pinned upstream QEMU release.
+
+Its purpose is to be the emulated Raspberry Pi 5 that
+[seLe4n](https://github.com/hatter6822/seLe4n), a microkernel whose
+first hardware target is the Pi 5, boots on, and more generally to run
+the Pi 5's own boot chain, bare-metal code and Raspberry Pi OS without
+the hardware.
+
+**Out-of-tree, not for upstream.** The model is not submitted to QEMU.
+QEMU's code-provenance policy (`docs/devel/code-provenance.rst`)
+declines contributions that include or derive from AI-generated
+content, and most of this repository was written with an AI assistant
+(Claude). The model still follows QEMU's coding conventions, which keep
+it readable to QEMU developers and cheap to rebase onto new releases.
 
 ```
 $ make setup build guest
@@ -44,7 +56,7 @@ OS Lite boots from an SD card to its login prompt) are done.
 | The firmware's device-tree changes, made anew for each boot: model and serial number, the command line it builds, `/chosen` with the boot's reset status, partition, count and tryboot, the power supply and seeds, the CMA pool and the bootloader configuration | done |
 | Bare-metal test suite (36 tests: interrupts, timers and SGIs on every core, PSCI, resets, mailbox, the firmware's clocks, real-time clock and framebuffer, a tryboot, RNG, the SoC's temperature, UART, L2 interrupt controllers, GPIO interrupts, the SD card's master boot record, Secure/Non-secure GIC groups, the A76's MPIDR and IMPDEF registers) on 1–4 cores, EL2 and EL3 | done |
 | Linux: stock Raspberry Pi OS kernel mounts its root file system from an SD card, on the built-in device tree or `bcm2712-rpi-5-b.dtb`, started directly or by U-Boot from the card | smoke-tested |
-| SD card images booted as a Pi 5's firmware boots them (`scripts/rpi5-boot`): `config.txt` with its filters, the kernel, device tree, overlays and parameters (the blob the firmware's `dtmerge` makes), initramfs and command line it names, the card read again at each reboot with what the reboot left (tryboot, the boot count, the partition asked for) | done: Raspberry Pi OS Lite (2026-09-15, trixie) boots to its login prompt, and `reboot` and `poweroff` work (by hand); smoke-tested in CI with Raspberry Pi OS's kernel, overlays and boot files |
+| SD card images booted as a Pi 5's firmware boots them (`scripts/rpi5-boot`): `config.txt` with its filters, the kernel, device tree, overlays and parameters (applied with the firmware's own code, `dtmerge`), initramfs and command line it names, the card read again at each reboot with what the reboot left (tryboot, the boot count, the partition asked for) | done: Raspberry Pi OS Lite (2026-09-15, trixie) boots to its login prompt, and `reboot` and `poweroff` work (by hand); smoke-tested in CI with Raspberry Pi OS's kernel, overlays and boot files |
 | VideoCore mailbox and firmware property channel: BCM283x tag set, board and firmware identity, and the Pi 5's own answers: its clocks (cpufreq), power domains, reboot flags (tryboot), real-time clock (`hwclock`) and the SoC's temperature (`GET_TEMPERATURE`), and `vcgencmd`'s text commands for them (`measure_temp`, `measure_clock`, `get_config`, `get_throttled`, `version`); the framebuffer, the machine's display, within the VideoCore's 4 MiB | done |
 | System DMA controller | deferred: no modelled device uses it yet ([docs/PLAN.md](docs/PLAN.md), WS5.2) |
 | PCIe root complexes: the three root ports as a Pi 5 C1 shows them, with PERST# and bridge resets, configuration access, outbound and inbound windows, INTx, the root complex's own MSI target and the MIPs that turn MSIs into SPIs; devices on `pcie1.0`, the external connector, work under Linux: an NVMe root file system and an `igb` network card behind a switch are tested; `pcie2-preinit=on` starts PCIe2 as the firmware leaves it with `pciex4_reset=0`, which `scripts/rpi5-boot` follows | done (M4) |
@@ -54,6 +66,8 @@ OS Lite boots from an SD card to its login prompt) are done.
 
 ```
 qemu/          upstream QEMU, pinned as a git submodule (v11.1.1)
+rpi-utils/     the Raspberry Pi utilities, pinned as a git submodule, for
+               dtmerge, the firmware's overlay code
 overlay/       new files, laid out exactly as in the QEMU tree
   hw/arm/bcm2712.c              BCM2712 SoC
   hw/arm/raspi5b.c              Raspberry Pi 5 Model B board
@@ -69,11 +83,11 @@ overlay/       new files, laid out exactly as in the QEMU tree
   hw/sd/bcm2712_sdhci.c         BCM2712 SD host controller
   hw/misc/bcm2712_property.c    Raspberry Pi 5 firmware property interface
 patches/       changes to existing QEMU files (git format-patch series)
-series/        how patches and overlay files form the upstream series, cover letter
+  rpi-utils/   the fix dtmerge is built with (docs/PLAN.md, P25)
 scripts/       qemu-tree: applies the overlay and patches, creates/refreshes
-               patches, exports the upstream series; firmware: builds the
-               pinned firmware the firmware tests boot; rpi5-boot: boots
-               an SD card image as a Pi 5's firmware does
+               patches; firmware: builds the pinned firmware the firmware
+               tests boot; rpi5-boot: boots an SD card image as a Pi 5's
+               firmware does
 tests/guest/   bare-metal runtime, smoke guest and test suite, and a Linux
                /init for the rpi5-boot tests (clang + lld, no GCC)
 tests/smoke/   end-to-end tests that boot the guests
@@ -89,8 +103,10 @@ patches are applied to the submodule's work tree, which `.gitmodules` marks
 
 Requirements: the usual QEMU build dependencies (a C compiler, Python 3 with
 `venv`, ninja, GLib, pixman, libfdt), plus clang and lld for the test guests,
-`dtc`/`fdtget` for the device-tree tests and mtools, which `scripts/rpi5-boot`
-reads SD card images with.
+`dtc`/`fdtget`/`fdtput` and the libfdt library for `scripts/rpi5-boot` and
+the device-tree tests,
+and mtools, which `scripts/rpi5-boot` reads SD card images with; `make
+lint` needs shellcheck and ruff.
 On Debian/Ubuntu:
 
 ```
@@ -101,14 +117,13 @@ $ sudo apt install build-essential python3-venv ninja-build \
 
 | Command | Effect |
 | --- | --- |
-| `make setup` | fetch the pinned QEMU and apply the overlay |
-| `make build` | configure (aarch64-softmmu only) and build `build/qemu-system-aarch64` |
+| `make setup` | fetch the pinned QEMU and Raspberry Pi utilities, and apply the overlay |
+| `make build` | configure (aarch64-softmmu only) and build `build/qemu-system-aarch64`, and `build/dtmerge` |
 | `make check` | run the `raspi5b` qtest, the bare-metal smoke tests and the `rpi5-boot` tests |
-| `make export-series` | write the upstream patch series to `build-series/` and check it (applies, checkpatch; `SERIES_FLAGS=--build` builds every commit) |
-| `make check-minimal` | build a QEMU whose only board is `raspi5b` (in `build-minimal/`) and run the same tests on it |
+| `make check-minimal` | configure a QEMU whose only board is `raspi5b` (in `build-minimal/`) and check that Kconfig resolves it without the other Raspberry Pi boards |
 | `make check-dt` | validate the built-in device tree against the Linux bindings, fetched into `build-dt-schema/` the first time (needs `pip install dtschema` and network access) |
-| `make check-firmware` | boot real firmware with `-bios`: TF-A and U-Boot, built at pinned releases into `build-firmware/` the first time, with the EDK2 port and a Raspberry Pi OS kernel fetched there, and boot them from an SD card too; check `rpi5-boot`'s overlays against the firmware's `dtmerge`, built there too, and boot the kernel with it through a Raspberry Pi OS-style first boot; boot the kernel from an NVMe drive behind a PCIe switch, with an `igb` network card beside it (needs `gcc-aarch64-linux-gnu`, U-Boot's host-tool dependencies `bison flex libssl-dev libgnutls28-dev`, `mkfs.ext4`, and network access) |
-| `make checkpatch` | run QEMU's `checkpatch.pl` over our sources and patches |
+| `make check-firmware` | boot real firmware with `-bios`: TF-A and U-Boot, built at pinned releases into `build-firmware/` the first time, with the EDK2 port and a Raspberry Pi OS kernel fetched there, and boot them from an SD card too; boot the kernel with `rpi5-boot` through a Raspberry Pi OS-style first boot; boot the kernel from an NVMe drive behind a PCIe switch, with an `igb` network card beside it (needs `gcc-aarch64-linux-gnu`, U-Boot's host-tool dependencies `bison flex libssl-dev libgnutls28-dev`, `mkfs.ext4`, and network access) |
+| `make lint` | shellcheck the shell scripts and ruff the Python ones |
 | `make status` | show overlay/patch state and any unmanaged edits in `qemu/` |
 | `make unapply` | return `qemu/` to the pristine pinned commit |
 
@@ -170,12 +185,17 @@ raw image whose size is a power of two up to 2 GiB, or a multiple of
 command instead of running it, `--root` and `--append` change the command
 line, and anything after `--` goes to QEMU; `scripts/rpi5-boot --help` has
 the rest. It runs this checkout's `build/qemu-system-aarch64`, or the QEMU
-that `QEMU` or `--qemu` names.
+that `QEMU` or `--qemu` names, and prepares the device tree (overlays,
+parameters, and what the firmware does to every tree) with this
+checkout's `build/dtmerge`, or the one `DTMERGE` or `--dtmerge` names
+(which needs the fix in `patches/rpi-utils/`: it reads what is on the
+card).
 
 ## Documentation
 
-* [docs/PLAN.md](docs/PLAN.md): the implementation workstreams
-* [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md): workflow, conventions, upstreaming
+* [docs/PLAN.md](docs/PLAN.md): the implementation workstreams, and the
+  provisional values and deferred work (its section 10)
+* [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md): workflow, conventions, tests
 * [docs/hardware/bcm2712.md](docs/hardware/bcm2712.md): memory map, interrupts, boot flow
 
 ## License

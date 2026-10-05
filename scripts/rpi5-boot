@@ -10,7 +10,7 @@ and the overlays and parameters that change it, an initramfs and the
 file with the kernel's command line. rpi5-boot does the same on the
 host, instead of emulating the closed firmware: it evaluates config.txt
 for a Raspberry Pi 5, applies the overlays and parameters to the device
-tree as the firmware's dtoverlay code does (the blob matches dtmerge's),
+tree with the firmware's own dtoverlay code (dtmerge, from raspberrypi/utils),
 turns the command line's serial0 into the UART it names, and runs QEMU
 with the card in the SD slot and the kernel, tree, initramfs and command
 line it chose. When the guest reboots, rpi5-boot reads the card again
@@ -24,8 +24,9 @@ watchdog's reset status (Linux passes reboot N's partition to PSCI's
 SYSTEM_RESET2, which QEMU lacks). It stops when the guest powers off or
 QEMU ends otherwise.
 
-Reading the image needs mtools, and running it a QEMU with the raspi5b
-machine, that is one built from this tree (QEMU 11.1 or later). The
+Reading the image needs mtools; changing its device tree libfdt, dtc's
+fdtput, and dtmerge, which 'make build' builds; and running it a QEMU
+with the raspi5b machine, that is one built from this tree. The
 image is the card, which the guest writes to: a raw image, decompressed
 (xz -d), whose size QEMU's SD card limits to a power of two up to 2 GiB
 and to a multiple of 512 KiB above (truncate -s 8G IMAGE grows one).
@@ -37,6 +38,8 @@ card again.
 """
 
 import argparse
+import ctypes
+import ctypes.util
 import json
 import os
 import re
@@ -78,1041 +81,194 @@ def log(message):
 
 
 # ---------------------------------------------------------------------------
-# Flattened device trees
+# Device trees
 #
-# Edited as libfdt edits a blob in place, which the firmware and dtmerge
-# do: a new property goes before a node's others, a new node before its
-# parent's other subnodes, a property name the strings block lacks is
-# appended to it. A value or name that is resized keeps what libfdt
-# leaves in the padding after it: the bytes the splice moved or left
-# behind. The blob this writes is the one dtmerge writes from a blob dtc
-# wrote: the odd blob with NOP tokens, bytes after its end or another
-# version is read, and written without them.
+# The firmware applies config.txt's overlays and parameters with its own
+# dtoverlay code, which raspberrypi/utils publishes as dtmerge. rpi5-boot
+# runs that dtmerge ('make build' builds it from the pinned rpi-utils
+# submodule) instead of carrying a copy of the code, reads trees with
+# libfdt, and writes single properties with dtc's fdtput.
 
-FDT_MAGIC = 0xd00dfeed
-FDT_BEGIN_NODE, FDT_END_NODE, FDT_PROP, FDT_NOP, FDT_END = 1, 2, 3, 4, 9
-# Linux reads a tree nested at most this deep (drivers/of/fdt.c)
-FDT_MAX_DEPTH = 64
-# Linux on arm64 takes a device tree blob of at most 2 MiB (MAX_FDT_SIZE)
-FDT_MAX_SIZE = 2 << 20
-
-
-class DtError(BootError):
-    """A device tree that cannot be read or changed as asked"""
-
-
-def be32(data, off=0):
-    return struct.unpack_from(">I", data, off)[0]
+def run_tool(cmd, need):
+    """@cmd run to its end, its output captured; @need says what a
+    missing tool keeps from working"""
+    try:
+        return subprocess.run(cmd, capture_output=True, check=False)
+    except OSError as err:
+        raise BootError(f"cannot run {cmd[0]}: {err.strerror}: {need}") \
+            from None
+    except ValueError as err:
+        # An argument no command line can hold (a NUL), which the card's
+        # strings never reach, as they end at their first NUL
+        raise BootError(f"cannot run {cmd[0]}: {err}") from None
 
 
-def cstr(data, off=0):
-    """The NUL-terminated string at @off in @data, as bytes"""
-    end = data.find(b"\0", off)
-    return data[off:] if end < 0 else data[off:end]
+FDT_TOOLS = "changing device trees needs dtc's fdtput " \
+    "(device-tree-compiler)"
 
 
-def tagalign(size):
-    return (size + 3) & ~3
+def fdtput_string(dtb, node, prop, value):
+    """@prop of @node set to the string @value, the node made if need be"""
+    with open(dtb, "rb") as f:
+        exists = Fdt(f.read()).offset(node) is not None
+    if not exists:
+        proc = run_tool(["fdtput", "-c", "--", dtb, node], FDT_TOOLS)
+        if proc.returncode:
+            raise BootError(f"fdtput: cannot add {node}: "
+                            f"{proc.stderr.decode(errors='replace').strip()}")
+    proc = run_tool(["fdtput", "-t", "s", "--", dtb, node, prop, value],
+                    FDT_TOOLS)
+    if proc.returncode:
+        raise BootError(f"fdtput: cannot set {node}/{prop}: "
+                        f"{proc.stderr.decode(errors='replace').strip()}")
 
 
-class Node:
-    """A node: its properties ([name, value, padding] lists) and subnodes
-    in the order of the blob, and the padding after its name"""
+class Fdt:
+    """The device tree blob @blob, read in place by libfdt, the library
+    dtc's tools and the firmware's dtoverlay code read trees with: a node
+    is its offset in the blob, so that two paths name the same node when
+    libfdt finds the same offset for them, however they are written,
+    and nothing is read from or written to the tree to tell"""
 
-    def __init__(self, name, parent=None):
-        self.name = name
-        self.parent = parent
-        self.pad = bytes(tagalign(len(name.encode()) + 1) -
-                         len(name.encode()) - 1)
-        self.props = []
-        self.children = []
-
-    def get(self, name):
-        for prop in self.props:
-            if prop[0] == name:
-                return prop[1]
-        return None
-
-    def path(self):
-        if self.parent is None:
-            return "/"
-        parent = self.parent.path()
-        return (parent if parent != "/" else "") + "/" + self.name
-
-    def subnode(self, name):
-        """libfdt's lookup: a name without a unit address also matches a
-        node's name with one"""
-        for child in self.children:
-            if child.name == name or ("@" not in name and
-                                      child.name.startswith(name + "@")):
-                return child
-        return None
-
-    def walk(self):
-        """This node and its descendants, depth first, in blob order"""
-        yield self
-        for child in self.children:
-            yield from child.walk()
-
-    def copy(self, parent=None):
-        node = Node(self.name, parent)
-        node.pad = self.pad
-        node.props = [list(prop) for prop in self.props]
-        node.children = [child.copy(node) for child in self.children]
-        return node
-
-
-def phandle_of(node):
-    """libfdt's fdt_get_phandle(): 0 for none"""
-    for name in ("phandle", "linux,phandle"):
-        value = node.get(name)
-        if value is not None and len(value) == 4:
-            return be32(value)
-    return 0
-
-
-class Tree:
-    """A device tree blob, parsed"""
-
-    def __init__(self, root, strings, rsvmap, cpuid):
-        self.root = root
-        self.strings = bytearray(strings)
-        self.rsvmap = rsvmap
-        self.cpuid = cpuid
-        self.max_phandle = max((phandle_of(n) for n in root.walk()),
-                               default=0)
-        # Whether an overlay's references were resolved against a base tree
-        self.fixups_applied = False
+    lib = None
 
     @classmethod
-    def parse(cls, blob, what="device tree"):
-        if len(blob) > FDT_MAX_SIZE:
-            raise DtError(f"{what} is {len(blob)} bytes, more than the "
-                          f"{FDT_MAX_SIZE >> 20} MiB a device tree can be")
-        try:
-            return cls._parse(bytes(blob))
-        except (struct.error, IndexError, UnicodeDecodeError,
-                ValueError) as err:
-            raise DtError(f"{what} is not a valid device tree blob "
-                          f"({err})") from None
-
-    @classmethod
-    def _parse(cls, blob):
-        (magic, total, off_struct, off_strings, off_rsv, version, _, cpuid,
-         size_strings, size_struct) = struct.unpack_from(">10I", blob)
-        if magic != FDT_MAGIC or total > len(blob) or version < 16 or \
-           off_struct + size_struct > total or \
-           off_strings + size_strings > total or off_rsv > total:
-            raise ValueError("bad header")
-        rsvmap, pos = [], off_rsv
-        while True:
-            addr, size = struct.unpack_from(">QQ", blob, pos)
-            pos += 16
-            if not addr and not size:
-                break
-            rsvmap.append((addr, size))
-        strings = blob[off_strings:off_strings + size_strings]
-        root, node, pos, depth = None, None, off_struct, 0
-        end = off_struct + size_struct
-        while pos < end:
-            token = be32(blob, pos)
-            pos += 4
-            if token == FDT_BEGIN_NODE:
-                name = cstr(blob, pos)
-                if pos + len(name) >= end:
-                    raise ValueError("unterminated node name")
-                depth += 1
-                if depth > FDT_MAX_DEPTH:
-                    raise ValueError(f"nodes nested more than "
-                                     f"{FDT_MAX_DEPTH} deep")
-                child = Node(name.decode(), node)
-                child.pad = blob[pos + len(name) + 1:
-                                 pos + tagalign(len(name) + 1)]
-                pos += tagalign(len(name) + 1)
-                if node is None:
-                    if root is not None:
-                        raise ValueError("two root nodes")
-                    root = child
-                else:
-                    node.children.append(child)
-                node = child
-            elif token == FDT_END_NODE:
-                if node is None:
-                    raise ValueError("unbalanced nodes")
-                node = node.parent
-                depth -= 1
-            elif token == FDT_PROP:
-                size, name_off = struct.unpack_from(">II", blob, pos)
-                pos += 8
-                if node is None or pos + size > end:
-                    raise ValueError("stray property")
-                name_end = strings.find(b"\0", name_off)
-                if name_off >= len(strings) or name_end < 0:
-                    raise ValueError("property name beyond the strings")
-                name = strings[name_off:name_end].decode()
-                node.props.append([name, blob[pos:pos + size],
-                                   blob[pos + size:pos + tagalign(size)]])
-                pos += tagalign(size)
-            elif token == FDT_END:
-                break
-            elif token != FDT_NOP:
-                raise ValueError(f"bad token {token:#x}")
-        if root is None or node is not None:
-            raise ValueError("no complete root node")
-        return cls(root, strings, rsvmap, cpuid)
-
-    # The blob, as fdt_pack() leaves it
-
-    def _prop_bytes(self, prop):
-        off = self.strings.find(prop[0].encode() + b"\0")
-        return struct.pack(">III", FDT_PROP, len(prop[1]), max(off, 0)) + \
-            prop[1] + prop[2]
-
-    def _node_bytes(self, node):
-        """@node in the blob, in pieces"""
-        yield struct.pack(">I", FDT_BEGIN_NODE) + node.name.encode() + \
-            b"\0" + node.pad
-        for prop in node.props:
-            yield self._prop_bytes(prop)
-        for child in node.children:
-            yield from self._node_bytes(child)
-        yield struct.pack(">I", FDT_END_NODE)
-
-    def _following(self, node, size, prop=None, child=None):
-        """The @size bytes of the blob that follow a point in @node:
-        before its property @prop, or its subnode @child, or else after
-        its name. Past the strings block, libfdt's buffer is zeros."""
-        def pieces():
-            if child is None:
-                for p in node.props[prop or 0:]:
-                    yield self._prop_bytes(p)
-            for c in node.children[child or 0:]:
-                yield from self._node_bytes(c)
-            yield struct.pack(">I", FDT_END_NODE)
-            here = node
-            while here.parent is not None:
-                siblings = here.parent.children
-                index = next(i for i, c in enumerate(siblings) if c is here)
-                for c in siblings[index + 1:]:
-                    yield from self._node_bytes(c)
-                yield struct.pack(">I", FDT_END_NODE)
-                here = here.parent
-            yield struct.pack(">I", FDT_END)
-            yield bytes(self.strings)
-        out = bytearray()
-        for piece in pieces():
-            out += piece
-            if len(out) >= size:
-                break
-        return bytes(out[:size]) + bytes(max(size - len(out), 0))
-
-    def blob(self):
-        body = b"".join(self._node_bytes(self.root)) + \
-            struct.pack(">I", FDT_END)
-        rsv = b"".join(struct.pack(">QQ", a, s) for a, s in self.rsvmap)
-        rsv += bytes(16)
-        off_struct = 40 + len(rsv)
-        off_strings = off_struct + len(body)
-        total = off_strings + len(self.strings)
-        return (struct.pack(">10I", FDT_MAGIC, total, off_struct,
-                            off_strings, 40, 17, 16, self.cpuid,
-                            len(self.strings), len(body)) +
-                rsv + body + bytes(self.strings))
-
-    def string(self, name):
-        """The offset of @name in the strings block, where libfdt finds or
-        appends it"""
-        key = name.encode() + b"\0"
-        off = self.strings.find(key)
-        if off < 0:
-            off = len(self.strings)
-            self.strings += key
-        return off
-
-    # libfdt's edits
-
-    def _resize(self, node, index, size):
-        """The first @size bytes of property @index's value and padding
-        once fdt_splice_struct_() has resized them"""
-        old = node.props[index][1] + node.props[index][2]
-        if size <= len(old):
-            return old[:size]
-        return old + self._following(node, size - len(old), prop=index + 1)
-
-    def setprop(self, node, name, value):
-        """fdt_setprop()"""
-        value = bytes(value)
-        for i, prop in enumerate(node.props):
-            if prop[0] == name:
-                size = tagalign(len(value))
-                prop[2] = self._resize(node, i, size)[len(value):]
-                prop[1] = value
-                return
-        self.string(name)
-        size = 12 + tagalign(len(value))
-        gap = self._following(node, size, prop=0)
-        node.props.insert(0, [name, value, gap[12 + len(value):]])
-
-    def appendprop(self, node, name, value):
-        """fdt_appendprop()"""
-        value = bytes(value)
-        for i, prop in enumerate(node.props):
-            if prop[0] == name:
-                length = len(prop[1]) + len(value)
-                region = bytearray(self._resize(node, i, tagalign(length)))
-                region[len(prop[1]):length] = value
-                prop[1], prop[2] = bytes(region[:length]), \
-                    bytes(region[length:])
-                return
-        self.setprop(node, name, value)
-
-    def delprop(self, node, name):
-        """fdt_delprop()"""
-        for i, prop in enumerate(node.props):
-            if prop[0] == name:
-                del node.props[i]
-                return
-
-    def add_subnode(self, parent, name):
-        """fdt_add_subnode(): after the parent's properties"""
-        child = Node(name, parent)
-        parent.children.insert(0, child)
-        return child
-
-    def set_name(self, node, name):
-        """fdt_set_name()"""
-        raw = name.encode()
-        old = node.name.encode() + b"\0" + node.pad
-        size = tagalign(len(raw) + 1)
-        region = old[:size] if size <= len(old) else \
-            old + self._following(node, size - len(old))
-        node.name = name
-        node.pad = region[len(raw) + 1:]
-
-    def find(self, path, hops=0):
-        """libfdt's fdt_path_offset(), aliases included; an alias naming
-        an alias is followed, a few times, so that a cycle of them ends"""
-        if not path or hops > 8:
-            return None
-        node, rest = self.root, path
-        if not path.startswith("/"):
-            alias, _, rest = path.partition("/")
-            aliases = self.find("/aliases")
-            target = aliases.get(alias) if aliases else None
-            if target is None:
-                return None
-            node = self.find(cstr(target).decode(errors="replace"), hops + 1)
-            if node is None:
-                return None
-        for part in rest.split("/"):
-            if part:
-                node = node.subnode(part)
-                if node is None:
-                    return None
-        return node
-
-    def by_phandle(self, phandle):
-        """libfdt's fdt_node_offset_by_phandle()"""
-        if phandle in (0, 0xffffffff):
-            return None
-        for node in self.root.walk():
-            if phandle_of(node) == phandle:
-                return node
-        return None
-
-    def rename(self, node, name):
-        """dtoverlay_set_node_name(): before an overlay's references are
-        resolved, the paths its fixups and symbols name follow the node"""
-        old_path = node.path()
-        old_name = node.name
-        self.set_name(node, name)
-        if self.fixups_applied or name == old_name:
-            return
-        old = old_path.encode()
-        new = (old_path[:len(old_path) - len(old_name)] + name).encode()
-        for holder in ("/__fixups__", "/__local_fixups__", "/__symbols__"):
-            holder = self.find(holder)
-            if holder is None or holder is self.root:
-                continue
-            for prop in holder.props:
-                parts = prop[1].split(b"\0")
-                changed = False
-                for i, part in enumerate(parts[:-1]):
-                    if part == old or part.startswith(old + b":") or \
-                       part.startswith(old + b"/"):
-                        parts[i] = new + part[len(old):]
-                        changed = True
-                if changed:
-                    self.setprop(holder, prop[0], b"\0".join(parts))
-        local = self.find("/__local_fixups__")
-        if local is not None and local is not self.root:
-            for part in old_path.split("/"):
-                if part and local is not None:
-                    local = local.subnode(part)
-            if local is not None:
-                self.set_name(local, name)
-
-
-# ---------------------------------------------------------------------------
-# Overlays and parameters, as the firmware applies them (and dtmerge, from
-# the same code: raspberrypi/utils, dtmerge/dtoverlay.c)
-
-OV_INTEGER, OV_BOOLEAN, OV_BOOLEAN_INV, OV_STRING, OV_OVERLAY, OV_BYTES = \
-    range(1, 7)
-OFFSET_SEPS = b".;:#?![{="
-TRUE_WORDS = ("y", "yes", "on", "true", "down")
-FALSE_WORDS = ("n", "no", "off", "false")
-
-
-def c_strtoul(text, pos=0):
-    """C's strtoull(text + pos, &end, 0): (value mod 2**64, end), where
-    end is pos when no digits follow"""
-    i, n = pos, len(text)
-    while i < n and text[i] in " \t\n\v\f\r":
-        i += 1
-    neg = False
-    if i < n and text[i] in "+-":
-        neg = text[i] == "-"
-        i += 1
-    base, digits = 10, "0123456789"
-    if text[i:i + 2].lower() == "0x" and i + 2 < n and \
-       text[i + 2].lower() in "0123456789abcdef":
-        base, digits, i = 16, "0123456789abcdef", i + 2
-    elif text[i:i + 1] == "0":
-        base, digits = 8, "01234567"
-    start = i
-    while i < n and text[i].lower() in digits:
-        i += 1
-    if i == start:
-        return 0, pos
-    # More digits than 2**64 has are over the range, whatever they are
-    value = int(text[start:i], base) if i - start <= 32 else 1 << 64
-    if value >= 1 << 64:
-        return (1 << 64) - 1, i                         # ERANGE
-    return (-value if neg else value) % (1 << 64), i
-
-
-def c_atoi(text):
-    """C's atoi(): the decimal number @text starts with, kept within an
-    int, and 0 when there is none"""
-    m = re.match(r"\s*([+-]?)([0-9]+)", text)
-    if not m:
-        return 0
-    value = int(m.group(2)) if len(m.group(2)) <= 10 else 1 << 31
-    value = min(value, (1 << 31) - 1)
-    return -value if m.group(1) == "-" else value
-
-
-def strcspn(data, pos, chars):
-    """C's strcspn() at @pos: stops at any of @chars or at a NUL"""
-    i = pos
-    while i < len(data) and data[i] != 0 and data[i] not in chars:
-        i += 1
-    return i - pos
-
-
-def unescape(text):
-    """dtoverlay's escapes in a string parameter's value"""
-    out, i = bytearray(), 0
-    raw = text.encode(errors="surrogateescape")
-    while i < len(raw):
-        c = raw[i]
-        i += 1
-        if c == 0x5c:                                       # backslash
-            c = raw[i] if i < len(raw) else 0
-            i += 1
-            if 0x30 <= c <= 0x37:
-                c -= 0x30
-                for _ in range(2):
-                    if i < len(raw) and 0x30 <= raw[i] <= 0x37:
-                        c = (c << 3) + raw[i] - 0x30
-                        i += 1
-                    else:
-                        break
-                if c > 255:
-                    c = -1
-            elif chr(c) in "abfnrtv":
-                c = {"a": 7, "b": 8, "f": 12, "n": 10, "r": 13, "t": 9,
-                     "v": 11}[chr(c)]
-            elif c == ord("x"):
-                hexpair = raw[i:i + 2].decode(errors="replace")
-                c = int(hexpair, 16) if re.fullmatch(r"[0-9a-fA-F]{2}",
-                                                     hexpair) else -1
-                i += 2
-            elif chr(c) not in "\\'\"":
-                c = -1
-            if c < 0:
-                raise DtError(f"invalid escape in '{text}'")
-        out.append(c)
-    return bytes(out)
-
-
-def extract_immediate(data, p, want):
-    """A lookup table's value at @p: (end, value): a cell after a NUL, a
-    quoted string or a string up to a comma or brace"""
-    end, value = len(data), None
-    if p + 1 < end and data[p] == 0:
-        p += 1
-        if p + 4 > end:
-            raise DtError("truncated cell immediate")
-        if want:
-            value = str(struct.unpack_from(">i", data, p)[0])
-        return p + 4, value
-    if p < end and data[p] == ord("'"):
-        p += 1
-        n = strcspn(data, p, b"'")
-        if p + n >= end or data[p + n] != ord("'"):
-            raise DtError("unterminated quoted string")
-        if want:
-            value = data[p:p + n].decode(errors="replace")
-        p += n + 1
-    else:
-        n = strcspn(data, p, b",}")
-        if want:
-            value = data[p:p + n].decode(errors="replace")
-        p += n
-    if p < end and data[p] == ord(","):
-        p += 1
-    return p, value
-
-
-def lookup_key(data, p, key):
-    """A lookup table ({key=value,...}) at @p: (value, end). As in
-    dtoverlay, the key and the value share a buffer, so a default that
-    comes before the key's own entry replaces the key it is matched by."""
-    end, buf, found = len(data), key, 0
-    while p < end and data[p] != 0 and data[p] != ord("}"):
-        n = strcspn(data, p, b"=,}")
-        sep = data[p + n] if p + n < end else 0
-        take = False
-        if not n:
-            if sep and not found:
-                take, found = True, 2
-        elif found != 1 and data[p:p + n] == buf.encode():
-            take, found = True, 1
-        p += n
-        if sep == ord("="):
-            p, value = extract_immediate(data, p + 1, take)
-            if take:
-                buf = value
-        elif sep == ord(","):
-            p += 1
-    if not found:
-        raise DtError(f"lookup: no match for '{key}'")
-    if p == end:
-        return buf, p
-    if data[p] == 0:
-        raise DtError("malformed lookup")
-    return buf, p + 2
-
-
-def override_targets(name, data, value):
-    """The targets of parameter @name set to @value, whose __overrides__
-    property is @data, as dtoverlay extracts them: (type, phandle,
-    property, offset, size, value) each"""
-    pos, end = 0, len(data)
-    while pos < end:
-        if end - pos < 6:
-            raise DtError(f"override {name}: data is truncated or mangled")
-        phandle = be32(data, pos)
-        pos += 4
-        nul = data.find(b"\0", pos)
-        if nul < 0:
-            raise DtError(f"override {name}: string is not NUL-terminated")
-        spec_pos, spec = pos, data[pos:nul]
-        pos = nul + 1
-        target_value = value
-        if phandle == 0:
-            # An overlay-wide one: fragments to enable or disable
-            yield OV_OVERLAY, 0, spec.decode(errors="replace"), 0, 0, value
-            continue
-        if phandle & 0x80000000:
-            raise DtError(f"override {name}: bad phandle {phandle:#x}")
-        target_len = strcspn(spec, 0, b"={")
-        name_len = strcspn(spec, 0, OFFSET_SEPS)
-        prop = spec[:name_len].decode(errors="replace")
-        off = size = 0
-        if name_len < target_len:
-            sep = spec[name_len]
-            if sep == ord("?"):
-                kind = OV_BOOLEAN
-            elif sep == ord("!"):
-                kind = OV_BOOLEAN_INV
-            elif sep == ord("["):
-                kind = OV_BYTES
-            else:
-                kind = OV_INTEGER
-                off = c_atoi(spec[name_len + 1:].decode(errors="replace"))
-                if off < 0:
-                    raise DtError(f"negative offset in "
-                                  f"'{spec.decode(errors='replace')}'")
-                size = 1 << OFFSET_SEPS.index(sep)
-        else:
-            kind = OV_STRING
-        if target_len < len(spec):
-            literal_pos = spec_pos + target_len + 1
-            literal = cstr(data, literal_pos)
-            if spec[target_len] == ord("="):
-                if kind in (OV_STRING, OV_BYTES) or literal:
-                    if kind == OV_STRING and not literal and pos < end:
-                        # "prop=",&label: the string that follows
-                        literal = cstr(data, pos)
-                        if data.find(b"\0", pos) < 0:
-                            raise DtError(f"override {name}: string is "
-                                          "not NUL-terminated")
-                        pos += len(literal) + 1
-                    target_value = literal.decode(errors="replace")
-                else:
-                    if pos + 4 > end:
-                        raise DtError(f"override {name}: truncated cell")
-                    target_value = str(be32(data, pos))
-                    pos += 4
-            else:
-                target_value, pos = lookup_key(data, literal_pos, value)
-        if kind == OV_STRING and prop == "status":
-            if target_value in ("y", "yes", "on", "true", "enable", "1"):
-                target_value = "okay"
-            elif target_value in ("n", "no", "off", "false", "0"):
-                target_value = "disabled"
-        yield kind, phandle, prop, off, size, target_value
-
-
-def override_one_target(tree, kind, node, prop, off, size, value):
-    """dtoverlay_override_one_target(): set one target of a parameter"""
-    if kind == OV_STRING:
-        text = unescape(value) + b"\0"
-        current = node.get(prop)
-        if prop == "bootargs" and current and current[0]:
-            tree.setprop(node, prop, current[:-1] + b" ")
-            tree.appendprop(node, prop, text)
-        elif prop == "name":
-            tree.rename(node, cstr(text).decode(errors="replace"))
-        else:
-            tree.setprop(node, prop, text)
-        return
-    if kind == OV_BYTES:
-        out, i = bytearray(), 0
-        while i < len(value):
-            if value[i] in ": \t":
-                i += 1
-                continue
-            pair = value[i:i + 2]
-            if not re.fullmatch(r"[0-9a-fA-F]{2}", pair):
-                raise DtError(f"invalid bytestring at '{value[i:]}'")
-            if len(out) == 32:
-                raise DtError(f"bytestring '{value}' too long")
-            out.append(int(pair, 16))
-            i += 2
-        tree.setprop(node, prop, out)
-        return
-    number, stop = c_strtoul(value)
-    if stop != len(value):
-        if value in TRUE_WORDS:
-            number = 1
-        elif value in FALSE_WORDS:
-            number = 0
-        elif value == "up":
-            number = 2
-        elif kind == OV_OVERLAY:
-            number = int(value != "")
-        else:
-            raise DtError(f"invalid override value '{value}' - ignored")
-    if kind == OV_INTEGER:
-        current = node.get(prop) or b""
-        cells = bytearray(current)
-        if len(cells) < off + size:
-            cells.extend(bytes(off + size - len(cells)))
-        cells[off:off + size] = (number % (1 << (8 * size))).to_bytes(
-            size, "big")
-        if len(current) >= off + size:
-            tree.setprop(node, prop, cells)
-        elif prop != "reg":
-            # "reg" is never created or extended: it names the node
-            tree.setprop(node, prop, cells)
-        if prop == "reg" and off == 0 and "@" in node.name:
-            tree.rename(node, node.name[:node.name.index("@")] +
-                        f"@{number & 0xffffffff:x}")
-    elif kind in (OV_BOOLEAN, OV_BOOLEAN_INV):
-        # A reference the property held goes with it
-        if node.get(prop):
-            delete_fixup(tree, f"{node.path()}:{prop}:{off}")
-        if bool(number) ^ (kind == OV_BOOLEAN_INV):
-            tree.setprop(node, prop, b"")
-        else:
-            tree.delprop(node, prop)
-    elif kind == OV_OVERLAY:
-        ops, i = prop, 0
-        while i < len(ops):
-            op = ops[i]
-            if op not in "+-=!":
-                raise DtError(f"invalid overlay override '{ops}'")
-            frag, stop = c_strtoul(ops, i + 1)
-            active = op == "+" or (op == "=" and number) or \
-                (op == "!" and not number)
-            fragment = tree.find(f"/fragment@{frag}") or \
-                tree.find(f"/fragment-{frag}")
-            if fragment is None:
-                raise DtError(f"fragment {frag} not found")
-            body = fragment.subnode("__dormant__" if active
-                                    else "__overlay__")
-            if body is not None:
-                tree.rename(body, "__overlay__" if active else "__dormant__")
-            i = stop if stop > i + 1 else i + 1
-
-
-def delete_fixup(tree, location):
-    """dtoverlay_delete_fixup(): drop the first "path:property:offset"
-    entry of /__fixups__ that is @location"""
-    fixups = tree.find("/__fixups__")
-    if fixups is None or fixups is tree.root:
-        return
-    key = location.encode() + b"\0"
-    for prop in fixups.props:
-        entries = prop[1]
-        pos = 0
-        while len(entries) - pos >= len(key) - 1:
-            if entries[pos:pos + len(key)] == key:
-                if len(key) == len(entries):
-                    tree.delprop(fixups, prop[0])
-                else:
-                    tree.setprop(fixups, prop[0], entries[:pos] +
-                                 entries[pos + len(key):])
-                return
-            nul = entries.find(b"\0", pos)
-            if nul < 0:
-                break
-            pos = nul + 1
-
-
-def find_override(tree, name):
-    overrides = tree.find("/__overrides__")
-    return overrides.get(name) if overrides is not None else None
-
-
-def apply_override(tree, name, data, value):
-    """Set parameter @name, whose __overrides__ property in @tree is
-    @data, to @value; targets before one that fails stay set, as in
-    dtoverlay"""
-    for kind, phandle, prop, off, size, target_value in \
-            override_targets(name, data, value):
-        node = tree.root
-        if phandle:
-            node = tree.by_phandle(phandle)
-            if node is None:
-                raise DtError(f"phandle {phandle} not found")
-        override_one_target(tree, kind, node, prop, off, size,
-                            target_value)
-
-
-def apply_fixup_list(tree, fixups, value, relative):
-    """Patch each "path:property:offset" of @fixups with @value (added to
-    the cell there if @relative)"""
-    for fixup in fixups.split(b"\0"):
-        if not fixup:
-            break
-        path, _, rest = fixup.decode(errors="replace").partition(":")
-        prop, _, offset = rest.partition(":")
-        if not prop or not re.fullmatch(r"[0-9]{1,10}", offset):
-            raise DtError(f"bad fixup '{fixup.decode(errors='replace')}'")
-        node = tree.find(path)
-        data = node.get(prop) if node is not None else None
-        offset = int(offset)
-        if data is None or offset > len(data) - 4:
-            raise DtError(f"fixup '{fixup.decode(errors='replace')}' "
-                          "points nowhere")
-        cell = (value + (be32(data, offset) if relative else 0)) & 0xffffffff
-        tree.setprop(node, prop, data[:offset] + struct.pack(">I", cell) +
-                     data[offset + 4:])
-
-
-def apply_local_fixups_node(tree, fixups, node, delta):
-    """The newer form of __local_fixups__: a tree mirroring the overlay
-    whose properties list the offsets of phandles to relocate"""
-    for prop, offsets, _ in fixups.props:
-        data = node.get(prop)
-        if data is None:
-            raise DtError(f"local fixup of missing {node.path()}:{prop}")
-        data = bytearray(data)
-        for i in range(0, len(offsets) - 3, 4):
-            offset = be32(offsets, i)
-            if offset + 4 > len(data):
-                raise DtError(f"local fixup beyond {node.path()}:{prop}")
-            cell = (be32(data, offset) + delta) & 0xffffffff
-            data[offset:offset + 4] = struct.pack(">I", cell)
-        tree.setprop(node, prop, data)
-    for sub in fixups.children:
-        target = node.subnode(sub.name)
-        if target is None:
-            raise DtError(f"local fixup of missing {node.path()}/{sub.name}")
-        apply_local_fixups_node(tree, sub, target, delta)
-
-
-def fixup_overlay(base, overlay):
-    """dtoverlay_fixup_overlay(): point the overlay's references to the
-    base's labels at their nodes, then move the overlay's own phandles
-    above the base's"""
-    fixups = overlay.find("/__fixups__")
-    if fixups is not None and fixups.props:
-        symbols = base.find("/__symbols__")
-        if symbols is None:
-            raise DtError("the base tree has no symbols")
-        for symbol, refs, _ in fixups.props:
-            if symbol.startswith("/"):
-                path, what = symbol, "path"
-            else:
-                path, what = symbols.get(symbol), "symbol"
-                if path is None:
-                    raise DtError(f"can't find symbol '{symbol}'")
-                path = cstr(path).decode(errors="replace")
-            target = base.find(path)
-            if target is None:
-                raise DtError(f"{what} '{symbol}' is invalid")
-            phandle = phandle_of(target)
-            if not phandle:
-                if base.max_phandle >= 0xfffffffe:
-                    raise DtError(f"no phandle left for {what} '{symbol}'")
-                base.max_phandle += 1
-                phandle = base.max_phandle
-                base.setprop(target, "phandle", struct.pack(">I", phandle))
-            apply_fixup_list(overlay, refs, phandle, relative=False)
-    delta = base.max_phandle
-    for node in overlay.root.walk():
-        for name in ("phandle", "linux,phandle"):
-            value = node.get(name)
-            # Only a well-formed one moves: dtoverlay sets it in place
-            if value is not None and len(value) == 4:
-                overlay.setprop(node, name, struct.pack(
-                    ">I", (be32(value) + delta) & 0xffffffff))
-    local = overlay.find("/__local_fixups__")
-    if local is not None:
-        fixup = local.get("fixup")
-        if fixup is not None:
-            apply_fixup_list(overlay, fixup, delta, relative=True)
-        else:
-            apply_local_fixups_node(overlay, local, overlay.root, delta)
-    overlay.max_phandle += delta
-    overlay.fixups_applied = True
-
-
-def merge_fragment(base, target, body, depth=0):
-    """dtoverlay_merge_fragment(): an overlay node's properties and
-    subnodes onto a node of @base; bootargs are appended to"""
-    keep_phandles = depth > 0 or \
-        body.get("dtoverlay,preserve-phandle") is not None
-    for name, value, _ in list(body.props):
-        if name in ("name", "dtoverlay,preserve-phandle") or \
-           (not keep_phandles and name in ("phandle", "linux,phandle")):
-            continue
-        current = target.get(name)
-        if name == "bootargs" and current and current[0]:
-            base.setprop(target, name, current[:-1] + b" ")
-            base.appendprop(target, name, value)
-        else:
-            base.setprop(target, name, value)
-    for sub in list(body.children):
-        subtarget = target.subnode(sub.name)
-        if subtarget is None:
-            subtarget = base.add_subnode(target, sub.name)
-        merge_fragment(base, subtarget, sub, depth + 1)
-
-
-def fragment_target(base, overlay, fragment):
-    """dtoverlay_get_target_offset(): the node a fragment targets, in
-    @base, or in the overlay itself when @base is None"""
-    path = fragment.get("target-path")
-    if path is not None:
-        if base is None:
-            return None
-        path = path[:-1] if path.endswith(b"\0") else path
-        node = base.find(path.decode(errors="replace"))
-        if node is None:
-            raise DtError(f"invalid target-path '{path.decode()}'")
-        return node
-    target = fragment.get("target")
-    if target is None:
-        raise DtError("no target or target-path")
-    if len(target) != 4:
-        raise DtError("bad target")
-    phandle = be32(target)
-    if base is None:
-        if phandle & 0x80000000 or phandle > overlay.max_phandle:
-            return None
-        return overlay.by_phandle(phandle)
-    node = base.by_phandle(phandle)
-    if node is None:
-        raise DtError(f"invalid target (phandle {phandle})")
-    return node
-
-
-def apply_overlay_paths(base, holder, overlay, strings):
-    """Copy @strings (an overlay's symbols or aliases) into @holder of the
-    base, turning paths into a fragment into paths into its target. The
-    first path whose fragment has no target ends the copy: returns its
-    error, or None."""
-    for name, path, _ in strings.props:
-        value = path
-        m = re.match(rb"(/[^/]*)/__overlay__(?=/|\0|$)", path)
-        if m:
-            fragment = overlay.find(m.group(1).decode(errors="replace"))
+    def library(cls):
+        if cls.lib is None:
+            name = ctypes.util.find_library("fdt") or "libfdt.so.1"
             try:
-                if fragment is None:
-                    raise DtError("no target or target-path")
-                target = fragment_target(base, overlay, fragment)
-            except DtError as err:
-                return err
-            rest = path[m.end():]
-            target_path = target.path().encode()
-            if target_path == b"/":
-                rest = rest[1:]
-                value = b"/" + rest if rest else b"/"
-            else:
-                value = target_path + rest
-        if holder is not None:
-            base.setprop(holder, name, value)
-    return None
+                lib = ctypes.CDLL(name)
+            except OSError:
+                raise BootError("reading device trees needs libfdt "
+                                "(libfdt1, which device-tree-compiler "
+                                "brings)") from None
+            void, int_ = ctypes.c_void_p, ctypes.c_int
+            int_p = ctypes.POINTER(int_)
+            for func, args, res in (
+                    ("fdt_check_header", (void,), int_),
+                    ("fdt_check_full", (void, ctypes.c_size_t), int_),
+                    ("fdt_path_offset", (void, ctypes.c_char_p), int_),
+                    ("fdt_first_property_offset", (void, int_), int_),
+                    ("fdt_next_property_offset", (void, int_), int_),
+                    ("fdt_getprop_by_offset",
+                     (void, int_, ctypes.POINTER(ctypes.c_char_p), int_p),
+                     void),
+                    ("fdt_getprop", (void, int_, ctypes.c_char_p, int_p),
+                     void)):
+                if hasattr(lib, func):
+                    getattr(lib, func).argtypes = args
+                    getattr(lib, func).restype = res
+            cls.lib = lib
+        return cls.lib
+
+    def __init__(self, blob):
+        self.libfdt = self.library()
+        self.buf = ctypes.create_string_buffer(bytes(blob), len(blob))
+        size = struct.unpack_from(">I", blob, 4)[0] \
+            if len(blob) >= 8 else 0
+        if size > len(blob) or self.libfdt.fdt_check_header(self.buf):
+            raise BootError("the device tree is not one libfdt reads")
+        if hasattr(self.libfdt, "fdt_check_full") and \
+           self.libfdt.fdt_check_full(self.buf, len(blob)):
+            raise BootError("the device tree is not one libfdt reads")
+
+    def offset(self, path):
+        """The node @path names (an absolute path, as libfdt's
+        fdt_path_offset() follows it), or None"""
+        if not path.startswith("/"):
+            return None
+        path = path.encode(errors="surrogateescape").split(b"\0")[0]
+        offset = self.libfdt.fdt_path_offset(self.buf, path)
+        return offset if offset >= 0 else None
+
+    def properties(self, node):
+        """The names of @node's properties, in the order of the blob"""
+        names = []
+        lib = self.libfdt
+        offset = lib.fdt_first_property_offset(self.buf, node)
+        while offset >= 0:
+            name = ctypes.c_char_p()
+            size = ctypes.c_int()
+            if lib.fdt_getprop_by_offset(self.buf, offset,
+                                         ctypes.byref(name),
+                                         ctypes.byref(size)) and name.value:
+                names.append(name.value.decode(errors="surrogateescape"))
+            offset = lib.fdt_next_property_offset(self.buf, offset)
+        return names
+
+    def value(self, node, prop):
+        """The value of @node's property @prop, as bytes, or None"""
+        size = ctypes.c_int()
+        value = self.libfdt.fdt_getprop(
+            self.buf, node, prop.encode(errors="surrogateescape"),
+            ctypes.byref(size))
+        if not value or size.value < 0:
+            return None
+        return ctypes.string_at(value, size.value)
+
+    def string(self, node, prop):
+        """The first string of @node's property @prop, or None"""
+        value = self.value(node, prop)
+        if value is None:
+            return None
+        return value.split(b"\0")[0].decode(errors="surrogateescape")
 
 
-def filter_symbols(overlay):
-    """An overlay's labels are its own, but for those it exports"""
-    symbols = overlay.find("/__symbols__")
-    if symbols is None:
-        return
-    exports = overlay.find("/__exports__")
-    if exports is None:
-        symbols.parent.children.remove(symbols)
-        return
-    exported = {prop[0] for prop in exports.props}
-    symbols.props = [p for p in symbols.props if p[0] in exported]
+def repo_dtmerge():
+    """The dtmerge this checkout builds (make build), if it is built"""
+    top = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+    path = os.path.join(top, "build", "dtmerge")
+    return path if os.access(path, os.X_OK) else None
 
 
-def is_fragment(node):
-    return node.name.startswith(("fragment@", "fragment-"))
+class Dtmerge:
+    """dtmerge runs on the tree file @tree: an overlay and parameters,
+    or parameters of the tree itself, applied by the firmware's code"""
+
+    def __init__(self, path, tree, names=None):
+        self.path = path
+        self.tree = tree
+        self.names = names or {}            # paths it says, as the card's
+        self.mapped = None
+
+    def run(self, overlay, params, out):
+        """dtmerge of the tree with @overlay (a .dtbo, or "-" for the
+        tree's own parameters) and @params, written to @out: (whether it
+        succeeded, what it said). It stops at the first failure and then
+        writes nothing, as when it crashes. Its debugging output is read
+        for the overlay the map has in place of @overlay, which
+        self.mapped holds, and left out."""
+        if os.path.lexists(out):
+            os.remove(out)
+        proc = run_tool([self.path, "-d", self.tree, out, overlay, *params],
+                        "the device tree is prepared by dtmerge: run "
+                        "'make build', or name one with --dtmerge or "
+                        "DTMERGE")
+        said = []
+        self.mapped = None
+        for line in (proc.stdout + proc.stderr).decode(
+                errors="replace").splitlines():
+            line = line.strip()
+            if line.startswith("DTOVERLAY[debug]: "):
+                m = re.fullmatch(r"DTOVERLAY\[debug\]: mapped overlay "
+                                 r"'.*' to '(.*)'", line)
+                if m:
+                    self.mapped = m.group(1)
+                continue
+            line = re.sub(r"^(\* |DTOVERLAY\[\w+\]: )", "", line).strip()
+            for path, name in self.names.items():
+                line = line.replace(path, name)
+            if line:
+                said.append(line)
+        return proc.returncode == 0 and os.path.exists(out), said
 
 
-def merge_overlay(base, overlay, log):
-    """dtoverlay_merge_overlay(): fragments that target the overlay itself
-    first, then the rest onto the base"""
-    filter_symbols(overlay)
-    for fragment in list(overlay.root.children):
-        if not is_fragment(fragment):
-            continue
-        body = fragment.subnode("__overlay__")
-        if body is None:
-            continue
-        try:
-            target = fragment_target(None, overlay, fragment)
-        except DtError:
-            target = None
-        if target is None:
-            continue
-        # From a copy, as dtoverlay merges from the unchanged overlay
-        merge_fragment(overlay, target, body.copy(body.parent))
-        overlay.rename(body, "__dormant__")
-    for node in list(overlay.root.children):
-        if node.name == "__symbols__":
-            # Exported labels: a failure only ends the copy
-            apply_overlay_paths(base, base.find("/__symbols__"), overlay,
-                                node)
-            continue
-        if not is_fragment(node):
-            continue
-        body = node.subnode("__overlay__")
-        if body is None:
-            if node.subnode("__dormant__") is None:
-                log(f"no overlay in fragment {node.name[9:]}")
-            continue
-        target = fragment_target(base, overlay, node)
-        if target.name == "aliases":
-            err = apply_overlay_paths(base, target, overlay, body)
-            if err is not None:
-                raise err
-        else:
-            merge_fragment(base, target, body)
-    base.max_phandle = overlay.max_phandle
-
-
-def set_synonym(tree, dst, src):
-    """dtoverlay_set_synonym(): make the alias, label and parameter @dst
-    copies of @src, where @src exists"""
-    for holder in ("/aliases", "/__symbols__", "/__overrides__"):
-        node = tree.find(holder)
-        value = node.get(src) if node is not None else None
-        if value is not None:
-            tree.setprop(node, dst, value)
-
-
-def add_i2c_synonyms(tree):
-    """The parameters (and labels and aliases) i2c_arm and i2c_vc for
-    I2C buses a tree names i2c0 and i2c1, which the firmware and dtmerge
-    add to a tree that has no "i2c" alias"""
-    aliases = tree.find("/aliases")
-    if aliases is not None and aliases.get("i2c") is not None:
-        return
-    for dst, src in (("i2c_arm", "i2c0"), ("i2c_vc", "i2c1"),
-                     ("i2c_baudrate", "i2c0_baudrate"),
-                     ("i2c_arm_baudrate", "i2c0_baudrate"),
-                     ("i2c_vc_baudrate", "i2c1_baudrate")):
-        set_synonym(tree, dst, src)
-
-
-def strncmp_equal(data, pos, literal, count):
-    """C's strncmp(data + pos, literal, count) == 0"""
-    for i in range(count):
-        a = data[pos + i] if pos + i < len(data) else 0
-        b = literal[i] if i < len(literal) else 0
-        if a != b:
-            return False
-        if not a:
-            return True
-    return True
-
-
-def overlay_platform(tree):
-    """dtoverlay_init_map(): the platform the base tree's compatible names,
-    for the overlay map: "bcm2835", "bcm2711" or "bcm2712" """
-    data = tree.root.get("compatible") or b""
-    families = ((b"bcm2708", b"bcm2835"), (b"bcm2709", b"bcm2835"),
-                (b"bcm2710", b"bcm2835"), (b"bcm2835", b"bcm2835"),
-                (b"bcm2836", b"bcm2835"), (b"bcm2837", b"bcm2835"),
-                (b"bcm2711", b"bcm2711"), (b"bcm2712", b"bcm2712"))
-    pos = 0
-    while pos < len(data):
-        comma = data.find(b",", pos)
-        p = comma + 1 if comma >= 0 else pos
-        count = len(data) - p
-        for chip, family in families:
-            if strncmp_equal(data, p, chip, count):
-                return family.decode()
-        nul = data.find(b"\0", p)
-        pos = nul + 1 if nul >= 0 else len(data)
-    return None
-
-
-def remap_overlay(overlay_map, platform, name):
-    """dtoverlay_remap_overlay(): the overlay (with parameters, after a
-    comma) the overlay map has in place of @name, or None for one the
-    platform does not support"""
-    if overlay_map is None or platform is None:
-        return name
-    entry = overlay_map.root.subnode(name)
-    if entry is None:
-        return name
-    value = entry.get(platform)
-    if value is not None:
-        value = cstr(value).decode(errors="replace")
-        return value or name
-    value = entry.get("renamed")
-    if value is not None:
-        value = cstr(value).decode(errors="replace")
-        log(f"overlay '{name}' has been renamed '{value}'")
-        return value
-    value = entry.get("deprecated")
-    if value is not None:
-        log(f"overlay '{name}' is deprecated: "
-            f"{cstr(value).decode(errors='replace')}")
-    else:
-        log(f"overlay '{name}' is not supported on the '{platform}' "
-            "platform")
+def unknown_parameter(said):
+    """The parameter dtmerge found nowhere, if that is why it failed"""
+    for line in said:
+        m = re.fullmatch(r"unknown param '(.*)'", line)
+        if m:
+            return m.group(1)
     return None
 
 
@@ -1293,6 +449,10 @@ class BootFs:
         except FileNotFoundError:
             raise BootError(f"{command} not found: reading the image "
                             "needs mtools") from None
+        except (OSError, ValueError) as err:
+            raise BootError(f"cannot run {command}: "
+                            f"{getattr(err, 'strerror', None) or err}") \
+                from None
         if proc.returncode:
             detail = proc.stderr.decode(errors="replace").strip()
             raise BootError(f"{command} failed on partition "
@@ -1331,6 +491,34 @@ class BootFs:
 
 # ---------------------------------------------------------------------------
 # config.txt
+
+def c_strtoul(text, pos=0):
+    """C's strtoull(text + pos, &end, 0): (value mod 2**64, end), where
+    end is pos when no digits follow"""
+    i, n = pos, len(text)
+    while i < n and text[i] in " \t\n\v\f\r":
+        i += 1
+    neg = False
+    if i < n and text[i] in "+-":
+        neg = text[i] == "-"
+        i += 1
+    base, digits = 10, "0123456789"
+    if text[i:i + 2].lower() == "0x" and i + 2 < n and \
+       text[i + 2].lower() in "0123456789abcdef":
+        base, digits, i = 16, "0123456789abcdef", i + 2
+    elif text[i:i + 1] == "0":
+        base, digits = 8, "01234567"
+    start = i
+    while i < n and text[i].lower() in digits:
+        i += 1
+    if i == start:
+        return 0, pos
+    # More digits than 2**64 has are over the range, whatever they are
+    value = int(text[start:i], base) if i - start <= 32 else 1 << 64
+    if value >= 1 << 64:
+        return (1 << 64) - 1, i                         # ERANGE
+    return (-value if neg else value) % (1 << 64), i
+
 
 # Longer lines are cut short, as the firmware reads them
 CONFIG_LINE_MAX = 98
@@ -1477,7 +665,8 @@ class Config:
             log(f"{name}: includes nest too deeply")
             return
         for raw in self.fs.read(name).split(b"\n"):
-            line = raw.rstrip(b"\r")[:CONFIG_LINE_MAX]
+            # The firmware reads each line as a C string: it ends at a NUL
+            line = raw.rstrip(b"\r")[:CONFIG_LINE_MAX].split(b"\0")[0]
             line = line.decode(errors="surrogateescape")
             comment = re.search(r"(^|\s)#", line)
             if comment:
@@ -1527,6 +716,8 @@ class Config:
 # the command line
 
 AMBA_UARTS = (b"arm,pl011", b"arm,pl011-axi", b"arm,primecell")
+# How many aliases naming aliases a path is followed through
+ALIAS_HOPS = 8
 
 
 class Boot:
@@ -1682,103 +873,150 @@ def choose_files(boot, verbose):
         boot.armstub = armstub
 
 
-def apply_param(base, overlay, text, verbose):
-    """A parameter from a dtoverlay or dtparam line: the open overlay's,
-    or else the base tree's. One neither has is skipped, as the firmware
-    skips it (Raspberry Pi OS's config.txt sets "audio", which a Pi 5's
-    tree lacks)."""
-    name, eq, value = text.partition("=")
-    if not eq:
-        value = "true"
-    for tree in (overlay, base):
-        data = find_override(tree, name) if tree is not None else None
-        if data is not None:
+def overlay_files(boot, overlays, map_file, name):
+    """The overlay @name copied from the card to the directory
+    @overlays, with each one the overlay map names in its entry (the
+    overlay it is renamed or remapped to), for dtmerge to choose from;
+    False for a name that cannot be an overlay's. dtmerge follows one
+    entry of the map, never the entry of the name it maps to (a rename
+    stops there, so a chain of entries goes no further than its first)."""
+    if not name or "/" in name or name in (".", ".."):
+        return False
+    wanted = [name]
+    entry = fdt = None
+    if map_file:
+        with open(map_file, "rb") as f:
             try:
-                apply_override(tree, name, data, value)
-            except DtError as err:
-                log(f"failed to set {name}={value}: {err}")
-            return
-    if verbose:
-        log(f"unknown parameter '{name}'")
+                fdt = Fdt(f.read())
+            except BootError:
+                fdt = None              # dtmerge says what is wrong
+        entry = fdt and fdt.offset("/" + name)
+    for prop in fdt.properties(entry) if entry is not None else ():
+        value = fdt.value(entry, prop) or b""
+        for text in value.split(b"\0"):
+            other = text.decode(errors="surrogateescape").partition(",")[0]
+            if other and "/" not in other and other not in (".", ".."):
+                wanted.append(other)
+    for other in wanted:
+        source = boot.overlay_dir + other + ".dtbo"
+        dest = os.path.join(overlays, other + ".dtbo")
+        if boot.fs.exists(source) and not os.path.lexists(dest):
+            boot.fs.copy(source, dest)
+    return True
 
 
-def load_overlay(boot, base, overlay_map, platform, name, verbose):
-    """An overlay, remapped, loaded and fixed up for @base: (tree,
-    parameters from the map), or None when it cannot be applied"""
-    target = remap_overlay(overlay_map, platform, name)
-    if target is None:
-        return None
-    target, _, params = target.partition(",")
-    path = boot.overlay_dir + target + ".dtbo"
-    if not boot.fs.exists(path):
-        log(f"failed to load overlay '{target}': no {path}")
-        return None
-    try:
-        overlay = Tree.parse(boot.fs.read(path), path)
-        fixup_overlay(base, overlay)
-    except DtError as err:
-        log(f"failed to load overlay '{target}': {err}")
-        return None
-    if verbose:
-        log(f"loaded overlay '{target}'")
-    return overlay, [p for p in params.split(",") if p]
-
-
-def compose_tree(boot, verbose):
+def compose_tree(boot, verbose, dtmerge=None):
     """The device tree with config.txt's overlays and parameters applied,
     in order, as the firmware applies them: a dtparam line sets the open
     overlay's parameter of that name, or else the base tree's, and the
     overlay is merged when the next dtoverlay line (or the end) closes
-    it"""
+    it. Each is applied by dtmerge; a parameter or overlay that fails is
+    skipped, as the firmware skips it (Raspberry Pi OS's config.txt sets
+    "audio", which a Pi 5's tree lacks)."""
     fs = boot.fs
-    base = Tree.parse(fs.read(boot.dtb), boot.dtb)
-    if verbose:
-        log(f"loaded device tree {boot.dtb}")
-    platform = overlay_platform(base)
-    overlay_map = None
-    map_path = boot.overlay_dir + "overlay_map.dtb"
-    if platform and fs.exists(map_path):
-        try:
-            overlay_map = Tree.parse(fs.read(map_path), map_path)
-        except DtError as err:
-            log(str(err))
-    add_i2c_synonyms(base)
-
-    overlay = None
-
-    def close():
-        if overlay is not None:
-            try:
-                merge_overlay(base, overlay, log)
-            except DtError as err:
-                log(f"failed to merge an overlay: {err}")
-
-    for kind, value in boot.config.dt_lines:
-        if kind == "dtoverlay":
-            close()
-            overlay = None
-            name, _, params = value.partition(",")
-            if not name:
-                continue            # "dtoverlay=" closes the overlay
-            loaded = load_overlay(boot, base, overlay_map, platform, name,
-                                  verbose)
-            if loaded is None:
-                continue
-            overlay, map_params = loaded
-            params = map_params + params.split(",")
+    with tempfile.TemporaryDirectory(prefix=f"{PROG}-") as tmp:
+        tree = os.path.join(tmp, "tree.dtb")
+        cand = os.path.join(tmp, "candidate.dtb")
+        trial = os.path.join(tmp, "trial.dtb")
+        fs.copy(boot.dtb, tree)
+        if verbose:
+            log(f"loaded device tree {boot.dtb}")
+        overlays = os.path.join(tmp, "overlays")
+        os.mkdir(overlays)
+        map_file = os.path.join(overlays, "overlay_map.dtb")
+        if fs.exists(boot.overlay_dir + "overlay_map.dtb"):
+            fs.copy(boot.overlay_dir + "overlay_map.dtb", map_file)
         else:
-            params = value.split(",")
-        for param in filter(None, params):
-            apply_param(base, overlay, param, verbose)
-    close()
+            map_file = None
+        merge = Dtmerge(dtmerge or os.environ.get("DTMERGE") or
+                        repo_dtmerge() or "dtmerge", tree,
+                        {overlays + "/": boot.overlay_dir,
+                         tree: boot.dtb})
+        # The tree as the firmware starts from it, whatever config.txt
+        # says: read and checked (a blob that is not one, or larger than
+        # the firmware's code takes, is no device tree to boot with),
+        # given the i2c_arm and i2c_vc synonyms when it has no "i2c"
+        # alias, and packed. dtmerge does each of these on every run;
+        # this run is the one a config.txt without dtoverlay and dtparam
+        # lines gets. Deferred (PLAN.md P27): the later runs make the
+        # synonyms again from the tree the earlier ones left.
+        ok, said = merge.run("-", [], trial)
+        if not ok:
+            raise BootError(f"device tree {boot.dtb}: "
+                            f"{'; '.join(said) or 'dtmerge failed'}")
+        os.replace(trial, tree)
 
-    chosen = base.find("/chosen") or base.add_subnode(base.root, "chosen")
-    base.setprop(chosen, "os_prefix",
-                 boot.os_prefix.encode(errors="surrogateescape") + b"\0")
-    base.setprop(chosen, "overlay_prefix",
-                 boot.config.get("overlay_prefix", "overlays/")
-                 .encode(errors="surrogateescape") + b"\0")
-    boot.tree = base
+        def report(param, said):
+            unknown = unknown_parameter(said)
+            if unknown is not None:
+                if verbose:
+                    log(f"unknown parameter '{unknown}'")
+            else:
+                log(f"failed to set {param}: {'; '.join(said)}")
+
+        def apply(overlay, params, base):
+            """@params applied one by one with @overlay to the tree,
+            starting from the blob @base: those that fail are skipped.
+            Deferred (PLAN.md P26): a parameter with several targets is
+            skipped whole when one fails, where the firmware keeps the
+            targets it set before that one."""
+            accepted = []
+            for param in params:
+                ok, said = merge.run(overlay, accepted + [param], trial)
+                if ok:
+                    accepted.append(param)
+                    os.replace(trial, base)
+                else:
+                    report(param, said)
+            os.replace(base, tree)
+
+        overlay = None              # the open overlay: [path, params]
+
+        def close():
+            if overlay is not None:
+                apply(overlay[0], overlay[1], cand)
+
+        for kind, value in boot.config.dt_lines:
+            if kind == "dtoverlay":
+                close()
+                overlay = None
+                name, _, value = value.partition(",")
+                if not name:
+                    continue            # "dtoverlay=" closes the overlay
+                path = os.path.join(overlays, name + ".dtbo")
+                if overlay_files(boot, overlays, map_file, name):
+                    ok, said = merge.run(path, [], cand)
+                else:
+                    ok, said = False, ["not an overlay's name"]
+                if not ok:
+                    # Deferred (PLAN.md P26): an overlay one of whose
+                    # fragments cannot be merged is skipped whole
+                    for line in said or ["dtmerge failed"]:
+                        log(line if f"'{name}'" in line else
+                            f"failed to load overlay '{name}': {line}")
+                    continue
+                for line in said:
+                    log(line)           # renamed, for example
+                if verbose:
+                    log(f"loaded overlay '{merge.mapped or name}'")
+                overlay = [path, []]
+            params = [p for p in value.split(",") if p]
+            if overlay is not None:
+                overlay[1] += params
+                continue
+            for param in params:
+                ok, said = merge.run("-", [param], trial)
+                if ok:
+                    os.replace(trial, tree)
+                else:
+                    report(param, said)
+        close()
+
+        fdtput_string(tree, "/chosen", "os_prefix", boot.os_prefix)
+        fdtput_string(tree, "/chosen", "overlay_prefix",
+                      boot.config.get("overlay_prefix", "overlays/"))
+        with open(tree, "rb") as blob:
+            boot.tree = blob.read()
 
 
 def serial_tty(tree, which):
@@ -1786,26 +1024,47 @@ def serial_tty(tree, which):
     "console" alias names on a Pi 5) or serial1 (the Bluetooth UART) means,
     as the firmware and Raspberry Pi OS's udev rules resolve them, or None
     when that UART has no serialN alias"""
-    aliases = tree.find("/aliases") if tree is not None else None
-    if aliases is None:
+    if tree is None:
         return None
+    fdt = Fdt(tree)
+    node = fdt.offset("/aliases")
+    if node is None:
+        return None
+    aliases = fdt.properties(node)
 
     def alias(name):
-        value = aliases.get(name)
-        return cstr(value).decode(errors="replace") if value else None
+        return fdt.string(node, name) if name in aliases else None
+
+    def resolve(path):
+        """@path with the alias it starts with replaced by the alias's
+        value, as libfdt's fdt_path_offset() replaces it, and again while
+        that starts with an alias: at most ALIAS_HOPS times, so that a
+        cycle of aliases names nothing; the node it names, or None"""
+        for _ in range(ALIAS_HOPS + 1):
+            if path.startswith("/"):
+                return fdt.offset(path)
+            first, slash, rest = path.partition("/")
+            path = alias(first)
+            if not path:
+                return None
+            path += slash + rest
+        return None
 
     if which == 0:
         path = alias("console") or alias("serial0")
     else:
         path = alias("bluetooth")
         path = path.rpartition("/")[0] if path else alias("serial1")
-    node = tree.find(path) if path else None
-    if node is None:
+    uart = resolve(path) if path else None
+    if uart is None:
         return None
-    for name, value, _ in aliases.props:
+    # Which serialN names that node, however its path is written (with or
+    # without unit addresses, a slash after, through other aliases):
+    # libfdt finds the node of each, and the nodes are compared
+    for name in aliases:
         m = re.fullmatch(r"serial(\d+)", name)
-        if m and tree.find(cstr(value).decode(errors="replace")) is node:
-            compatible = (node.get("compatible") or b"").split(b"\0")
+        if m and resolve(alias(name) or "") == uart:
+            compatible = (fdt.value(uart, "compatible") or b"").split(b"\0")
             amba = any(c in AMBA_UARTS for c in compatible)
             return ("ttyAMA" if amba else "ttyS") + m.group(1)
     return None
@@ -1817,8 +1076,9 @@ def kernel_cmdline(boot, root, append):
     replaced by @root if given, and @append added"""
     name = os_file(boot.os_prefix, boot.config.get("cmdline", "cmdline.txt"))
     if boot.fs.exists(name):
-        text = boot.fs.read(name).decode(errors="replace")
-        text = text.split("\n")[0].strip()
+        # The command line is a C string, which ends at a NUL
+        text = boot.fs.read(name).split(b"\n")[0].split(b"\0")[0]
+        text = text.decode(errors="replace").strip()
     else:
         log(f"no {name}: the kernel's command line is empty")
         text = ""
@@ -1877,7 +1137,7 @@ def prepare(image, args, reset):
     boot = Boot(fs, config, part.number)
     choose_files(boot, verbose)
     if boot.dtb:
-        compose_tree(boot, verbose)
+        compose_tree(boot, verbose, args.dtmerge)
     kernel_cmdline(boot, args.root, args.append)
     for name, default, why in (
             ("arm_64bit", 1, "a Pi 5 runs only 64-bit kernels"),
@@ -1924,7 +1184,7 @@ def write_files(boot, outdir):
     if boot.tree is not None:
         files["dtb"] = os.path.join(outdir, made["dtb"])
         with open(files["dtb"], "wb") as out:
-            out.write(boot.tree.blob())
+            out.write(boot.tree)
     if boot.initramfs:
         # Several files are concatenated, as the firmware loads them
         files["initrd"] = os.path.join(outdir, made["initrd"])
@@ -2000,9 +1260,10 @@ def run_qemu(cmd, verbose):
                    "-action", "shutdown=pause",
                    "-run-with", "exit-with-parent=on"],
             pass_fds=(fd,))
-    except OSError as err:
+    except (OSError, ValueError) as err:
         ours.close()
-        raise BootError(f"cannot run {cmd[0]}: {err.strerror}") from None
+        raise BootError(f"cannot run {cmd[0]}: "
+                        f"{getattr(err, 'strerror', None) or err}") from None
     finally:
         theirs.close()
     stopped = []
@@ -2098,6 +1359,12 @@ def parse_args(argv):
                         help="QEMU to run (default: $QEMU, else this "
                         "checkout's build/qemu-system-aarch64, else "
                         "qemu-system-aarch64)")
+    parser.add_argument("--dtmerge", metavar="PATH",
+                        default=os.environ.get("DTMERGE") or repo_dtmerge()
+                        or "dtmerge",
+                        help="dtmerge to apply config.txt's overlays and "
+                        "parameters with (default: $DTMERGE, else this "
+                        "checkout's build/dtmerge, else dtmerge)")
     parser.add_argument("--partition", metavar="N", type=int,
                         help="boot partition number, unless the guest asks "
                         "for another when it reboots (default: as the "
@@ -2177,6 +1444,11 @@ def main(argv=None):
         return boot_loop(args)
     except BootError as err:
         log(str(err))
+        return 1
+    except ValueError as err:
+        # What the card holds is checked where it is read; one that gets
+        # past that is still refused with a message, never a traceback
+        log(f"cannot boot {args.image}: {err}")
         return 1
     except KeyboardInterrupt:
         return 128 + signal.SIGINT

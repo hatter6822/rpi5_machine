@@ -23,7 +23,7 @@
  * All have a mask with write-one-to-set and write-one-to-clear views,
  * and one output: the OR of STATUS & ~MASK. Reset masks every input.
  * The write-only registers (SET, CLEAR, MASK_SET, MASK_CLEAR) read as
- * zero; Linux never reads them. TODO(WS0.4): check on hardware.
+ * zero; Linux never reads them. Unverified (PLAN.md P17).
  */
 
 #include "qemu/osdep.h"

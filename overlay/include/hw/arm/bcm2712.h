@@ -45,7 +45,7 @@ OBJECT_DECLARE_SIMPLE_TYPE(BCM2712State, BCM2712)
 /*
  * GIC-400 shared peripheral interrupts. The highest SPI referenced by the
  * device tree is 276 (UARTA), so round up to the next multiple of 32.
- * TODO(WS1.3): confirm GICD_TYPER.ITLinesNumber against real silicon.
+ * Unverified (PLAN.md P01): GICD_TYPER.ITLinesNumber on real silicon.
  */
 #define BCM2712_NUM_SPIS            288
 
@@ -58,7 +58,7 @@ OBJECT_DECLARE_SIMPLE_TYPE(BCM2712State, BCM2712)
  * The VideoCore reaches the first GiB of RAM only, at bus address 0x0
  * and at 0xc000_0000 (the alias older Pis use), and keeps the top of it
  * for itself; the firmware leaves that out of the ARM memory node.
- * TODO(WS0.4): check GET_VC_MEMORY on hardware.
+ * Unverified (PLAN.md P02): GET_VC_MEMORY on hardware.
  */
 #define BCM2712_VC_RAM_WINDOW       (1 * GiB)
 #define BCM2712_VC_RAM_BUS_BASE     0xc0000000
@@ -68,7 +68,7 @@ OBJECT_DECLARE_SIMPLE_TYPE(BCM2712State, BCM2712)
 /*
  * The DMA channels the ARM may use (GET_DMA_CHANNELS): those of the
  * "dma32" (0-5) and "dma40" (6-10) nodes of the firmware's device tree.
- * TODO(WS0.4): check the firmware's answer on hardware.
+ * Unverified (PLAN.md P03): the firmware's answer on hardware.
  */
 #define BCM2712_DMA_CHANNEL_MASK    0x07ff
 
@@ -132,7 +132,18 @@ typedef enum BCM2712Device {
     BCM2712_NUM_DEVICES
 } BCM2712Device;
 
-extern const MemMapEntry bcm2712_memmap[BCM2712_NUM_DEVICES];
+/*
+ * The memory map: each block's base, size and the name its memory region
+ * (or its placeholder, logged with -d unimp) has. The single source of
+ * the SoC's addresses: the device tree QEMU builds derives from it.
+ */
+typedef struct BCM2712MemMapEntry {
+    hwaddr base;
+    hwaddr size;
+    const char *name;
+} BCM2712MemMapEntry;
+
+extern const BCM2712MemMapEntry bcm2712_memmap[BCM2712_NUM_DEVICES];
 
 /* GIC-400 SPI numbers, i.e. the N in "<GIC_SPI N ...>" in bcm2712.dtsi */
 enum {
@@ -209,6 +220,7 @@ enum {
 #define BCM2712_NUM_MIP             2
 #define BCM2712_MIP1_FIRST_VECTOR   8
 #define BCM2712_MIP_MSI_ADDR        0xfffffff000ULL /* a PCI address */
+#define BCM2712_MIP_MSI_SIZE        (4 * KiB)
 
 /* The bridge reset lines of the PCIe root complexes, in bcm_reset */
 #define BCM2712_RESET_PCIE0_BRIDGE  42  /* 42..44: PCIe0..PCIe2 */

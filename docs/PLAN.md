@@ -1,10 +1,21 @@
 # Raspberry Pi 5 QEMU machine: implementation plan
 
 This plan takes the `raspi5b` skeleton to a model that runs bare-metal
-software, microkernels, TF-A/U-Boot and Raspberry Pi OS, and that can be
-merged into upstream QEMU. Work is split into **workstreams** (WS) of
-independently reviewable **units**, each small enough to be one upstream
-commit (or a short series) with its own tests.
+software, microkernels, TF-A/U-Boot and Raspberry Pi OS. Its first
+user is [seLe4n](https://github.com/hatter6822/seLe4n), whose kernel
+targets the Raspberry Pi 5: the machine is the emulated Pi 5 it boots
+on. Work is split into **workstreams** (WS) of independently reviewable
+**units**, each small enough to be one commit (or a short series) with
+its own tests.
+
+**Out-of-tree fork.** The model is maintained here, as an overlay and
+patches on a pinned QEMU release, and is not submitted upstream: QEMU's
+code-provenance policy (`docs/devel/code-provenance.rst`) declines
+contributions that include or derive from AI-generated content, and most
+of this repository was written with an AI assistant. The upstream
+submission work (WS0.5's series export, WS9.7, milestone M6) is retired;
+QEMU's coding conventions are still followed, because they keep the code
+readable to QEMU developers and make rebasing onto new releases cheap.
 
 * [1. Principles](#1-principles)
 * [2. Current state](#2-current-state)
@@ -14,10 +25,11 @@ commit (or a short series) with its own tests.
 * [6. Workstreams](#6-workstreams)
   WS0 Foundation · WS1 CPU and GIC · WS2 VideoCore services ·
   WS3 Boot flow · WS4 Interrupt fabric and GPIO · WS5 Storage ·
-  WS6 PCIe · WS7 RP1 · WS8 Display · WS9 Verification and upstreaming
+  WS6 PCIe · WS7 RP1 · WS8 Display · WS9 Verification and quality
 * [7. Decisions](#7-decisions)
 * [8. Risks](#8-risks)
 * [9. Open questions](#9-open-questions)
+* [10. Provisional values and deferred work](#10-provisional-values-and-deferred-work)
 
 ## 1. Principles
 
@@ -29,8 +41,9 @@ commit (or a short series) with its own tests.
    documentation, then the RP1 datasheet, then Linux/TF-A/U-Boot drivers
    (treated as executable specifications), then register dumps from a real
    Pi 5 (WS0.4). Values that come from drivers rather than documentation
-   are marked `TODO(WSx.y)` in the code until the hardware track (section 3)
-   confirms them.
+   are marked `Unverified (PLAN.md Pnn)` in the code, naming their row in
+   [section 10](#10-provisional-values-and-deferred-work), until the
+   hardware track (section 3) confirms them.
 3. **Fidelity tiers.** Every block of the memory map is always at one of:
 
    | Tier | Meaning |
@@ -44,13 +57,12 @@ commit (or a short series) with its own tests.
    an OS drives, T1 is sufficient for blocks that are only configured.
 4. **Reuse before writing.** Existing QEMU models (PL011, GIC, BCM283x
    system timer/mailbox/property, SDHCI, DesignWare I²C, Cadence GEM, DWC3,
-   serial-mm) are reused and, where needed, generalised upstream rather
-   than forked.
-5. **Upstream shape from day one.** QEMU coding style, QOM idioms,
-   `vmstate`, `Resettable`, trace points and a qtest for every device;
-   [DEVELOPMENT.md](DEVELOPMENT.md) has the details. Each unit's
-   deliverable is written as it would be submitted.
-6. **Every unit ends green:** `make build check checkpatch`, plus the
+   serial-mm) are reused and, where needed, generalised by a patch rather
+   than copied.
+5. **QEMU's conventions.** QEMU coding style, QOM idioms, `vmstate`,
+   `Resettable`, trace points and a qtest for every device;
+   [DEVELOPMENT.md](DEVELOPMENT.md) has the details.
+6. **Every unit ends green:** `make build check lint`, plus the
    acceptance test named in the unit.
 7. **No hardware, no blocking.** A real Pi 5 improves fidelity but is
    never a prerequisite for progress: every unit can be completed from
@@ -63,24 +75,16 @@ Delivered so far: M1 (WS0.1–WS0.3, WS0.5, WS0.6, WS2.1, WS2.2, WS2.3a, WS2.4, 
 
 | Area | State |
 | --- | --- |
-| Repository | pinned QEMU v11.1.1 submodule, overlay + patch series (patches may share files, like an upstream series) managed by `scripts/qemu-tree`, which also exports the upstream series (WS0.5: a commit per patch and a cover letter, checked with `git am`, checkpatch and a build of every commit), CI with ccache |
-| Kconfig (WS0.6) | every BCM283x device model has its own symbol, so `bcm2712` can select just the models it reuses; a `raspi5b`-only build is tested (`make check-minimal`) |
+| Repository | pinned QEMU v11.1.1 submodule, overlay + patch series (patches may share files) managed by `scripts/qemu-tree`, the Raspberry Pi utilities pinned as a submodule for `dtmerge`, CI with ccache |
+| Kconfig (WS0.6) | every BCM283x device model has its own symbol, so `bcm2712` can select just the models it reuses; a `raspi5b`-only configuration is checked (`make check-minimal`) |
 | SoC (`bcm2712`) | 1–4 Cortex-A76 (`MPIDR.Aff1` = core with `MPIDR.MT` set (WS1.2), CNTFRQ 54 MHz, optional EL3, the IMPDEF registers firmware writes (WS1.5), warm reset through `RMR_EL3` (WS3.3)), GIC-400 with 288 SPIs, 5 priority bits and all timer/maintenance PPIs, UART10 (PL011), UARTA (a 16550 with 32-byte FIFOs, WS4.5), system timer (WS2.1), watchdog and reset status (WS2.4), RNG200 (WS2.5), the AVS monitor's temperature sensor (WS2.6), the seven brcmstb level 2 interrupt controllers (WS4.1), the two brcmstb GPIO blocks (WS4.2) and their pin controllers (WS4.3), the HDMI ports' two DDC I²C controllers (WS4.4), the two SD hosts with SDMA and ADMA2 (WS5.1), the three PCIe root complexes with their root ports, windows, INTx and RC-internal MSI, and the reset controller and PHY calibration block (WS6.1), the two MIPs that turn PCIe MSIs into SPIs (WS6.2), PCIe2 optionally started as the firmware leaves it with `pciex4_reset=0` (WS6.4), VideoCore mailbox with the BCM283x property and framebuffer channels (WS2.2), every identity tag answered (WS2.3a) and the Pi 5 firmware's own answers: its clocks, power domains and devices, temperature limit and reboot flags (WS2.3b), its framebuffer, kept within the VideoCore's 4 MiB (WS2.3c), its real-time clock (WS2.3d), the temperature the AVS monitor reads (WS2.6) and `vcgencmd`'s text commands (WS2.3f), complete memory map with T0 placeholders and two catch-all windows |
 | Board (`raspi5b`) | 1/2/4/8/16 GiB RAM, board revision code, serial number (`serial=`), PSCI over SMC with EL2 entry (default) or guest-owned EL3 (`secure=on`), firmware such as TF-A's BL31 loaded with `-bios` and handed the kernel, initrd and device tree as the Pi's firmware does (WS3.3), system reset and power-off through PSCI, the watchdog and the monitor (WS3.6), with what a reset leaves for the next boot read, and set for the first, through `reset-status`, `reboot-flags` and `boot-count`, and the partition the files come from given by `boot-partition` (WS3.5), a built-in device tree when no `-dtb` is given (WS3.2; `builtin-dtb=off` passes none), the power button on GIO 20, which `system_powerdown` presses, and the ACT LED on GIO AON 9 (WS4.6), a monitor's EDID on HDMI0's DDC bus (WS4.4), the SD card slot on SDIO1, filled by `-drive if=sd` and changed at run time, with its card-detect switch on GIO AON 5 (WS5.1), PCIe1's connector for QEMU's PCI Express devices (WS6.3) and `pcie2-preinit` (WS6.4), and in whichever tree the guest gets the firmware's changes, made anew for each boot (WS3.1): model, serial number, the command line it builds, `/chosen` with the boot's reset status, partition, count and tryboot, a 5 A supply and seeds, the CMA size, the bootloader configuration, the Ethernet address, unmodelled devices disabled |
-| Boot helper (WS3.5) | `scripts/rpi5-boot` boots an SD card image as a Pi 5's firmware boots it: the boot partition (MBR, GPT, `autoboot.txt`), `config.txt` with its filters and includes, the kernel, device tree, initramfs and command line it names, its overlays and parameters applied as the firmware applies them (the blob is `dtmerge`'s, byte for byte), `serial0` turned into `ttyAMA10`, and the card read again at each reboot |
-| Tests | qtest (UART IDs, GIC geometry, priority bits and security, RAM, placeholders, system timer, watchdog, mailbox, identity tags, the firmware's clocks, power states, reboot flags, framebuffer (with the display, by `screendump`), real-time clock and `vcgencmd`'s commands, RNG, the AVS monitor's temperature, L2 interrupt controllers, GPIO, pin control, the DDC I²C controllers and the EDID, UARTA, the power button and ACT LED, the reset state, the SD hosts with card detect, PIO, SDMA and ADMA2, the PCIe root complexes with `edu`, a device on PCIe0, PCIe2's firmware state, the MIPs), the built-in tree validated against the Linux v6.18 bindings (`make check-dt`), the device-tree fix-ups (each one, the built-in tree against a checked-in dump, the values of each boot across resets and migration, and as a reset left them for the first boot), bare-metal smoke guest (EL, MPIDR, CNTFRQ, PSCI CPU_ON on all cores, SYSTEM_OFF, EL3 mode), and the bare-metal suite (WS9.2, 36 tests: GIC and the Secure/Non-secure group split, each core's MPIDR, every timer on every core, SGIs between all core pairs, SPI routing, PSCI, the system timer, the mailbox and identity tags, the firmware's clocks through its tags, a tryboot, the real-time clock and a framebuffer, the RNG, the temperature as Linux and the firmware read it, a software-raised interrupt through each edge-layout L2 controller, a GPIO output's own edge through GIO's, UART receive and loopback, the SD card's master boot record through PIO, a watchdog reset and four system resets checked against the boot state, an ID-register dump, the A76's IMPDEF registers; 1–4 cores, with the built-in tree, a `-dtb` one and none, EL2 and EL3), the `-bios` handoff (qtest), and real firmware (`make check-firmware`, all pinned: the smoke guest and the suite on TF-A's `rpi5` BL31, Linux on TF-A and through U-Boot, the EDK2 port to its shell, the same from an SD card (Linux's root file system, U-Boot by its `extlinux.conf`, EDK2's map of the card), Linux with its root file system on an NVMe drive and an `igb` network card exchanging frames with the test, both behind a switch on PCIe1, and the changes to the firmware's tree against a checked-in list), and `scripts/rpi5-boot` (its device-tree, overlay and `config.txt` code, partition tables, `--print`, QEMU's runs and the reboot loop, with what each reboot leaves; with the firmware, every overlay and parameter of the release against `dtmerge`, and a Raspberry Pi OS-style first boot) |
+| Boot helper (WS3.5) | `scripts/rpi5-boot` boots an SD card image as a Pi 5's firmware boots it: the boot partition (MBR, GPT, `autoboot.txt`), `config.txt` with its filters and includes, the kernel, device tree, initramfs and command line it names, its overlays and parameters applied with the firmware's own code (`dtmerge`, built from the pinned Raspberry Pi utilities), `serial0` turned into `ttyAMA10`, and the card read again at each reboot |
+| Tests | qtest (UART IDs, GIC geometry, priority bits and security, RAM, placeholders, system timer, watchdog, mailbox, identity tags, the firmware's clocks, power states, reboot flags, framebuffer (with the display, by `screendump`), real-time clock and `vcgencmd`'s commands, RNG, the AVS monitor's temperature, L2 interrupt controllers, GPIO, pin control, the DDC I²C controllers and the EDID, UARTA, the power button and ACT LED, the reset state, the SD hosts with card detect, PIO, SDMA and ADMA2, the PCIe root complexes with `edu`, a device on PCIe0, PCIe2's firmware state, the MIPs), the built-in tree validated against the Linux v6.18 bindings (`make check-dt`), the device-tree fix-ups (each one, the built-in tree against a checked-in dump, the values of each boot across resets and migration, and as a reset left them for the first boot), bare-metal smoke guest (EL, MPIDR, CNTFRQ, PSCI CPU_ON on all cores, SYSTEM_OFF, EL3 mode), and the bare-metal suite (WS9.2, 36 tests: GIC and the Secure/Non-secure group split, each core's MPIDR, every timer on every core, SGIs between all core pairs, SPI routing, PSCI, the system timer, the mailbox and identity tags, the firmware's clocks through its tags, a tryboot, the real-time clock and a framebuffer, the RNG, the temperature as Linux and the firmware read it, a software-raised interrupt through each edge-layout L2 controller, a GPIO output's own edge through GIO's, UART receive and loopback, the SD card's master boot record through PIO, a watchdog reset and four system resets checked against the boot state, an ID-register dump, the A76's IMPDEF registers; 1–4 cores, with the built-in tree, a `-dtb` one and none, EL2 and EL3), the `-bios` handoff (qtest), and real firmware (`make check-firmware`, all pinned: the smoke guest and the suite on TF-A's `rpi5` BL31, Linux on TF-A and through U-Boot, the EDK2 port to its shell, the same from an SD card (Linux's root file system, U-Boot by its `extlinux.conf`, EDK2's map of the card), Linux with its root file system on an NVMe drive and an `igb` network card exchanging frames with the test, both behind a switch on PCIe1, and the changes to the firmware's tree against a checked-in list), and `scripts/rpi5-boot` (the order and failures of its overlays and parameters, its `config.txt` code, partition tables, `--print`, QEMU's runs and the reboot loop, with what each reboot leaves; with the firmware, a Raspberry Pi OS-style first boot) |
 | Linux and firmware | the stock Raspberry Pi OS kernel (6.18) boots on 4 CPUs to the root-fs mount, without warnings ("firmware out-of-date" included), with KASLR, scaling the CPUs' clock through the firmware (cpufreq), switching power domains through it and reading and setting its real-time clock (`hwclock`), reading the SoC's temperature in `thermal_zone0` and shutting down at its critical trip, registering every L2 interrupt controller its tree enables, listing both GPIO blocks with their banks and applying pin states through both pin controllers, reading the EDID through the DDC I²C controller, with `ttyS0` on UARTA looping bytes back and exchanging them with the host, with `gpio-keys` reporting `system_powerdown` as `KEY_POWER` (and on the built-in tree the ACT LED following sysfs), mounting its ext4 root from an SD card and noticing cards inserted and removed at run time, or from an NVMe drive on PCIe1, and loading `igb` for a network card beside it, with the firmware's `bcm2712-rpi-5-b.dtb` and on the built-in tree (1, 2 and 8 GiB), directly, on TF-A's BL31 or through U-Boot on it (WS3.4); the EDK2 port draws its boot menu on the firmware's framebuffer and reaches the UEFI shell, whose `date` and `time` read and set the firmware's clock; `scripts/rpi5-boot` boots the kernel from a card laid out as Raspberry Pi OS's, with the OS's `config.txt`, overlays and `cmdline.txt`, through a first boot that rewrites the card and reboots (WS3.5); Raspberry Pi OS Lite boots from its card with `scripts/rpi5-boot` to its login prompt, and `reboot` and `poweroff` work (M3's exit test, by hand) |
 
-Known provisional values, each marked in the code: 288 SPIs
-(`TODO(WS1.3)`), the VideoCore memory size and DMA channel mask
-(`TODO(WS0.4)`), the PMU interrupts taken from the vendor DT
-(`TODO(WS1.4)`), what the L2 controllers' write-only registers read, the
-reset values of the GPIO blocks, pin controllers and I²C controllers,
-the SD hosts' capabilities and the reset values of their configuration
-registers, the firmware's clock ranges, the real-time clock's
-charger range and what the AVS monitor's other registers and bits read
-(`TODO(WS0.4)`), and the board revision's `REVISION`
-field (WS9.8).
+Known provisional values, each marked in the code, are listed in
+[section 10](#10-provisional-values-and-deferred-work).
 
 ## 3. Milestones
 
@@ -95,14 +99,11 @@ and turns provisional values into verified ones. H never gates a milestone.
 | **M0** Skeleton | machine boots bare-metal payloads | WS0.1–0.3 | done: `make check` |
 | **M1** Bare-metal platform | everything a microkernel needs: timers, IPIs, mailbox/property, watchdog reset, RNG, a device tree | WS0.5, WS0.6, WS2.1, WS2.2, WS2.3a, WS2.4, WS2.5, WS3.2, WS3.6, WS9.2 | done: the bare-metal suite (WS9.2) passes on 1–4 cores with and without `-dtb`; PSCI `SYSTEM_RESET` and the watchdog reboot the guest four times |
 | **M2** Firmware-faithful boot | real TF-A, U-Boot and UEFI run unmodified | WS1.2, WS1.5, WS3.1, WS3.3, WS3.4 | done: upstream TF-A `rpi5` BL31 (`secure=on`) → U-Boot → Linux to the root-fs mount; EDK2 to the UEFI shell (`make check-firmware`) |
-| **M3** Linux on SD card | Raspberry Pi OS boots to a login prompt | WS2.3b–e, WS2.6, WS4.1–4.6, WS5.1, WS5.2, WS3.5 | done: an unmodified Raspberry Pi OS Lite image (2026-09-15, trixie) boots from `-drive if=sd` with `scripts/rpi5-boot` to its login prompt; `reboot` and `poweroff` work (by hand: the image is not in CI) |
+| **M3** Linux on SD card | Raspberry Pi OS boots to a login prompt | WS2.3b–e, WS2.6, WS4.1–4.6, WS5.1, WS3.5 (WS5.2 deferred: no M3 boot needs it) | done: an unmodified Raspberry Pi OS Lite image (2026-09-15, trixie) boots from `-drive if=sd` with `scripts/rpi5-boot` to its login prompt; `reboot` and `poweroff` work (by hand: the image is not in CI) |
 | **M4** PCIe | PCIe root complexes and MSI | WS2.3f, WS6.1–6.5 | done: the stock Raspberry Pi OS kernel mounts its root file system from an NVMe drive and exchanges frames through an `igb` network card, both behind a switch on PCIe1 (`make check-firmware`; `igb` in place of virtio-net, which the kernel lacks) |
 | **M5** RP1 | 40-pin header, Ethernet, USB | WS7.1–7.12 | Linux networking over RP1 Ethernet, USB keyboard and mass storage, GPIO/I²C/SPI/UART qtests; bare-metal RP1 UART0 at `0x1f_0003_0000` |
-| **M6** Upstream | merged in QEMU | WS9.3, WS9.5–9.8 | series accepted by the Arm/Raspberry Pi maintainers |
-| **H** Hardware parity | provisional values verified on silicon | WS0.4, WS1.1, WS1.3, WS1.4, WS1.6, WS9.4 | golden dumps checked in; `TODO(WS0.4)`/`TODO(WS1.x)` markers gone; UART transcripts of the bare-metal suite identical on QEMU and hardware |
-
-Upstreaming (WS9.7) is incremental: M0+M1 form the first series, and each
-later milestone is its own series once the previous one is merged.
+| **M6** Hardening | functional tests, migration, fuzzing, steppings | WS9.3, WS9.5, WS9.6, WS9.8 | QEMU's functional test runner boots the milestones' guests; migration and record/replay round trips pass; the fuzzer runs clean |
+| **H** Hardware parity | provisional values verified on silicon | WS0.4, WS1.1, WS1.3, WS1.4, WS1.6, WS9.4 | golden dumps checked in; every hardware row of section 10 gone, with its `Unverified` markers; UART transcripts of the bare-metal suite identical on QEMU and hardware |
 
 ## 4. Dependency graph and execution order
 
@@ -140,17 +141,17 @@ immediately exercised by the next:
 
 | # | Unit | Why now |
 | --- | --- | --- |
-| 1 | WS0.6 Kconfig split (done) | unblocks reusing every BCM283x model; a self-contained upstream patch |
+| 1 | WS0.6 Kconfig split (done) | unblocks reusing every BCM283x model; a self-contained patch |
 | 2 | WS2.1 system timer (done) | first reused device; exercises the SPI wiring path |
 | 3 | WS9.2a bare-metal framework (done) | exception vectors and a GIC driver in the guest, needed by every later test |
 | 4 | WS2.4 PM/watchdog (done) | reset and power-off, which every test harness needs |
 | 5 | WS3.6 reset semantics (done) | makes the watchdog and PSCI `SYSTEM_RESET` trustworthy |
 | 6 | WS2.2 mailbox (done) | the address-translation design decision, made once |
 | 7 | WS2.3a property identity tags (done) | first consumer of the mailbox; lets the `firmware` DT node be enabled |
-| 8 | WS2.5 RNG200 (done) | small, standalone, upstreamable |
+| 8 | WS2.5 RNG200 (done) | small, standalone |
 | 9 | WS3.2 built-in device tree (done) | microkernels get a DT without `-dtb`; forces the memory map to be the single source of truth |
 | 10 | WS9.2b full bare-metal suite (done) | M1 exit test |
-| 11 | WS0.5 series export (done) | prepares the first upstream submission |
+| 11 | WS0.5 series export (done, retired) | prepared an upstream submission, no longer a goal |
 | 12 | WS4.1 L2 interrupt controllers (done) | opens the M3 chain |
 
 ## 5. Unit conventions
@@ -175,7 +176,7 @@ device, in addition to the unit's own **Done when**:
    every interrupt path; a bare-metal test when the device is on the
    microkernel path; the corresponding compatible removed from
    `raspi5b_unmodelled_compatibles` when the Linux driver now probes.
-6. `make build check checkpatch` green in CI.
+6. `make build check lint` green in CI.
 
 ## 6. Workstreams
 
@@ -189,8 +190,8 @@ Pinned submodule, `overlay/`, `patches/`, `scripts/qemu-tree`
 `bcm2712` SoC and `raspi5b` machine as described in section 2.
 
 #### WS0.3 Continuous integration (done)
-GitHub Actions: shellcheck, checkpatch, ccache-backed build, qtest and
-smoke tests.
+GitHub Actions: shellcheck and ruff (`make lint`), ccache-backed build,
+qtest and smoke tests.
 *Follow-up (S):* a weekly job that applies the overlay onto QEMU `master`
 to surface upstream API churn before release bumps.
 
@@ -232,61 +233,26 @@ prints a machine-readable dump over UART10.
 the diff in CI; every difference is either fixed by a WS1 unit or listed
 in the allow-list with a reason.
 
-#### WS0.5 Upstream series export (done)
-*Delivered:* `scripts/qemu-tree export` (`make export-series`). Each
-patch in `patches/` is one upstream commit, and `series/series.map`
-names the overlay files that go with it, keyed by the patch's name
-without its number so renumbering needs no edit; commit messages stay in
-the patches, a single source instead of the planned `series/NN-*.txt`.
-The export commits onto the pinned revision in a temporary worktree,
-refuses an overlay file that is in no patch or in two, writes the
-series with `git format-patch --cover-letter --base` and the cover
-letter from `series/cover.txt`, checks that it applies with `git am`
-and reproduces the tree, and runs checkpatch (`--no-signoff` unless
-`--signoff` adds the user's own). `--build` builds every commit; CI
-exports on every change and builds every commit in a separate job. To
-make the series reviewable, the SoC patch became two (the SoC, then the
-board), the qtest and documentation patches now carry their files'
-descriptions, and `MAINTAINERS` gains the new files in the Raspberry
-Pi entry; `refresh` can now add a file to a patch. The M0+M1 series is
-15 commits. Posting it waits for the author's `Signed-off-by:` and a
-choice of maintainer entry (WS9.7).
+#### WS0.5 Upstream series export (retired)
+*Retired* with the upstream goal (see the introduction): `scripts/qemu-tree
+export`, `make export-series`, `series/`, `make checkpatch` and CI's job
+that built every commit of the series are removed. The patches stay a
+series applied in order, which is how the fork's changes to QEMU's own
+files are kept and rebased.
 
-`scripts/qemu-tree export <dir>` turns the overlay and patches into the
-series a maintainer will review.
-
-**Steps**
-1. `series.map`: an ordered list of commits, each naming the overlay files
-   and patches it contains plus its commit message file
-   (`series/NN-subject.txt`). Example: `hw/arm: Add BCM2712 SoC` =
-   `bcm2712.c` + `bcm2712.h` + the Kconfig/meson hunks that mention it.
-2. Build a throw-away worktree at the pinned commit; for each map entry
-   copy the files, `git apply` the listed patch hunks, `git commit` with
-   the message; refuse to continue if any overlay file or patch is left
-   unassigned.
-3. `git rebase -x 'ninja -C build qemu-system-aarch64' pinned` to prove
-   every commit builds (bisectability), then
-   `git format-patch --cover-letter -v<N>` with the cover letter drawn
-   from `series/cover.txt`.
-4. `scripts/checkpatch.pl` on the result, with `--no-signoff` until the
-   human author adds their `Signed-off-by:`.
-
-**Done when:** the exported series applies to the pinned tag with
-`git am`, builds at every commit, and passes checkpatch; the M0+M1 cover
-letter exists.
-
-#### WS0.6 Decouple BCM283x models from `CONFIG_RASPI` (done; to be posted upstream)
+#### WS0.6 Decouple BCM283x models from `CONFIG_RASPI` (done)
 *Delivered:* `patches/0001-hw-Add-a-Kconfig-symbol-for-each-BCM283x-device-model.patch`,
-first in the series so that it can be posted on its own; `make check-minimal`
-builds and tests a QEMU whose only board is `raspi5b` (`CONFIG_RASPI=n`).
-Posting to qemu-devel waits for the human author's `Signed-off-by:` (WS9.7).
+first in the series; `make check-minimal` configures a QEMU whose only
+board is `raspi5b` and checks that Kconfig resolves it with
+`CONFIG_RASPI=n` (configure only since the cleanup that retired the
+upstream work: building and testing that QEMU again doubled CI's time).
 The raspi5b-only build also exposed an upstream link failure: QEMU 11.1
 builds `target/arm/tcg/gicv5-cpuif.c` unconditionally but the GICv5
 helpers it calls only with `CONFIG_ARM_GICV5`, and the TCG stub for
 `define_gicv5_cpuif_regs()` asserts. `tests/configs/raspi5b-only.mak`
-enables `ARM_GICV5` as a workaround; *follow-up (S):* post the fix
+enables `ARM_GICV5` as a workaround; *follow-up (S):* fix it in a patch
 (build the file only with `ARM_GICV5`, make the stub a no-op for CPUs
-without FEAT_GCIE) alongside this patch.
+without FEAT_GCIE).
 
 Before this unit `bcm2835_systmr.c`, `bcm2835_mbox.c`, `bcm2835_property.c`,
 `bcm2835_powermgt.c`, `bcm2835_rng.c`, `bcm2835_thermal.c`, `bcm2835_fb.c`,
@@ -296,8 +262,7 @@ Before this unit `bcm2835_systmr.c`, `bcm2835_mbox.c`, `bcm2835_property.c`,
 selected by `RASPI`, and let `BCM2712` select only what it reuses.
 **Done when:** the `raspi*` machines are unchanged (QEMU's own
 `bcm2835-*` qtests pass), a build with `CONFIG_RASPI=n` still builds
-`raspi5b`, and the patch is posted to qemu-devel; it is independent of
-this machine.
+`raspi5b`; it is independent of this machine.
 
 ### WS1: CPU and interrupt controller fidelity
 
@@ -340,7 +305,7 @@ Report GIC-400 identification (`GICD_IIDR = 0x0200143b`,
 `GICC_IIDR = 0x0202143b`, and the component/peripheral ID registers)
 instead of QEMU's generic values; this needs a small upstream extension of
 `arm_gic` (an `iidr` property, defaulting to today's value).
-**Done when:** qtest asserts the hardware values; `TODO(WS1.3)` is gone.
+**Done when:** qtest asserts the hardware values; row P01 is gone.
 
 #### WS1.4 PMU overflow interrupt (S) — track H
 **Depends:** WS0.4.
@@ -350,7 +315,7 @@ upstream `bcm2712.dtsi` has no PMU node). Confirm on hardware: program a
 counter to overflow and check that `GICD_ISPENDR` shows SPI 16 + core; if it
 differs, fix the wiring and report it to the DT maintainers.
 **Done when:** a bare-metal test takes a PMU overflow interrupt on every
-core, in QEMU and on hardware; `TODO(WS1.4)` is gone.
+core, in QEMU and on hardware; row P05 is gone.
 
 #### WS1.5 IMPDEF system registers used by firmware (done)
 *Delivered:* an upstream-first patch (`target/arm`) gives the
@@ -389,7 +354,7 @@ guest that trusts `CNTFRQ_EL0` sees its clock drift. The truncation exists
 so that timer deadlines are an exact inverse of the count; fixing it means
 giving the timers a rational scale (or `muldiv64()` both ways with
 matching rounding) upstream. The bare-metal `systimer/rate` test measures
-the rate and tolerates 4% until then (`TODO(WS1.7)`).
+the rate and tolerates 4% until then (row P22).
 **Done when:** the counter runs at `CNTFRQ` within 100 ppm of the system
 timer and the test's tolerance drops accordingly.
 
@@ -443,7 +408,7 @@ within the value buffer it declares, reading missing fields as zero
 and clipping answers, as the identity tags already did. The property
 model needs a framebuffer and an OTP to link to, so both are
 instantiated now (WS8.1 still owns the framebuffer's behaviour); its
-VideoCore memory is the top 4 MiB of the first GiB (`TODO(WS0.4)`:
+VideoCore memory is the top 4 MiB of the first GiB (*unverified* (section 10):
 `GET_VC_MEMORY` on hardware), which the machine now leaves out of the DT
 memory node, as the firmware does. The `mailbox` and `firmware` nodes
 stay enabled: Linux's mailbox driver probes, `raspberrypi-firmware`
@@ -499,7 +464,7 @@ answers: the serial and the DMA mask are new `board-serial` and
 unchanged. `raspi5b` takes the serial from a `serial` machine property
 (default `0x0123456789abcdef`) and reports DMA channels 0–10, the
 channels of the firmware DT's `dma32` and `dma40` nodes
-(`TODO(WS0.4)`). The rest of the 2.3a set already had correct answers
+(*unverified* (section 10)). The rest of the 2.3a set already had correct answers
 (revision, MAC, ARM/VC memory, command line); qtests now cover every
 tag, including the command line's too-short-buffer case, and the
 bare-metal suite (`mbox/identity`) checks the answers against each
@@ -523,7 +488,7 @@ value buffer's accessors and the migration state exported. 0028 adds
 `bcm2712-property`, that subclass for the Pi 5, which the SoC now maps:
 `GET_CLOCKS` lists the five clocks the Pi 5's trees take from the
 firmware (ARM, CORE, V3D, ISP, HEVC), each on and at its most at boot,
-with `config.txt`'s default ranges (`TODO(WS0.4)`); `SET_CLOCK_RATE`
+with `config.txt`'s default ranges (*unverified* (section 10)); `SET_CLOCK_RATE`
 keeps a rate within the range and a clock keeps its rate while off,
 measuring 0; a clock not in the list has a rate of 0 and state bit 1, as
 the firmware's documentation says. The domains of the newer power
@@ -600,7 +565,7 @@ enabled, and stays pending until a 1 clears it: a timer on the RTC's
 clock, set again after migration, so an alarm the time has passed, or
 been set past, waits for the count to wrap. The backup battery's
 charger keeps a voltage within 1.3–4.4 V, or off, and no battery is
-fitted, so it reads 0 V (`TODO(WS0.4)`). The built-in tree gains the
+fitted, so it reads 0 V (*unverified* (section 10)). The built-in tree gains the
 firmware tree's `rpi_rtc` node with the charger off, firmware trees keep
 theirs enabled, and `make check-dt` allows its missing `ranges` as it
 does the `firmware` node's. Linux registers `rtc0` on both trees and
@@ -633,7 +598,7 @@ the Wi-Fi and Bluetooth enables to GIO 28 and 29, and the power LED and
 the cameras' power enables (`cam0_reg`, `cam1_reg`) to RP1 GPIOs 44, 34
 and 46 (WS7). Linux asks for none of `GET/SET_GPIO_STATE` and
 `GET/SET_GPIO_CONFIG` on either tree, so they stay unanswered, logged as
-unimplemented like any tag the model lacks (`TODO(WS0.4)`: what the Pi
+unimplemented like any tag the model lacks (*unverified* (section 10): what the Pi
 5's firmware answers for them).
 
 *WS2.3f delivered (in M4):* `bcm2712-property` answers
@@ -652,7 +617,7 @@ tags) and `commands`. Any other command gets the firmware's answer for
 a command it lacks, error -1 with `error=1 error_msg="Command not
 registered"`: `bootloader_version` among them, so `rpi-eeprom-update`
 finds no version and offers no update, as it does with the tree's
-missing bootloader timestamp. `TODO(WS0.4)`: the Pi 5 firmware's answer
+missing bootloader timestamp. *unverified* (section 10): the Pi 5 firmware's answer
 to a known command with a missing argument, which the model gives the
 same error. qtests cover each command, rounding, clocks set and off,
 the settings at two memory sizes, unknown commands and a short buffer;
@@ -762,8 +727,8 @@ drain, both soft resets, system reset and `-seed`; the bare-metal suite
 draws 1 KiB (`rng/draw`) and runs Linux's recovery sequence
 (`rng/soft-reset`), and `reset/system-reset` hashes the RNG. Linux
 registers the hwrng and seeds the CRNG from it ("crng init done" follows
-at once). Wiring it into `raspi4b` is left to the upstream series, as a
-follow-up patch once this one is accepted.
+at once). Wiring it into `raspi4b` is out of scope: this repository
+models the Pi 5 only.
 
 `brcm,bcm2711-rng200` at `0x10_7d20_8000`, from Linux `iproc-rng200.c`:
 `RNG_CTRL` `0x00` (bit 0 `RBGEN` enable, mask `0x1fff`), `RNG_SOFT_RESET`
@@ -793,7 +758,7 @@ in millidegrees Celsius, 25 °C by default, at startup with
 thermal zone's coefficients, which the `slope` and `offset` properties
 hold, to the nearest step; a temperature beyond the 10-bit code's range
 is refused. The other registers read 0 and ignore writes, logged as
-unimplemented (`TODO(WS0.4)`: what they and the register's other bits
+unimplemented (*unverified* (section 10): what they and the register's other bits
 read). The SoC maps it at `0x10_7d54_2000` with the BCM2712's
 coefficients, and `bcm2712-property` answers `GET_TEMPERATURE` with its
 reading, where the older boards' model answers a fixed 25 °C;
@@ -1106,19 +1071,51 @@ concatenated as the firmware loads them, or `auto_initramfs`),
 `boot_ramdisk` are reported as ignored. Step 2's `fdtoverlay` would not
 do: libfdt's overlay code has no parameters, and merges, numbers
 phandles and copies labels differently from the firmware. The script
-carries a port of the firmware's own code instead (raspberrypi/utils,
-`dtmerge/dtoverlay.c`): the overlay map (renamed overlays, per-platform
-ones, unsupported ones), fix-ups and local fix-ups, every kind of
-parameter (integers of each size, booleans and inverted ones, strings,
-bytes, fragment switches, lookup tables and literals, `reg` renaming its
-node, `bootargs` appended to), the order of `dtoverlay` and `dtparam`
-lines (a parameter goes to the open overlay, else to the base tree, with
-the synonyms `i2c_arm` and `i2c_vc` for a tree without an `i2c` alias),
-and libfdt's in-place editing, down to the bytes a resize leaves behind.
-The blob it writes is the one `dtmerge` writes, which `make
-check-firmware` checks for every overlay of the pinned firmware release,
-with its defaults and with each of its parameters, and for each of the
-Pi 5 tree's own parameters. The command line is `cmdline.txt`'s first
+runs the firmware's own code instead: `dtmerge` from the Raspberry Pi
+utilities (`rpi-utils/dtmerge/dtoverlay.c`, a submodule pinned at a
+commit; `make build` builds it), which does the overlay map (renamed
+overlays, per-platform ones, unsupported ones), fix-ups, every kind of
+parameter and the `i2c_arm`/`i2c_vc` synonyms. rpi5-boot keeps the
+order of `dtoverlay` and `dtparam` lines (a parameter goes to the open
+overlay, else to the base tree) and the firmware's tolerance of what
+fails: `dtmerge` stops at the first failure, so each parameter is tried
+on top of those that applied, and one that fails, or an overlay that
+does not load, is reported and skipped. Each run numbers the phandles
+an overlay adds from the highest the tree holds, where the firmware,
+applying every overlay in one run, goes on from its own count: with
+several overlays the numbers can differ from the firmware's, while every
+reference agrees. libfdt (through `ctypes`, the library `fdtget`
+links) reads the aliases and the overlay map, and `fdtput` writes
+`/chosen`'s prefixes, with `--` before the card's strings, which end at
+their first NUL as the firmware's C strings do. (Until the cleanup that retired
+the upstream work, the script carried a 1,000-line Python port of
+`dtoverlay.c` and libfdt's editing, checked against `dtmerge` byte for
+byte.) *What the port did, and where it is now* (`OverlayTest` and
+`ParityTest` in `test_rpi5_boot.py` pin it): reading a blob and refusing one that is not
+valid, or too large, which now refuses the boot from a base tree that
+`dtmerge` cannot load (its limit is 200,000 bytes, against the port's
+2 MiB) and skips an overlay it cannot load; libfdt's edits (where new
+properties and nodes go, padding, packing), the overlay map and the
+platform it is read for, fix-ups and phandles, fragments (dormant ones,
+`target`, `target-path`, aliases, exported labels), every kind of
+parameter, a parameter looked up in the open overlay and then the base
+tree, the map's parameters before the line's, and the `i2c_arm`/`i2c_vc`
+synonyms, all of which `dtmerge` does; the order of the lines, what
+fails being reported and skipped, `"dtoverlay="` closing the overlay,
+`/chosen`'s prefixes (the node made where libfdt makes it) and the
+command line's `serial0`/`serial1`, which rpi5-boot does. Three had
+been lost with the port and are back: a tree with no `dtoverlay` or
+`dtparam` line now goes through `dtmerge` too, for the synonyms and the
+check; an alias may name an alias, followed eight times, so a cycle
+ends; and a `serialN` alias names the console's node however either
+path is written (unit addresses left out, a slash after), which libfdt
+decides: each path is resolved to its node's offset and the offsets are
+compared, so nothing the card's tree holds (a property of any name on
+another node) changes which alias matches. One was dropped on purpose: the port refused a tree nested
+more than 64 deep, which the firmware's code passes on and Linux
+reports. Two differ from the firmware, as rows: P26 (what a failing
+target or fragment leaves) and P27 (synonyms made again on each run).
+The command line is `cmdline.txt`'s first
 line with `serial0` and `serial1` turned into the UARTs the tree's
 aliases name (`ttyAMA10` on a Pi 5), `root=` replaced by `--root` and
 `--append` added. QEMU runs with `-action reboot=shutdown` and a QMP
@@ -1147,17 +1144,15 @@ are refused with what to do about them: compressed ones, and sizes that
 are not a power of two up to 2 GiB or a multiple of 512 KiB above. The
 machine now keeps `/chosen`'s `os_prefix` and `overlay_prefix` when the
 tree has them, as rpi5-boot writes them. `scripts/firmware` also fetches
-the release's overlays and builds `dtmerge` from a pinned commit of
-raspberrypi/utils. `tests/smoke/test_rpi5_boot.py` covers the tree code,
-overlays and parameters, `config.txt` and the files it chooses, the
+the release's overlays. `tests/smoke/test_rpi5_boot.py` covers the
+overlays and parameters (their order, the map, what fails), `config.txt` and the files it chooses, the
 command line, partition tables, `--print`, QEMU's runs (a guest that
 powers off, one that reboots, stops by SIGTERM and by Ctrl-C, QEMU
 ending with a killed rpi5-boot), the
 reboot loop and what each reboot leaves, with `tests/guest/reboot`, a
 guest that reboots as its command line says: a tryboot through
 `tryboot.txt`, an A/B card's tryboot and the boot back, a reboot to a
-partition through the watchdog, and a halt; with the firmware, the
-comparison with `dtmerge` and Raspberry Pi OS's kernel booted from a
+partition through the watchdog, and a halt; with the firmware, Raspberry Pi OS's kernel booted from a
 card laid out as the OS's, with pi-gen's `config.txt` and `cmdline.txt`
 and an initramfs whose `/init` (`tests/guest/linux/firstboot.c`) plays
 the OS's first boot: it gives the card a new disk identifier, rewrites
@@ -1226,7 +1221,7 @@ what qdev offers without a QAPI enum. The table and semantics below hold,
 with two details the driver leaves open: an input held high latches
 once, so clearing it waits for the next rising edge, and the write-only
 registers (`SET`, `CLEAR`, `MASK_SET`, `MASK_CLEAR`) read as zero (Linux
-never reads them; TODO(WS0.4)). Input levels survive a reset, as they
+never reads them; *unverified*, section 10). Input levels survive a reset, as they
 are driven from outside; the latched status and the mask do not.
 The firmware's tree has seven controllers, not six: the open question
 below resolves to SPI 238 for `intc@7d503000` (`cpu_l2_irq`, used by the
@@ -1273,7 +1268,7 @@ its Kconfig symbol, meson line and trace events as upstream-first patch
 banks and their lines; the SoC gives GIO 32 + 22 lines and GIO AON
 17 + 6, as `bcm2712.dtsi` does (the Pi 5's own tree trims GIO's second
 bank to 4). The semantics below hold, with the details the driver leaves
-open settled as follows (TODO(WS0.4)): `DATA` reads the level of each
+open settled as follows (*unverified*, section 10): `DATA` reads the level of each
 line (the level driven in from outside for an input or a released
 open-drain output, the output's own otherwise), and detection watches
 that level whatever the direction, so an output interrupts on its own
@@ -1323,7 +1318,7 @@ with its Kconfig symbol, meson line and trace events as upstream-first
 patch 0017, ahead of the SoC patch. A `num-regs` property sets the
 number of 32-bit registers, and the SoC gives each block as many as its
 device tree node spans: 12 for `pinctrl`, 8 for `pinctrl_aon`. The
-registers store what software writes and reset to zero (TODO(WS0.4));
+registers store what software writes and reset to zero (*unverified*, section 10);
 the functions and pulls they select have no effect on the lines, which
 the board's pull-ups (WS4.6) keep driving. Both nodes are in the built-in
 tree, with phandles, and the board adds the power button's pin state
@@ -1369,7 +1364,7 @@ ends the transfer with a stop, unless `IGNORE_ACK`. Left out: the
 combined formats (`DTF` 2 and 3), which Linux does not use and which
 fail at once with `NOACK`, and the bus speed; `SCL_PARAM` reads as zero,
 and the reset values and the fields Linux does not name are
-TODO(WS0.4). The SoC maps `ddc0` and `ddc1` at `0x10_7d50_8200` and
+*unverified*, section 10. The SoC maps `ddc0` and `ddc1` at `0x10_7d50_8200` and
 `+0x80` (the memory map's `bsc` entry becomes one per controller), wires
 them to inputs 1 and 2 of `bsc_irq`, and describes them in the built-in
 tree as `bcm2712.dtsi` does, at 97.5 kHz. `brcm,brcmstb-i2c` leaves the
@@ -1606,7 +1601,7 @@ shifted right by 5 bits, as the 40-bit channels 6–11 take it, and puts
 bits 39:32 of the source and destination addresses in the control
 block's `STRIDE` word, while the legacy interface, and so `bcm2708_fb`,
 writes the unshifted bus address and uses `STRIDE` for 2D strides
-(`TODO(WS0.4)`: which one channel 0 follows). Circle, a bare-metal
+(*unverified* (section 10): which one channel 0 follows). Circle, a bare-metal
 environment for the Pi, leaves channels 0–5 unsupported on the Pi 5 and
 uses 6–11 only. Both DMA nodes and the `fb` node stay disabled, and the
 display reaches Linux when WS8.1 gives it `simplefb`. Model the
@@ -1689,10 +1684,10 @@ of `0x28` bytes and secondary PCIe at `0x100`, `0x160`, `0x180` and
 `0x300`, and for PCIe2 L1 PM substates at `0x240`. PCIe1's link is x1
 at 5 GT/s with ASPM L0s and L1, PCIe2's x4 at 5 GT/s with L1, as on the
 C1 (a D0 reaches 8 GT/s on PCIe1); PCIe0 is taken to be PCIe1
-(`TODO(WS0.4)`). `ID_VAL3` and `LINK_CAPABILITY` show in the
+(*unverified* (section 10)). `ID_VAL3` and `LINK_CAPABILITY` show in the
 configuration space; the MDIO bus completes at once; `AXI_INTF_CTRL`
 bit 12 reads 0, as on a C1. `MISC_REVISION` reads `0x0304`
-(`TODO(WS0.4)`). The SoC maps each at its `0x9310` window with a 16 GiB
+(*unverified* (section 10)). The SoC maps each at its `0x9310` window with a 16 GiB
 outbound aperture (`0x14_`, `0x18_` and `0x1c_0000_0000`), wires INTA–D,
 "pcie" and "msi" to the GIC, and resets each root port from reset line
 42–44; the root ports' buses are `pcie0.0`, `pcie1.0` and `pcie2.0`,
@@ -1747,7 +1742,7 @@ window for `0xff_ffff_f000` leads to, so the write lands on
 `INT_RAISE` (offset 0) through the WS6.1 inbound windows. MIP1's
 vectors 0–7 would share SPIs 247–254 with the level 2 controllers and
 V3D, so only 8–15 are wired (SPIs 255–262), as the tree's
-`brcm,msi-offset` says. `TODO(WS0.4)`: whether `INT_CLEAR` takes a
+`brcm,msi-offset` says. *unverified* (section 10): whether `INT_CLEAR` takes a
 vector number like `INT_RAISE` (modelled so) or a mask, the reset
 values of the masks and configuration (masked and level here), and
 whether the VideoCore's status differs from the host's (one status
@@ -1794,7 +1789,7 @@ ignored. The board sets `pci_allow_0_address`, since the firmware puts
 RP1's BAR1 at PCI 0. Found on the way: the bridge reset left the root
 port's command register and BARs as they were (it reset the port as a
 device, not as a PCI function); it now resets them too, as PERST#
-resets the devices behind it. `TODO(WS0.4)`: the firmware's actual
+resets the devices behind it. *unverified* (section 10): the firmware's actual
 values, the root port's window included. Tests: a qtest puts `edu` on
 `pcie2.0` with its BAR at PCI 0 and reaches it at `0x1f_0000_0000` and
 RAM through `RC_BAR2`, across a reset, without touching the root
@@ -2031,7 +2026,7 @@ uses it through `simplefb`, bare-metal code directly.
 #### WS8.2 HVS/HDMI (KMS), V3D, ISP, codecs
 Out of scope unless there is concrete demand; the nodes stay disabled.
 
-### WS9: Verification, quality and upstreaming
+### WS9: Verification and quality
 
 #### WS9.1 Per-device qtests (ongoing)
 Covered by the definition of done in section 5.
@@ -2116,12 +2111,8 @@ Add a `raspi5b` entry to QEMU's generic MMIO fuzzer configuration
 (`tests/qtest/fuzz/generic_fuzz_configs.h`) covering our devices; fix
 what it finds.
 
-#### WS9.7 Upstream submission (ongoing)
-Split into series per milestone (WS0.5), `MAINTAINERS` entries, human
-`Signed-off-by`, docs in `docs/system/arm/raspi5b.rst`; respond to
-review, rebase on `master`, repeat. Submit WS0.6, WS1.3/WS1.5
-(upstream-side), WS2.5 and WS7.7 early: they are useful beyond this
-machine and build reviewer familiarity.
+#### WS9.7 Upstream submission (retired)
+Retired with the upstream goal (see the introduction).
 
 #### WS9.8 BCM2712 stepping (S)
 C1 (4/8 GiB launch boards) and D0 (later 2/16 GiB boards, revision
@@ -2149,8 +2140,8 @@ and differ only in:
 
 | Decision | Rationale |
 | --- | --- |
-| Overlay + pinned submodule, not a QEMU fork | our changes stay small, reviewable and rebased per release; maps directly onto an upstream series |
-| GPL-2.0-or-later throughout | required to link with QEMU and to upstream |
+| Overlay + pinned submodule, an out-of-tree fork | our changes stay small, reviewable and rebased per release; upstream submission is not a goal, as QEMU's code-provenance policy declines AI-generated contributions |
+| GPL-2.0-or-later throughout | required to link with QEMU |
 | Machine name `raspi5b`, SoC type `bcm2712` | follows `raspi4b`/`bcm2838` naming; the product is the "Raspberry Pi 5 Model B" (`raspberrypi,5-model-b`) |
 | SoC derives from `TYPE_DEVICE`, not `BCM283X_BASE` | the BCM2712 map shares no base address or layout with BCM283x; the base class would carry the ARM-local interrupt controller and 32-bit peripheral window, which the BCM2712 lacks |
 | Default `secure=off`: no EL3, EL2 entry, QEMU PSCI over SMC | exactly the contract the Pi 5 firmware gives an OS; `secure=on` for firmware work, entered at EL3 by `-bios` or an ELF `-kernel`, while a Linux `Image` still starts at EL2 on QEMU's PSCI, as the boot protocol asks (kept and documented after the M3 audit) |
@@ -2172,12 +2163,11 @@ UART), `serial_hd(2..7)` RP1 UART0–5.
 
 | Risk | Impact | Mitigation |
 | --- | --- | --- |
-| No public BCM2712 register documentation | wrong reset values or semantics | driver-as-spec plus hardware dumps (WS0.4) and differential tests (WS9.4); every driver-derived value carries a `TODO` |
+| No public BCM2712 register documentation | wrong reset values or semantics | driver-as-spec plus hardware dumps (WS0.4) and differential tests (WS9.4); every driver-derived value is a row of section 10, cited from the code |
 | PCIe RC and RP1 are large and interdependent | M4/M5 slip | firmware-initialised mode (WS6.4) unblocks bare-metal RP1 use early; RP1 sub-devices are mostly reused models; WS6.1 is split into four independently testable sub-units |
 | Closed-source firmware behaviour (DT fix-ups, load addresses) | Linux or TF-A differences | measure on hardware (WS0.4 step 5), host-side boot helper (WS3.5) instead of emulating the firmware |
 | Mailbox address aliasing done wrong | bare-metal code and Linux disagree on buffer addresses | one explicit bus `MemoryRegion` (WS2.2), tested with both address forms |
 | QEMU API churn between releases | overlay stops building | weekly `master` CI job (WS0.3 follow-up), small patch set |
-| Upstream review asks for restructuring | rework | follow existing Raspberry Pi and `fsl-imx8mp` patterns; submit generic pieces (WS0.6, WS2.5, WS7.7) early |
 | Silicon stepping differences (C1/D0) | software written for one fails on the other | WS9.8 |
 
 ## 9. Open questions
@@ -2189,8 +2179,46 @@ UART), `serial_hd(2..7)` RP1 UART0–5.
    (e.g. seL4, a custom verified kernel, TF-A, U-Boot, EDK2)? Their boot
    protocols decide the order of WS3.2 and WS3.3 and what WS9.2 tests
    first.
-3. **Upstream cadence:** submit M0+M1 as soon as M1 is done, or hold
-   until Linux boots from SD (M3)?
-4. **Stepping:** model C1 only, or D0 from the start (WS9.8)?
-5. **Display:** is the firmware framebuffer (WS8.1) enough, or is
+3. **Stepping:** model C1 only, or D0 from the start (WS9.8)?
+4. **Display:** is the firmware framebuffer (WS8.1) enough, or is
    HDMI/KMS needed?
+
+## 10. Provisional values and deferred work
+
+The one list of what the model takes on trust and of work put off. A value
+the code cannot yet take from hardware is marked there as `Unverified
+(PLAN.md Pnn)`, and a deferred fix as `Deferred (PLAN.md Pnn)`, naming its
+row here; the row says what to measure and which unit owns it, and leaves
+this table when the marker leaves the code. Hardware values are measured
+by the WS0.4 probe (not written yet) on a Pi 5; until then the tests that
+pin them check the model against itself, not against silicon.
+
+| Row | Provisional value or deferred work | Marked in | Pinned by | Owner |
+| --- | --- | --- | --- | --- |
+| P01 | 288 SPIs: `GICD_TYPER.ITLinesNumber` | `overlay/include/hw/arm/bcm2712.h` (`BCM2712_NUM_SPIS`) | `tests/guest/suite/gic.c` | WS1.3 |
+| P02 | the VideoCore's memory: the top 4 MiB of the first GiB (`GET_VC_MEMORY`) | `bcm2712.h` (`BCM2712_VC_RAM_*`) | qtest mailbox tests | WS0.4 |
+| P03 | the DMA channels the ARM may use (`GET_DMA_CHANNELS`, `0x07ff`) | `bcm2712.h` (`BCM2712_DMA_CHANNEL_MASK`) | qtest identity tags | WS0.4 |
+| P04 | PCIe0's link capabilities, taken to be PCIe1's | `overlay/hw/arm/bcm2712.c` (`bcm2712_pcies`) | qtest PCIe tests | WS0.4 |
+| P05 | the PMU interrupts, SPI 16 + core, from the firmware's tree | `bcm2712.c` (CPU wiring) | — | WS1.4 |
+| P06 | the BSC I²C controllers' reset values and unnamed bits | `overlay/hw/i2c/brcmstb_i2c.c` | qtest `bsc_check_reset` | WS0.4 |
+| P07 | the PCIe root complexes' reset values, PHY MDIO registers and `MISC_REVISION` | `overlay/hw/pci-host/brcmstb_pcie.c` | qtest PCIe tests | WS0.4 |
+| P08 | what the firmware programs into PCIe2 with `pciex4_reset=0` (windows, root port) | `brcmstb_pcie.c` (`BRCMSTB_PCIE_PREINIT_*`) | qtest `pcie2-preinit` test | WS0.4 |
+| P09 | the firmware's clocks (`GET_CLOCKS`) and their rates | `overlay/hw/misc/bcm2712_property.c` | `tests/guest/suite/mbox.c` | WS0.4 |
+| P10 | the real-time clock's battery charger range, read with no battery fitted | `bcm2712_property.c` (`RTC_CHARGE_*`) | `tests/guest/suite/mbox.c` | WS0.4 |
+| P11 | what the firmware does with a charger voltage out of range (clamped here) | `bcm2712_property.c` | — | WS0.4 |
+| P12 | the pin controllers' reset values (all zero here) | `overlay/hw/gpio/brcmstb_pinctrl.c` | qtest `test_pinctrl_reset_values` | WS0.4 |
+| P13 | the AVS monitor's `RO_TEMP_STATUS` bits beside the code and valid bits | `overlay/hw/misc/bcm2711_avs_monitor.c` | — | WS0.4 |
+| P14 | how closely the firmware's temperature follows the sensor (2 degrees) | — | `tests/guest/suite/avs.c` | WS0.4 |
+| P15 | the GPIO blocks' reset values, and `DATA` for an open-drain line | `overlay/hw/gpio/brcmstb_gpio.c` | qtest GPIO tests | WS0.4 |
+| P16 | the reset lines the boot firmware leaves asserted (none here) | `overlay/hw/misc/brcmstb_reset.c` | qtest PCIe reset tests | WS0.4 |
+| P17 | what the L2 controllers' write-only registers read (zero here) | `overlay/hw/intc/brcmstb_l2_intc.c` | qtest L2 tests | WS0.4 |
+| P18 | the SD hosts' capabilities (`BCM2712_SDHCI_CAPAREG`) | `overlay/hw/sd/bcm2712_sdhci.c` | qtest SDIO tests | WS0.4 |
+| P19 | the SD hosts' configuration registers' reset values | `bcm2712_sdhci.c` (reset) | qtest SDIO tests | WS0.4 |
+| P20 | the MIPs: `INT_CLEAR` taking a vector number, the masks' and configuration's reset values, one status for VPU and host | `overlay/hw/intc/bcm2712_mip.c` | qtest MIP tests | WS0.4 |
+| P21 | how the firmware leaves the SD card for the OS | — | `tests/guest/suite/sd.c` | WS0.4 |
+| P22 | *deferred:* QEMU's generic counter runs 2.9% fast (a whole number of ns per tick); the suite allows 4% | — | `tests/guest/suite/systimer.c` | WS1.7 |
+| P23 | *deferred:* split `overlay/tests/qtest/raspi5b-test.c` (127 tests, every device) into a test per device beside a small board test. Its helpers (GIC pending checks, mailbox requests, PCIe and SD set-up) are shared across devices, so the split needs a common header or source and per-test meson entries in `patches/0038-*`; left out of the cleanup that retired the upstream work | — | — | WS9.1 |
+| P24 | *deferred:* `make check-minimal` configures the `raspi5b`-only QEMU but no longer builds or boots it, so a device the machine uses but its Kconfig fails to `select` shows only at run time, in a build without the other boards. A cheap check that derives the symbols of the types `bcm2712.c` creates from the build's own meson rules would close it | — | — | WS0.6 |
+| P25 | *deferred:* `dtmerge` (Raspberry Pi utilities, `dtoverlay_extract_override()`) read an override's cell offset with `atoi()`, so a negative one (`"prop:-4"`) made `dtoverlay_override_one_target()` write before the property's buffer, and one near `INT_MAX` overflowed the length it computes. rpi5-boot runs `dtmerge` on the trees and overlays of the card it boots, so a crafted image could corrupt the host process's heap; upstream (checked at `e0484c8`) has no fix. `make build` builds `dtmerge` with `patches/rpi-utils/0001-*.patch`, which refuses such an offset as a malformed override; a `dtmerge` named with `DTMERGE` or `--dtmerge` must carry it too. Report upstream, move to the fixed commit and drop the patch | `Makefile` (`DTMERGE_PATCH`) | `test_rpi5_boot.OverlayTest.test_failures` (`neg`) | WS3.5 |
+| P26 | *deferred:* a parameter with several `__overrides__` targets is skipped whole when one target fails, and an overlay one of whose fragments cannot be merged is skipped whole: `dtmerge` stops at the first error and writes nothing, where the firmware changes the tree in place and keeps the targets it set and the fragments it merged before the failing one. Matching it needs `dtmerge` to keep going past a non-fatal error (a patch to `dtmerge.c`, with rpi5-boot reading the errors from its output), not a parser of the overrides here | `scripts/rpi5-boot` (`compose_tree`) | — | WS3.5 |
+| P27 | *deferred:* `dtmerge` makes the `i2c_arm`/`i2c_vc` synonyms (when the tree has no `i2c` alias) at the start of every run, and rpi5-boot runs it once for the tree and once per overlay or parameter, where the firmware makes them once, before the first overlay: an overlay that changes the `i2c0` or `i2c1` alias, label or parameter of such a tree has the synonyms follow it. A Pi 5's own tree has an `i2c` alias, so it never gets them. Matching it needs every line applied in one `dtmerge` run (with P26's patch), not a copy of the synonyms here | `scripts/rpi5-boot` (`compose_tree`) | `test_rpi5_boot.ParityTest` (the synonyms) | WS3.5 |

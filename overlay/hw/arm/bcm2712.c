@@ -30,100 +30,57 @@
 #include "system/system.h"
 #include <libfdt.h>
 
-/* Sizes follow the device tree "reg" properties (spanning multi-reg nodes) */
-const MemMapEntry bcm2712_memmap[BCM2712_NUM_DEVICES] = {
-    [BCM2712_AXI]           = { 0x1000000000, 0x7c000000 },
-    [BCM2712_SOC]           = { 0x107c000000, 0x04000000 },
+/*
+ * Sizes follow the device tree "reg" properties (spanning multi-reg
+ * nodes); the names are the memory regions'
+ */
+const BCM2712MemMapEntry bcm2712_memmap[BCM2712_NUM_DEVICES] = {
+    [BCM2712_AXI]           = { 0x1000000000, 0x7c000000, "bcm2712.axi" },
+    [BCM2712_SOC]           = { 0x107c000000, 0x04000000, "bcm2712.soc" },
 
-    [BCM2712_PCIE0_MEM]     = { 0x1400000000, 16 * GiB },
-    [BCM2712_PCIE1_MEM]     = { 0x1800000000, 16 * GiB },
-    [BCM2712_PCIE2_MEM]     = { 0x1c00000000, 16 * GiB },
+    [BCM2712_PCIE0_MEM]     = { 0x1400000000, 16 * GiB, "bcm2712.pcie0-mem" },
+    [BCM2712_PCIE1_MEM]     = { 0x1800000000, 16 * GiB, "bcm2712.pcie1-mem" },
+    [BCM2712_PCIE2_MEM]     = { 0x1c00000000, 16 * GiB, "bcm2712.pcie2-mem" },
 
-    [BCM2712_PCIE0]         = { 0x1000100000, 0x9310 },
-    [BCM2712_PCIE1]         = { 0x1000110000, 0x9310 },
-    [BCM2712_PCIE_RESCAL]   = { 0x1000119500, 0x10 },
-    [BCM2712_PCIE2]         = { 0x1000120000, 0x9310 },
-    [BCM2712_MIP0]          = { 0x1000130000, 0xc0 },
-    [BCM2712_MIP1]          = { 0x1000131000, 0xc0 },
-    [BCM2712_ISP]           = { 0x1000880000, 0x4000 },
-    [BCM2712_SDIO1]         = { 0x1000fff000, 0x600 },
-    [BCM2712_SDIO2]         = { 0x1001100000, 0x600 },
-    [BCM2712_RESET]         = { 0x1001504318, 0x30 },
-    [BCM2712_V3D]           = { 0x1002000000, 0x30f00 },
+    [BCM2712_PCIE0]         = { 0x1000100000, 0x9310, "bcm2712.pcie0" },
+    [BCM2712_PCIE1]         = { 0x1000110000, 0x9310, "bcm2712.pcie1" },
+    [BCM2712_PCIE_RESCAL]   = { 0x1000119500, 0x10, "bcm2712.pcie-rescal" },
+    [BCM2712_PCIE2]         = { 0x1000120000, 0x9310, "bcm2712.pcie2" },
+    [BCM2712_MIP0]          = { 0x1000130000, 0xc0, "bcm2712.mip0" },
+    [BCM2712_MIP1]          = { 0x1000131000, 0xc0, "bcm2712.mip1" },
+    [BCM2712_ISP]           = { 0x1000880000, 0x4000, "bcm2712.isp" },
+    [BCM2712_SDIO1]         = { 0x1000fff000, 0x600, "bcm2712.sdio1" },
+    [BCM2712_SDIO2]         = { 0x1001100000, 0x600, "bcm2712.sdio2" },
+    [BCM2712_RESET]         = { 0x1001504318, 0x30, "bcm2712.reset" },
+    [BCM2712_V3D]           = { 0x1002000000, 0x30f00, "bcm2712.v3d" },
 
-    [BCM2712_SYSTIMER]      = { 0x107c003000, 0x1000 },
-    [BCM2712_MBOX]          = { 0x107c013880, 0x40 },
-    [BCM2712_PIXELVALVE0]   = { 0x107c410000, 0x100 },
-    [BCM2712_PIXELVALVE1]   = { 0x107c411000, 0x100 },
-    [BCM2712_MOP]           = { 0x107c500000, 0x28 },
-    [BCM2712_MOPLET]        = { 0x107c501000, 0x20 },
-    [BCM2712_DISP_INTR]     = { 0x107c502000, 0x30 },
-    [BCM2712_HVS]           = { 0x107c580000, 0x1a000 },
-    [BCM2712_HDMI]          = { 0x107c700000, 0x20100 },
-    [BCM2712_UART10]        = { 0x107d001000, 0x200 },
-    [BCM2712_PM]            = { 0x107d200000, 0x308 },
-    [BCM2712_RNG]           = { 0x107d208000, 0x28 },
-    [BCM2712_CPU_L2_IRQ]    = { 0x107d503000, 0x18 },
-    [BCM2712_PINCTRL]       = { 0x107d504100, 0x30 },
-    [BCM2712_DDC0]          = { 0x107d508200, 0x58 },
-    [BCM2712_DDC1]          = { 0x107d508280, 0x58 },
-    [BCM2712_BSC_IRQ]       = { 0x107d508380, 0x10 },
-    [BCM2712_MAIN_IRQ]      = { 0x107d508400, 0x10 },
-    [BCM2712_GIO]           = { 0x107d508500, 0x40 },
-    [BCM2712_UARTA]         = { 0x107d50c000, 0x20 },
-    [BCM2712_AON_INTR]      = { 0x107d510600, 0x30 },
-    [BCM2712_PINCTRL_AON]   = { 0x107d510700, 0x20 },
-    [BCM2712_L2_INTC]       = { 0x107d517000, 0x10 },
-    [BCM2712_MAIN_AON_IRQ]  = { 0x107d517ac0, 0x10 },
-    [BCM2712_GIO_AON]       = { 0x107d517c00, 0x40 },
-    [BCM2712_AVS]           = { 0x107d542000, 0xf00 },
-    [BCM2712_GIC]           = { 0x107fff8000, 0x8000 },
-};
-
-static const char *const bcm2712_device_names[BCM2712_NUM_DEVICES] = {
-    [BCM2712_AXI]           = "bcm2712.axi",
-    [BCM2712_SOC]           = "bcm2712.soc",
-    [BCM2712_PCIE0_MEM]     = "bcm2712.pcie0-mem",
-    [BCM2712_PCIE1_MEM]     = "bcm2712.pcie1-mem",
-    [BCM2712_PCIE2_MEM]     = "bcm2712.pcie2-mem",
-    [BCM2712_PCIE0]         = "bcm2712.pcie0",
-    [BCM2712_PCIE1]         = "bcm2712.pcie1",
-    [BCM2712_PCIE_RESCAL]   = "bcm2712.pcie-rescal",
-    [BCM2712_PCIE2]         = "bcm2712.pcie2",
-    [BCM2712_MIP0]          = "bcm2712.mip0",
-    [BCM2712_MIP1]          = "bcm2712.mip1",
-    [BCM2712_ISP]           = "bcm2712.isp",
-    [BCM2712_SDIO1]         = "bcm2712.sdio1",
-    [BCM2712_SDIO2]         = "bcm2712.sdio2",
-    [BCM2712_RESET]         = "bcm2712.reset",
-    [BCM2712_V3D]           = "bcm2712.v3d",
-    [BCM2712_SYSTIMER]      = "bcm2712.systimer",
-    [BCM2712_MBOX]          = "bcm2712.mbox",
-    [BCM2712_PIXELVALVE0]   = "bcm2712.pixelvalve0",
-    [BCM2712_PIXELVALVE1]   = "bcm2712.pixelvalve1",
-    [BCM2712_MOP]           = "bcm2712.mop",
-    [BCM2712_MOPLET]        = "bcm2712.moplet",
-    [BCM2712_DISP_INTR]     = "bcm2712.disp-intr",
-    [BCM2712_HVS]           = "bcm2712.hvs",
-    [BCM2712_HDMI]          = "bcm2712.hdmi",
-    [BCM2712_UART10]        = "bcm2712.uart10",
-    [BCM2712_PM]            = "bcm2712.pm",
-    [BCM2712_RNG]           = "bcm2712.rng",
-    [BCM2712_CPU_L2_IRQ]    = "bcm2712.cpu-l2-irq",
-    [BCM2712_PINCTRL]       = "bcm2712.pinctrl",
-    [BCM2712_DDC0]          = "bcm2712.ddc0",
-    [BCM2712_DDC1]          = "bcm2712.ddc1",
-    [BCM2712_BSC_IRQ]       = "bcm2712.bsc-irq",
-    [BCM2712_MAIN_IRQ]      = "bcm2712.main-irq",
-    [BCM2712_GIO]           = "bcm2712.gio",
-    [BCM2712_UARTA]         = "bcm2712.uarta",
-    [BCM2712_AON_INTR]      = "bcm2712.aon-intr",
-    [BCM2712_PINCTRL_AON]   = "bcm2712.pinctrl-aon",
-    [BCM2712_L2_INTC]       = "bcm2712.l2-intc",
-    [BCM2712_MAIN_AON_IRQ]  = "bcm2712.main-aon-irq",
-    [BCM2712_GIO_AON]       = "bcm2712.gio-aon",
-    [BCM2712_AVS]           = "bcm2712.avs-monitor",
-    [BCM2712_GIC]           = "bcm2712.gic",
+    [BCM2712_SYSTIMER]      = { 0x107c003000, 0x1000, "bcm2712.systimer" },
+    [BCM2712_MBOX]          = { 0x107c013880, 0x40, "bcm2712.mbox" },
+    [BCM2712_PIXELVALVE0]   = { 0x107c410000, 0x100, "bcm2712.pixelvalve0" },
+    [BCM2712_PIXELVALVE1]   = { 0x107c411000, 0x100, "bcm2712.pixelvalve1" },
+    [BCM2712_MOP]           = { 0x107c500000, 0x28, "bcm2712.mop" },
+    [BCM2712_MOPLET]        = { 0x107c501000, 0x20, "bcm2712.moplet" },
+    [BCM2712_DISP_INTR]     = { 0x107c502000, 0x30, "bcm2712.disp-intr" },
+    [BCM2712_HVS]           = { 0x107c580000, 0x1a000, "bcm2712.hvs" },
+    [BCM2712_HDMI]          = { 0x107c700000, 0x20100, "bcm2712.hdmi" },
+    [BCM2712_UART10]        = { 0x107d001000, 0x200, "bcm2712.uart10" },
+    [BCM2712_PM]            = { 0x107d200000, 0x308, "bcm2712.pm" },
+    [BCM2712_RNG]           = { 0x107d208000, 0x28, "bcm2712.rng" },
+    [BCM2712_CPU_L2_IRQ]    = { 0x107d503000, 0x18, "bcm2712.cpu-l2-irq" },
+    [BCM2712_PINCTRL]       = { 0x107d504100, 0x30, "bcm2712.pinctrl" },
+    [BCM2712_DDC0]          = { 0x107d508200, 0x58, "bcm2712.ddc0" },
+    [BCM2712_DDC1]          = { 0x107d508280, 0x58, "bcm2712.ddc1" },
+    [BCM2712_BSC_IRQ]       = { 0x107d508380, 0x10, "bcm2712.bsc-irq" },
+    [BCM2712_MAIN_IRQ]      = { 0x107d508400, 0x10, "bcm2712.main-irq" },
+    [BCM2712_GIO]           = { 0x107d508500, 0x40, "bcm2712.gio" },
+    [BCM2712_UARTA]         = { 0x107d50c000, 0x20, "bcm2712.uarta" },
+    [BCM2712_AON_INTR]      = { 0x107d510600, 0x30, "bcm2712.aon-intr" },
+    [BCM2712_PINCTRL_AON]   = { 0x107d510700, 0x20, "bcm2712.pinctrl-aon" },
+    [BCM2712_L2_INTC]       = { 0x107d517000, 0x10, "bcm2712.l2-intc" },
+    [BCM2712_MAIN_AON_IRQ]  = { 0x107d517ac0, 0x10, "bcm2712.main-aon-irq" },
+    [BCM2712_GIO_AON]       = { 0x107d517c00, 0x40, "bcm2712.gio-aon" },
+    [BCM2712_AVS]           = { 0x107d542000, 0xf00, "bcm2712.avs-monitor" },
+    [BCM2712_GIC]           = { 0x107fff8000, 0x8000, "bcm2712.gic" },
 };
 
 #define L2_COMPAT(s)    .compat = s, .compat_len = sizeof(s)
@@ -209,12 +166,13 @@ static const struct {
  * The PCIe root complexes: registers, outbound aperture, interrupts
  * (INTA's, then "pcie" and "msi"), and the root ports' links. PCIe1's
  * and PCIe2's are those lspci shows on a Pi 5; PCIe0's are taken to be
- * PCIe1's. TODO(WS0.4): check PCIe0's link capabilities on hardware.
+ * PCIe1's. Unverified (PLAN.md P04): PCIe0's link capabilities.
  */
 static const struct {
     const char *name;
     BCM2712Device dev;
     BCM2712Device mem;
+    int mip;                    /* the MIP its MSIs go to, or -1: its own */
     int spi_inta;
     int spi;
     int spi_msi;
@@ -223,11 +181,13 @@ static const struct {
     bool aspm_l0s;
     bool l1ss;
 } bcm2712_pcies[BCM2712_NUM_PCIE] = {
-    { "pcie0", BCM2712_PCIE0, BCM2712_PCIE0_MEM, BCM2712_SPI_PCIE0_INTA,
+    { "pcie0", BCM2712_PCIE0, BCM2712_PCIE0_MEM, -1, BCM2712_SPI_PCIE0_INTA,
       BCM2712_SPI_PCIE0, BCM2712_SPI_PCIE0_MSI, 1, 2, true, false },
-    { "pcie1", BCM2712_PCIE1, BCM2712_PCIE1_MEM, BCM2712_SPI_PCIE1_INTA,
+    { "pcie1", BCM2712_PCIE1, BCM2712_PCIE1_MEM, BCM2712_MIP1,
+      BCM2712_SPI_PCIE1_INTA,
       BCM2712_SPI_PCIE1, BCM2712_SPI_PCIE1_MSI, 1, 2, true, false },
-    { "pcie2", BCM2712_PCIE2, BCM2712_PCIE2_MEM, BCM2712_SPI_PCIE2_INTA,
+    { "pcie2", BCM2712_PCIE2, BCM2712_PCIE2_MEM, BCM2712_MIP0,
+      BCM2712_SPI_PCIE2_INTA,
       BCM2712_SPI_PCIE2, BCM2712_SPI_PCIE2_MSI, 4, 2, false, true },
 };
 
@@ -266,7 +226,7 @@ static void bcm2712_create_catchall(BCM2712Device dev)
 {
     DeviceState *d = qdev_new(TYPE_UNIMPLEMENTED_DEVICE);
 
-    qdev_prop_set_string(d, "name", bcm2712_device_names[dev]);
+    qdev_prop_set_string(d, "name", bcm2712_memmap[dev].name);
     qdev_prop_set_uint64(d, "size", bcm2712_memmap[dev].size);
     sysbus_realize_and_unref(SYS_BUS_DEVICE(d), &error_fatal);
     sysbus_mmio_map_overlap(SYS_BUS_DEVICE(d), 0, bcm2712_memmap[dev].base,
@@ -355,7 +315,7 @@ static bool bcm2712_realize_gic(BCM2712State *s, Error **errp)
         }
         /*
          * Per-core SPIs, from the arm-pmu node of the Raspberry Pi firmware's
-         * bcm2712-rpi-5-b.dtb. TODO(WS1.4): confirm on hardware.
+         * bcm2712-rpi-5-b.dtb. Unverified (PLAN.md P05) on hardware.
          */
         qdev_connect_gpio_out_named(cpudev, "pmu-interrupt", 0,
                                     bcm2712_spi(s, BCM2712_SPI_PMU0 + i));
@@ -869,7 +829,7 @@ static void bcm2712_realize(DeviceState *dev, Error **errp)
         case BCM2712_PCIE2_MEM:
             break;
         default:
-            create_unimplemented_device(bcm2712_device_names[d],
+            create_unimplemented_device(bcm2712_memmap[d].name,
                                         bcm2712_memmap[d].base,
                                         bcm2712_memmap[d].size);
             break;
@@ -1228,31 +1188,33 @@ static void bcm2712_fdt_pcie(void *fdt, uint32_t gic)
 {
     static const char irq_names[] = "pcie\0msi";
     static const char reset_names[] = "rescal\0bridge";
-    /* PCI address, CPU address and size of the 32-bit and 64-bit windows */
+    /*
+     * PCI address, CPU address as an offset into the root complex's
+     * outbound window in bcm2712_memmap, and size of the 32-bit and
+     * 64-bit windows
+     */
     static const uint64_t outbound[BCM2712_NUM_PCIE][2][3] = {
-        { { 0x0, 0x1700000000, 0xfffffffc },
-          { 0x400000000, 0x1400000000, 0x300000000 } },
-        { { 0x80000000, 0x1b80000000, 0x80000000 },
-          { 0x400000000, 0x1800000000, 0x380000000 } },
-        { { 0x0, 0x1f00000000, 0xfffffffc },
-          { 0x400000000, 0x1c00000000, 0x300000000 } },
+        { { 0x0, 0x300000000, 0xfffffffc },
+          { 0x400000000, 0x0, 0x300000000 } },
+        { { 0x80000000, 0x380000000, 0x80000000 },
+          { 0x400000000, 0x0, 0x380000000 } },
+        { { 0x0, 0x300000000, 0xfffffffc },
+          { 0x400000000, 0x0, 0x300000000 } },
     };
     /*
-     * The inbound windows beyond RAM at PCI 0x10_0000_0000: PCIe1's and
-     * PCIe2's to their MIP's registers, at the MSI address the MIP gives,
-     * and PCIe2's to RP1's shared SRAM
+     * The inbound windows: RAM at PCI 0x10_0000_0000, and PCIe2's to
+     * RP1's shared SRAM before it; the window of each MIP's registers, at
+     * the MSI address it gives, follows (below)
      */
-    static const uint32_t dma_ranges[BCM2712_NUM_PCIE][21] = {
+    static const uint32_t dma_ranges[BCM2712_NUM_PCIE][14] = {
         { 0x43000000, 0x10, 0x0, 0x0, 0x0, 0x10, 0x0 },
-        { 0x03000000, 0x10, 0x0, 0x0, 0x0, 0x10, 0x0,
-          0x03000000, 0xff, 0xfffff000, 0x10, 0x131000, 0x0, 0x1000 },
+        { 0x03000000, 0x10, 0x0, 0x0, 0x0, 0x10, 0x0 },
         { 0x02000000, 0x0, 0x0, 0x1f, 0x0, 0x0, 0x400000,
-          0x43000000, 0x10, 0x0, 0x0, 0x0, 0x10, 0x0,
-          0x03000000, 0xff, 0xfffff000, 0x10, 0x130000, 0x0, 0x1000 },
+          0x43000000, 0x10, 0x0, 0x0, 0x0, 0x10, 0x0 },
     };
-    static const int dma_ranges_len[BCM2712_NUM_PCIE] = { 7, 14, 21 };
-    /* The MSI controller of each: its own (below), MIP1 and MIP0 */
-    uint32_t msi_parent[BCM2712_NUM_PCIE] = { 0 };
+    static const int dma_ranges_len[BCM2712_NUM_PCIE] = { 7, 7, 14 };
+    /* The MSI controller of each: a MIP's, or its own (0 here) */
+    uint32_t mip_phandle[BCM2712_NUM_MIP];
     uint32_t rescal, reset;
     g_autofree char *rescal_path = NULL, *reset_path = NULL;
 
@@ -1280,7 +1242,7 @@ static void bcm2712_fdt_pcie(void *fdt, uint32_t gic)
         qemu_fdt_setprop_string(fdt, path, "compatible", "brcm,bcm2712-mip");
         qemu_fdt_setprop_sized_cells(fdt, path, "reg",
             2, base, 2, bcm2712_memmap[BCM2712_MIP0 + i].size,
-            2, BCM2712_MIP_MSI_ADDR, 2, 4 * KiB);
+            2, BCM2712_MIP_MSI_ADDR, 2, BCM2712_MIP_MSI_SIZE);
         qemu_fdt_setprop(fdt, path, "msi-controller", NULL, 0);
         qemu_fdt_setprop_cells(fdt, path, "msi-ranges",
             gic, GIC_FDT_IRQ_TYPE_SPI,
@@ -1290,7 +1252,7 @@ static void bcm2712_fdt_pcie(void *fdt, uint32_t gic)
         qemu_fdt_setprop_cell(fdt, path, "brcm,msi-offset",
                               i ? BCM2712_MIP1_FIRST_VECTOR : 0);
         qemu_fdt_setprop_cell(fdt, path, "phandle", phandle);
-        msi_parent[i ? 1 : 2] = phandle;
+        mip_phandle[i] = phandle;
     }
 
     for (int i = BCM2712_NUM_PCIE - 1; i >= 0; i--) {
@@ -1299,7 +1261,10 @@ static void bcm2712_fdt_pcie(void *fdt, uint32_t gic)
                                                 "/pcie@%" HWADDR_PRIx, base);
         uint32_t phandle = qemu_fdt_alloc_phandle(fdt);
         uint32_t map[BRCMSTB_PCIE_NUM_INTX * 8];
-        uint32_t dma[ARRAY_SIZE(dma_ranges[0])];
+        int mip = bcm2712_pcies[i].mip;
+        hwaddr mem = bcm2712_memmap[bcm2712_pcies[i].mem].base;
+        uint32_t dma[ARRAY_SIZE(dma_ranges[0]) + 7];
+        int dma_len = dma_ranges_len[i];
 
         for (int n = 0; n < BRCMSTB_PCIE_NUM_INTX; n++) {
             uint32_t entry[8] = { 0, 0, 0, n + 1, gic, GIC_FDT_IRQ_TYPE_SPI,
@@ -1337,19 +1302,32 @@ static void bcm2712_fdt_pcie(void *fdt, uint32_t gic)
                          sizeof(reset_names));
         qemu_fdt_setprop(fdt, path, "msi-controller", NULL, 0);
         qemu_fdt_setprop_cell(fdt, path, "msi-parent",
-                              msi_parent[i] ? msi_parent[i] : phandle);
+            mip >= 0 ? mip_phandle[mip - BCM2712_MIP0] : phandle);
         qemu_fdt_setprop_cells(fdt, path, "ranges",
             0x02000000, outbound[i][0][0] >> 32, outbound[i][0][0],
-            outbound[i][0][1] >> 32, outbound[i][0][1],
+            (mem + outbound[i][0][1]) >> 32, mem + outbound[i][0][1],
             outbound[i][0][2] >> 32, outbound[i][0][2],
             0x43000000, outbound[i][1][0] >> 32, outbound[i][1][0],
-            outbound[i][1][1] >> 32, outbound[i][1][1],
+            (mem + outbound[i][1][1]) >> 32, mem + outbound[i][1][1],
             outbound[i][1][2] >> 32, outbound[i][1][2]);
-        for (int k = 0; k < dma_ranges_len[i]; k++) {
+        for (int k = 0; k < dma_len; k++) {
             dma[k] = cpu_to_be32(dma_ranges[i][k]);
         }
+        if (mip >= 0) {
+            hwaddr regs = bcm2712_memmap[mip].base;
+            uint32_t window[7] = {
+                0x03000000, BCM2712_MIP_MSI_ADDR >> 32,
+                (uint32_t)BCM2712_MIP_MSI_ADDR, regs >> 32, (uint32_t)regs,
+                (uint64_t)BCM2712_MIP_MSI_SIZE >> 32,
+                (uint32_t)BCM2712_MIP_MSI_SIZE,
+            };
+
+            for (int k = 0; k < 7; k++) {
+                dma[dma_len++] = cpu_to_be32(window[k]);
+            }
+        }
         qemu_fdt_setprop(fdt, path, "dma-ranges", dma,
-                         dma_ranges_len[i] * sizeof(dma[0]));
+                         dma_len * sizeof(dma[0]));
         if (bcm2712_pcies[i].dev == BCM2712_PCIE1) {
             qemu_fdt_setprop_cell(fdt, path, "brcm,fifo-qos-map", 0x3030303);
             qemu_fdt_setprop_string(fdt, path, "brcm,clkreq-mode", "safe");

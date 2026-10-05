@@ -3022,7 +3022,7 @@ static void pinctrl_check(QTestState *qts, bool filled)
     }
 }
 
-/* TODO(WS0.4): every register reads as zero until checked on hardware */
+/* Unverified (PLAN.md P12): every register reads as zero */
 static void test_pinctrl_reset_values(void)
 {
     QTestState *qts = qtest_init("-machine raspi5b");
@@ -3257,7 +3257,7 @@ static void check_edid(const uint8_t *edid)
     g_assert_cmpuint(sum, ==, 0);
 }
 
-/* TODO(WS0.4): every register reads as zero until checked on hardware */
+/* Unverified (PLAN.md P06): every register reads as zero */
 static void bsc_check_reset(QTestState *qts)
 {
     for (int i = 0; i < ARRAY_SIZE(bscs); i++) {

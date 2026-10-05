@@ -45,7 +45,7 @@
  * INPUT_SWITCHING are only stored. SCL_PARAM reads as zero, as do the
  * bits Linux does not name. Reset clears every register and ends any
  * transfer the controller left open.
- * TODO(WS0.4): check the reset values and the unnamed bits on hardware.
+ * Unverified (PLAN.md P06): the reset values and the unnamed bits.
  */
 
 #include "qemu/osdep.h"

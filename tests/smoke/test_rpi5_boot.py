@@ -4,12 +4,12 @@
 # Raspberry Pi 5's firmware boots the card: config.txt and the files it
 # names, the device tree with its overlays and parameters, the command
 # line, the card's partitions, and QEMU run once per boot. Reading and
-# writing images needs mtools, and device trees are compiled with dtc;
-# the boots need QEMU and the guests (make build guest). Under 'make
-# check-firmware' (FIRMWARE set), the overlay code is compared with
-# dtmerge, the firmware's own, on every overlay of the pinned release,
-# and Raspberry Pi OS's kernel boots from a card laid out as Raspberry Pi
-# OS's through a first boot that rewrites the card and reboots.
+# writing images needs mtools, device trees are compiled with dtc, and
+# overlays are applied with dtmerge (make build, or DTMERGE); the boots
+# need QEMU and the guests (make build guest). Under 'make
+# check-firmware' (FIRMWARE set), Raspberry Pi OS's kernel boots from a
+# card laid out as Raspberry Pi OS's, with the pinned release's overlays,
+# through a first boot that rewrites the card and reboots.
 
 import importlib.machinery
 import importlib.util
@@ -38,14 +38,16 @@ FIRSTBOOT = GUEST.with_name("firstboot.elf")
 REBOOT_GUEST = GUEST.with_name("reboot.elf")
 
 FIRMWARE = Path(os.environ.get("FIRMWARE", "/nonexistent"))
-DTMERGE = FIRMWARE / "dtmerge"
+# The firmware's dtoverlay code, which rpi5-boot applies overlays with
+DTMERGE = Path(os.environ.get("DTMERGE") or ROOT / "build" / "dtmerge")
 OVERLAYS = FIRMWARE / "overlays"
 KERNEL = FIRMWARE / "kernel_2712.img"
 FIRMWARE_DTB = FIRMWARE / "bcm2712-rpi-5-b.dtb"
 
 HAVE_MTOOLS = all(shutil.which(tool) for tool in ("mformat", "mcopy",
                                                   "mmd", "mdir"))
-HAVE_DTC = shutil.which("dtc") is not None
+HAVE_DTC = all(shutil.which(tool) for tool in ("dtc", "fdtget", "fdtput"))
+HAVE_DTMERGE = HAVE_DTC and os.access(DTMERGE, os.X_OK)
 
 # How long rpi5-boot may take to run a bare-metal guest, and Linux twice
 RUN_TIMEOUT = 60
@@ -434,6 +436,9 @@ OVERLAY_MAP_DTS = """
     test-old {
         renamed = "test";
     };
+    test-older {
+        renamed = "test-mapped";
+    };
     test-gone {
         deprecated = "use test instead";
     };
@@ -465,100 +470,12 @@ def compose(config, files=None, verbose=False):
         config = rb.Config(fs, "config.txt", rb.BootVars(1), verbose)
         boot = rb.Boot(fs, config)
         rb.choose_files(boot, verbose)
-        rb.compose_tree(boot, verbose)
-    return fdt.parse(boot.tree.blob()), logs
+        rb.compose_tree(boot, verbose, str(DTMERGE))
+    return fdt.parse(boot.tree), logs
 
 
-@unittest.skipUnless(HAVE_DTC, "needs dtc (device-tree-compiler)")
-class TreeTest(unittest.TestCase):
-    """Device tree blobs read and written"""
-
-    def test_round_trip(self):
-        """A tree that is not changed is written as it was read"""
-        for name, source in (("base", BASE_DTS), ("overlay", OVERLAY_DTS),
-                             ("bcm2712-min", DTS.read_text())):
-            with self.subTest(tree=name):
-                blob = dtc(source)
-                self.assertEqual(rb.Tree.parse(blob).blob(), blob)
-
-    def test_bad_blob(self):
-        """A blob libfdt refuses is refused: cut short, its blocks past
-        its size, a property named beyond the strings block, and ones
-        Linux cannot read: nested too deep, or too large"""
-        good = dtc(BASE_DTS)
-        oversized = bytearray(good)
-        struct.pack_into(">I", oversized, 36, len(good))   # size_struct
-        unnamed = bytearray(good)
-        off_struct = struct.unpack_from(">I", good, 8)[0]
-        prop = good.index(struct.pack(">I", rb.FDT_PROP), off_struct)
-        struct.pack_into(">I", unnamed, prop + 8, 0xffff)  # the name
-        deep = "/dts-v1/;\n/ {" + " a {" * rb.FDT_MAX_DEPTH + \
-            " };" * rb.FDT_MAX_DEPTH + " };\n"
-        for name, blob in (("empty", b""),
-                           ("header", b"\xd0\x0d\xfe\xed" + bytes(36)),
-                           ("cut", good[:200]), ("oversized", oversized),
-                           ("unnamed", unnamed), ("deep", dtc(deep)),
-                           ("large", bytes(rb.FDT_MAX_SIZE + 1))):
-            with self.subTest(blob=name):
-                with self.assertRaises(rb.DtError):
-                    rb.Tree.parse(blob)
-        deep = "/dts-v1/;\n/ {" + " a {" * (rb.FDT_MAX_DEPTH - 1) + \
-            " };" * (rb.FDT_MAX_DEPTH - 1) + " };\n"
-        self.assertEqual(rb.Tree.parse(dtc(deep)).blob(), dtc(deep))
-
-    def test_lookups(self):
-        """Aliases lead to aliases, and a cycle of them to nothing; a
-        tree out of phandles cannot take a reference"""
-        tree = rb.Tree.parse(dtc(BASE_DTS))
-        aliases = tree.find("/aliases")
-        tree.setprop(aliases, "loop", b"loop\0")
-        tree.setprop(aliases, "ping", b"pong\0")
-        tree.setprop(aliases, "pong", b"ping/\0")
-        tree.setprop(aliases, "twice", b"console\0")
-        self.assertIsNone(tree.find("loop"))
-        self.assertIsNone(tree.find("ping"))
-        self.assertIs(tree.find("twice"), tree.find("console"))
-        tree.delprop(tree.find("serial10"), "phandle")
-        tree.max_phandle = 0xfffffffe
-        with self.assertRaisesRegex(rb.DtError, "no phandle left"):
-            rb.fixup_overlay(tree, rb.Tree.parse(dtc(OVERLAY_DTS)))
-
-    def test_numbers(self):
-        """C's number parsing on text a blob holds: ASCII digits only,
-        and a number longer than the type is over its range"""
-        self.assertEqual(rb.c_strtoul("9" * 5000), ((1 << 64) - 1, 5000))
-        self.assertEqual(rb.c_strtoul("0x" + "f" * 40), ((1 << 64) - 1, 42))
-        self.assertEqual(rb.c_strtoul("12\u0663"), (12, 2))
-        self.assertEqual(rb.c_atoi("\u0663\u0664"), 0)
-        self.assertEqual(rb.c_atoi(" -12x"), -12)
-        self.assertEqual(rb.c_atoi("9" * 30), (1 << 31) - 1)
-        tree = rb.Tree.parse(dtc(BASE_DTS))
-        for fixup in ("/chosen:bootargs:\u00b2".encode(),
-                      b"/chosen:bootargs:", b"/chosen:bootargs:" + b"1" * 11):
-            with self.assertRaisesRegex(rb.DtError, "bad fixup"):
-                rb.apply_fixup_list(tree, fixup + b"\0", 1, False)
-
-    def test_edits(self):
-        """New properties and nodes go first, as libfdt puts them"""
-        tree = rb.Tree.parse(dtc(BASE_DTS))
-        chosen = tree.find("/chosen")
-        tree.setprop(chosen, "os_prefix", b"\0")
-        tree.add_subnode(tree.root, "first")
-        tree.setprop(chosen, "bootargs", b"console=ttyAMA10\0")
-        tree.appendprop(chosen, "bootargs", b"more\0")
-        out = fdt.parse(tree.blob())
-        self.assertEqual(list(out["/chosen"]), ["os_prefix", "bootargs"])
-        self.assertEqual(out["/chosen"]["bootargs"],
-                         b"console=ttyAMA10\0more\0")
-        self.assertEqual(list(out)[1], "/first")
-        self.assertIs(tree.find("serial10"), tree.find(
-            "/soc@107c000000/serial@7d001000"))
-        self.assertIs(tree.find("/soc/i2c"),
-                      tree.find("/soc@107c000000/i2c@7d005000"))
-        self.assertIsNone(tree.find("nosuchalias"))
-
-
-@unittest.skipUnless(HAVE_DTC, "needs dtc (device-tree-compiler)")
+@unittest.skipUnless(HAVE_DTMERGE, "needs dtc, fdtget, fdtput and dtmerge "
+                     "(make build)")
 class OverlayTest(unittest.TestCase):
     """config.txt's dtoverlay and dtparam lines, applied as the firmware
     applies them"""
@@ -571,11 +488,17 @@ class OverlayTest(unittest.TestCase):
     def test_merge(self):
         # dtc gives every node with a label a phandle; the first fragment's
         # target is left without one
-        base = rb.Tree.parse(dtc(BASE_DTS))
-        base.delprop(base.find(self.UART10), "phandle")
-        base_max = max(rb.phandle_of(node) for node in base.root.walk())
+        with tempfile.TemporaryDirectory() as tmp:
+            dtb = Path(tmp, "base.dtb")
+            dtb.write_bytes(dtc(BASE_DTS))
+            subprocess.run(["fdtput", "-d", dtb, self.UART10, "phandle"],
+                           check=True)
+            base = dtb.read_bytes()
+        base_max = max(struct.unpack(">I", node["phandle"])[0]
+                       for node in fdt.parse(base).values()
+                       if "phandle" in node)
         tree, logs = compose("dtoverlay=test\n",
-                             files={"bcm2712-rpi-5-b.dtb": base.blob()})
+                             files={"bcm2712-rpi-5-b.dtb": base})
         self.assertEqual(logs, [])
         uart10 = tree[self.UART10]
         self.assertEqual(uart10["status"], string("okay"))
@@ -657,16 +580,17 @@ class OverlayTest(unittest.TestCase):
                              "dtparam=neg=0x55\n"
                              "dtoverlay=broken\n",
                              files={"overlays/broken.dtbo": b"junk"})
-        self.assertEqual(logs[:3], [
-            "failed to load overlay 'nosuch': no overlays/nosuch.dtbo",
+        self.assertEqual(logs[:2], [
+            "failed to load overlay 'nosuch': failed to open "
+            "'overlays/nosuch.dtbo'",
             "failed to set speed=fast: invalid override value 'fast' - "
-            "ignored",
-            "failed to set neg=0x55: negative offset in "
-            "'clock-frequency:-4'"])
-        self.assertEqual(len(logs), 4)
-        self.assertTrue(logs[3].startswith(
-            "failed to load overlay 'broken': overlays/broken.dtbo is not a "
-            "valid device tree blob"), logs[3])
+            "ignored"])
+        # A negative offset would write before the property: the patched
+        # dtmerge refuses it (docs/PLAN.md, P25)
+        self.assertEqual(logs[2], "failed to set neg=0x55: override neg: "
+                         "bad offset in 'clock-frequency:-4'")
+        self.assertTrue(logs[-1].startswith(
+            "failed to load overlay 'broken': "), logs[-1])
         self.assertEqual(tree[self.UART10]["current-speed"], cells(115200))
         # A byte that is not UTF-8 is written as it is, as dtmerge does
         tree, logs = compose(b"dtoverlay=test,label=a\xffb\n"
@@ -688,6 +612,12 @@ class OverlayTest(unittest.TestCase):
         self.assertEqual(logs, ["overlay 'test-old' has been renamed "
                                 "'test'"])
         self.assertIn("/rtc@68", tree)
+        # dtmerge follows one entry: test-mapped's is not looked up
+        tree, logs = compose("dtoverlay=test-older\n")
+        self.assertEqual(logs, [
+            "overlay 'test-older' has been renamed 'test-mapped'",
+            "failed to load overlay 'test-older': failed to open "
+            "'overlays/test-mapped.dtbo'"])
         tree, logs = compose("dtoverlay=test-mapped,flow\n")
         self.assertEqual(logs, [])
         self.assertEqual(tree[self.UART10]["current-speed"], cells(1200))
@@ -701,6 +631,167 @@ class OverlayTest(unittest.TestCase):
                 tree, logs = compose(f"dtoverlay={name}\n")
                 self.assertEqual(logs, [message])
                 self.assertNotIn("/rtc@68", tree)
+
+
+# What the Python port of dtoverlay.c and libfdt that rpi5-boot carried
+# did to the tree and the command line beyond what dtmerge does with an
+# overlay or a parameter, which rpi5-boot now gets from dtmerge, fdtget
+# and fdtput: each row a fixture and the behaviour it pins (docs/PLAN.md,
+# WS3.5, has the inventory).
+
+def base_with(*edits, padding=0):
+    """BASE_DTS with each (old, new) replaced, compiled with @padding
+    bytes of free space"""
+    source = BASE_DTS
+    for old, new in edits:
+        assert old in source, old
+        source = source.replace(old, new)
+    return subprocess.run(["dtc", "-q", "-@", "-p", str(padding), "-I",
+                           "dts", "-O", "dtb", "-o", "-", "-"],
+                          input=source.encode(), capture_output=True,
+                          check=True).stdout
+
+
+def aliased_console(*chain):
+    """BASE_DTS whose console alias leads through the aliases @chain
+    (name, value) to the UART"""
+    return base_with(("console = &uart10;",
+                      "".join(f'{name} = "{value}"; '
+                              for name, value in chain)))
+
+
+def deep_base(depth):
+    """BASE_DTS with nodes nested @depth deep under the root"""
+    return base_with(("    leds {", "   " + " a {" * (depth - 1) +
+                      " };" * (depth - 1) + "\n    leds {"))
+
+
+UART10_PATH = "/soc@107c000000/serial@7d001000"
+CONSOLE = "console=serial0,115200 kgdboc=serial1"
+# (what the old code did, the card's tree, config.txt, what comes of it):
+# the tree's properties ((path, name): value, None for none, "#packed" and
+# "#first node" for the blob's layout), the command line ("cmdline"), or
+# the error that refuses the tree ("error"). The fixtures are compiled
+# when the test runs, so that the module loads without dtc and the tests
+# that need it are skipped.
+def parity_cases():
+    return (
+        ("i2c synonyms, with no dtoverlay or dtparam line", None, "",
+         {("/aliases", "i2c_arm"): string(UART10_PATH.replace(
+             "serial@7d001000", "i2c@7d005000")),
+          ("/aliases", "i2c_vc"): string(UART10_PATH.replace(
+              "serial@7d001000", "i2c@7d005600")),
+          ("/__symbols__", "i2c_arm"): string(UART10_PATH.replace(
+              "serial@7d001000", "i2c@7d005000")),
+          ("/__overrides__", "i2c_arm"): "i2c0",
+          ("/__overrides__", "i2c_vc"): "i2c1",
+          ("/__overrides__", "i2c_baudrate"): "i2c0_baudrate",
+          ("/__overrides__", "i2c_arm_baudrate"): "i2c0_baudrate",
+          ("/__overrides__", "i2c_vc_baudrate"): None}),
+        ("no i2c synonyms beside an \"i2c\" alias",
+         base_with(("i2c0 = &i2c0;", "i2c = &i2c0;")), "",
+         {("/aliases", "i2c_arm"): None, ("/__overrides__", "i2c_arm"): None}),
+        ("the blob packed, with no dtoverlay or dtparam line",
+         base_with(padding=4096), "", {"#packed": True}),
+        ("/chosen made, before the root's other nodes, for the prefixes",
+         base_with(("chosen {", "unchosen {")), "os_prefix=\n",
+         {("/chosen", "os_prefix"): b"\0",
+          ("/chosen", "overlay_prefix"): string("overlays/"),
+          "#first node": "/chosen"}),
+        ("nodes nested deeper than Linux reads are passed on, as the "
+         "firmware's code passes them", deep_base(65), "",
+         {("/" + "/".join(["a"] * 64), "#node"): True}),
+        ("a blob that is not one refuses the boot", b"junk" * 16, "",
+         {"error": "device tree bcm2712-rpi-5-b.dtb: "}),
+        ("a blob larger than the firmware's code takes refuses the boot",
+         base_with(padding=200000), "",
+         {"error": "device tree bcm2712-rpi-5-b.dtb: "}),
+        ("an alias naming an alias", aliased_console(("console", "serial10")),
+         "", {"cmdline": "console=ttyAMA10,115200 kgdboc=ttyS1"}),
+        ("aliases followed eight times",
+         aliased_console(*((f"console{i or ''}", f"console{i + 1}")
+                           for i in range(8)),
+                         ("console8", UART10_PATH)),
+         "", {"cmdline": "console=ttyAMA10,115200 kgdboc=ttyS1"}),
+        ("aliases followed no more than eight times",
+         aliased_console(*((f"console{i or ''}", f"console{i + 1}")
+                           for i in range(9)),
+                         ("console9", UART10_PATH)),
+         "", {"cmdline": CONSOLE.replace("serial1", "ttyS1")}),
+        ("a cycle of aliases names nothing",
+         aliased_console(("console", "ping"), ("ping", "pong/"),
+                         ("pong", "ping")),
+         "", {"cmdline": CONSOLE.replace("serial1", "ttyS1")}),
+        ("a node named without its unit address, or with a slash after it, is "
+         "the one its serialN alias names",
+         aliased_console(("console", "/soc/serial@7d001000/")),
+         "", {"cmdline": "console=ttyAMA10,115200 kgdboc=ttyS1"}),
+        ("the card's tree decides nothing of how its nodes are matched: a "
+         "property on another UART, whatever its name, leaves the console "
+         "the UART it is",
+         base_with(('compatible = "arm,pl011-axi";',
+                    'compatible = "arm,pl011-axi"; rpi5-boot,probe = <1>;'),
+                   ('compatible = "brcm,bcm7271-uart";',
+                    'compatible = "brcm,bcm7271-uart"; '
+                    'rpi5-boot,probe = <1>;')),
+         "", {"cmdline": "console=ttyAMA10,115200 kgdboc=ttyS1"}),
+        ("the Bluetooth UART through an alias",
+         base_with(("bluetooth = &bt;", 'bluetooth = "serial1/bluetooth";')),
+         "", {"cmdline": "console=ttyAMA10,115200 kgdboc=ttyS1"}),
+    )
+
+
+@unittest.skipUnless(HAVE_DTMERGE, "needs dtc, fdtget, fdtput and dtmerge "
+                     "(make build)")
+class ParityTest(unittest.TestCase):
+    """What the removed Python port did that dtmerge does not do with an
+    overlay or a parameter: kept, whatever config.txt holds"""
+
+    def run_case(self, blob, conf):
+        """The tree and command line of a boot from @blob with config.txt
+        @conf: (tree, its blob, command line), or the BootError"""
+        files = {"kernel_2712.img": b"", "cmdline.txt": CONSOLE,
+                 "bcm2712-rpi-5-b.dtb": blob or dtc(BASE_DTS)}
+        boot, _ = boot_files(conf, files)
+        with Logs():
+            try:
+                rb.compose_tree(boot, False, str(DTMERGE))
+            except rb.BootError as err:
+                return err
+            rb.kernel_cmdline(boot, None, "")
+        return fdt.parse(boot.tree), boot.tree, boot.cmdline
+
+    def test_parity(self):
+        for name, blob, conf, expected in parity_cases():
+            with self.subTest(name):
+                result = self.run_case(blob, conf)
+                failed = isinstance(result, rb.BootError)
+                self.assertEqual(failed, "error" in expected,
+                                 result if failed else "booted")
+                if failed:
+                    self.assertTrue(str(result).startswith(
+                        expected["error"]), str(result))
+                    continue
+                tree, raw, cmdline = result
+                for key, value in expected.items():
+                    if key == "cmdline":
+                        self.assertEqual(cmdline, value)
+                    elif key == "#packed":
+                        total, _, strings = struct.unpack_from(
+                            ">III", raw, 4)
+                        size = struct.unpack_from(">I", raw, 32)[0]
+                        self.assertEqual((total, len(raw)),
+                                         (strings + size, strings + size))
+                    elif key == "#first node":
+                        self.assertEqual(list(tree)[1], value)
+                    elif key[1] == "#node":
+                        self.assertIn(key[0], tree)
+                    elif value is None:
+                        self.assertNotIn(key[1], tree.get(key[0], {}))
+                    else:
+                        if isinstance(value, str):
+                            value = tree[key[0]][value]
+                        self.assertEqual(tree[key[0]][key[1]], value, key)
 
 
 # ---------------------------------------------------------------------------
@@ -1003,7 +1094,8 @@ class BootFilesTest(unittest.TestCase):
         self.assertEqual(boot.armstub, "bl31.bin")
 
 
-@unittest.skipUnless(HAVE_DTC, "needs dtc (device-tree-compiler)")
+@unittest.skipUnless(HAVE_DTMERGE, "needs dtc, fdtget, fdtput and dtmerge "
+                     "(make build)")
 class CommandLineTest(unittest.TestCase):
     """cmdline.txt as the kernel gets it"""
 
@@ -1015,7 +1107,7 @@ class CommandLineTest(unittest.TestCase):
         boot, logs = boot_files(conf, files)
         with Logs() as more:
             if boot.dtb:
-                rb.compose_tree(boot, False)
+                rb.compose_tree(boot, False, str(DTMERGE))
             rb.kernel_cmdline(boot, root, append)
         return boot.cmdline, logs + more
 
@@ -1421,6 +1513,35 @@ class PrintTest(unittest.TestCase):
                     "pcie2-preinit=on" in shlex.split(stdout)[2].split(","),
                     preinit)
 
+    def test_card_strings(self):
+        """What the card says reaches the tools rpi5-boot runs as what it
+        is: a config.txt or cmdline.txt line ends at a NUL, as the
+        firmware's C strings do, and a value starting with "-" is no
+        option of theirs"""
+        image = self.tmp / "strings.img"
+        make_card(image, {
+            "config.txt": "dtoverlay=test,speed=9600\0,junk\n"
+                          "dtparam=\0-h\n"
+                          "overlay_prefix=-v/\0junk\n",
+            "cmdline.txt": "console=serial0,115200\0 root=/dev/sda2\n",
+            "kernel_2712.img": b"kernel",
+            "bcm2712-rpi-5-b.dtb": dtc(BASE_DTS),
+            "-v/test.dtbo": dtc(OVERLAY_DTS)})
+        out = self.tmp / "out"
+        status, stdout, stderr = run_boot("--print", "-o", out, image)
+        self.assertEqual((status, stderr), (0, ""))
+        self.assertEqual(shlex.split(stdout)[-3:-2],
+                         ["console=ttyAMA10,115200"])
+        tree = fdt.load(out / "device-tree.dtb")
+        self.assertEqual(tree["/soc@107c000000/serial@7d001000"]
+                         ["current-speed"], cells(9600))
+        self.assertEqual(tree["/chosen"]["overlay_prefix"], string("-v/"))
+
+    def test_run_tool_arguments(self):
+        """An argument no command line can hold is a BootError"""
+        with self.assertRaises(rb.BootError):
+            rb.run_tool(["true", "a\0b"], "nothing")
+
     def test_output_directory(self):
         """Files go to a new or empty directory, or one rpi5-boot made:
         ./rpi5-boot-files by default with --print"""
@@ -1773,102 +1894,6 @@ class RebootTest(unittest.TestCase):
 
 # ---------------------------------------------------------------------------
 # With the pinned firmware (make check-firmware)
-
-# Values that take each kind of parameter down each of its paths
-PARAM_VALUES = ("on", "off", "0x12")
-
-
-@unittest.skipUnless(os.environ.get("FIRMWARE"),
-                     "run through 'make check-firmware'")
-class DtmergeTest(unittest.TestCase):
-    """The overlay code against dtmerge, which applies an overlay and
-    parameters to a tree with the firmware's own code: every overlay of
-    the release, with its defaults and with each of its parameters, and
-    each parameter of the Pi 5's tree, make the same blob, or fail for
-    both"""
-
-    @classmethod
-    def setUpClass(cls):
-        cls.tmp = Path(tempfile.mkdtemp())
-        cls.addClassCleanup(shutil.rmtree, cls.tmp)
-        cls.base = FIRMWARE_DTB.read_bytes()
-        cls.map = rb.Tree.parse((OVERLAYS / "overlay_map.dtb").read_bytes())
-        cls.names = sorted(p.stem for p in OVERLAYS.glob("*.dtbo"))
-
-    def theirs(self, overlay, params):
-        out = self.tmp / "out.dtb"
-        out.unlink(missing_ok=True)
-        path = OVERLAYS / f"{overlay}.dtbo" if overlay else "-"
-        proc = subprocess.run([DTMERGE, FIRMWARE_DTB, out, path, *params],
-                              capture_output=True)
-        return out.read_bytes() if not proc.returncode else None
-
-    def ours(self, overlay, params):
-        """As dtmerge applies them, which stops at the first failure"""
-        base = rb.Tree.parse(self.base)
-        rb.add_i2c_synonyms(base)
-        try:
-            tree = base
-            if overlay:
-                name = rb.remap_overlay(self.map, rb.overlay_platform(base),
-                                        overlay)
-                if name is None:
-                    return None
-                name, _, mapped = name.partition(",")
-                tree = rb.Tree.parse(
-                    (OVERLAYS / f"{name}.dtbo").read_bytes())
-                rb.fixup_overlay(base, tree)
-                params = [p for p in mapped.split(",") if p] + params
-            for param in params:
-                name, eq, value = param.partition("=")
-                for target in (tree, base):
-                    data = rb.find_override(target, name)
-                    if data is not None:
-                        rb.apply_override(target, name, data,
-                                          value if eq else "true")
-                        break
-                else:
-                    return None
-            if overlay:
-                rb.merge_overlay(base, tree, rb.log)
-        except rb.DtError:
-            return None
-        return base.blob()
-
-    def check(self, overlay, params=()):
-        with Logs():
-            ours = self.ours(overlay, list(params))
-        self.assertEqual(ours, self.theirs(overlay, list(params)),
-                         f"{overlay or 'dtparam'} {' '.join(params)}")
-        return ours is not None
-
-    def parameters(self, blob):
-        overrides = rb.Tree.parse(blob).find("/__overrides__")
-        return [p[0] for p in overrides.props] if overrides else []
-
-    def test_overlays(self):
-        applied = sum(self.check(name) for name in self.names)
-        # Most apply to the Pi 5; the others fail for both
-        self.assertGreater(applied, 300)
-
-    def test_overlay_parameters(self):
-        for name in self.names:
-            try:
-                params = self.parameters((OVERLAYS / f"{name}.dtbo")
-                                         .read_bytes())
-            except rb.DtError:
-                continue
-            for param in params:
-                for value in PARAM_VALUES:
-                    self.check(name, [f"{param}={value}"])
-
-    def test_base_parameters(self):
-        params = self.parameters(self.base)
-        self.assertIn("uart0_console", params)
-        for param in params:
-            for value in PARAM_VALUES:
-                self.check(None, [f"{param}={value}"])
-
 
 @unittest.skipUnless(os.environ.get("FIRMWARE"),
                      "run through 'make check-firmware'")

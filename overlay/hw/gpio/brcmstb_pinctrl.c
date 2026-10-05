@@ -16,7 +16,7 @@
  * The model stores what software writes, so drivers read their settings
  * back, but the settings have no effect: a GPIO line behaves the same
  * whatever its pin's function and pull. Reset clears every register.
- * TODO(WS0.4): check the reset values on hardware.
+ * Unverified (PLAN.md P12): the reset values.
  */
 
 #include "qemu/osdep.h"

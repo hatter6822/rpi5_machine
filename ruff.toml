@@ -1,0 +1,8 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
+#
+# ruff's configuration for the repository's Python: scripts/rpi5-boot and
+# the tests under tests/smoke ('make lint', and CI's Lint step)
+line-length = 79
+
+[lint]
+select = ["E", "F", "W"]

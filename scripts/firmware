@@ -7,10 +7,8 @@
 # and downloads checked against their SHA-256: the community EDK2 port for
 # the Pi 5, and a Raspberry Pi OS kernel and device tree from a release of
 # the Raspberry Pi firmware repository. From the same release come the
-# overlays, and from a commit of the Raspberry Pi utilities dtmerge, which
-# applies them with the firmware's own code: built with the host's C
-# compiler (CC) and libfdt, it is what the rpi5-boot tests compare
-# scripts/rpi5-boot with.
+# overlays, which the rpi5-boot tests apply with dtmerge ('make build'
+# builds it from the rpi-utils submodule).
 #
 #   scripts/firmware DIR
 #
@@ -23,7 +21,6 @@
 #   bcm2712-rpi-5-b.dtb         and its device tree
 #   overlays/                   and the overlays, with their map and README
 #   modules/                    the kernel's igb and i2c-algo-bit modules
-#   dtmerge                     the utility, for the host
 # An output is made again only when its pin changes (DIR/.pins records
 # what each was made from). DIR must be new, empty, or made by an earlier
 # run, which leaves the marker .check-firmware; 'make distclean' requires
@@ -53,10 +50,6 @@ DTB_SHA256=a5165cb562035f479ea9f5a81cedf7b6596ea32a0598608c4dc3b77ada909c60
 RPI_MODULES_URL=https://raw.githubusercontent.com/raspberrypi/firmware/$RPI_FIRMWARE_TAG/modules/6.18.50-v8-16k%2B/kernel/drivers
 IGB_SHA256=cbedf99c086598829f143987aaea985f58955fc3911edf9f01cc243e93f19a7c
 I2C_ALGO_BIT_SHA256=ee793aca106c27d542401714761ff56b0384f3e5aabd99b38438ef94f5bd6299
-
-# No release tags: a commit of the default branch
-RPI_UTILS_URL=https://github.com/raspberrypi/utils.git
-RPI_UTILS_COMMIT=ebc4a56bac3a896d5c14e56fe27dcd6cb36dd373
 
 die() {
     echo "firmware: $*" >&2
@@ -192,19 +185,6 @@ if ! made overlays/overlay_map.dtb "$pin"; then
     rm -rf "$dir/overlays"
     cp -R "$dir/src/firmware/boot/overlays" "$dir/overlays"
     record overlays/overlay_map.dtb "$pin"
-fi
-
-# dtmerge, built for the host from its two sources
-pin="$RPI_UTILS_URL $RPI_UTILS_COMMIT dtmerge"
-if ! made dtmerge "$pin"; then
-    src=$dir/src/utils
-    rm -rf "$src"
-    git init --quiet "$src"
-    git -C "$src" fetch --quiet --depth 1 "$RPI_UTILS_URL" "$RPI_UTILS_COMMIT"
-    git -C "$src" -c advice.detachedHead=false checkout --quiet FETCH_HEAD
-    "${CC:-cc}" -O2 -o "$dir/dtmerge" "$src/dtmerge/dtmerge.c" \
-        "$src/dtmerge/dtoverlay.c" -lfdt
-    record dtmerge "$pin"
 fi
 
 rm -rf "$dir/src"

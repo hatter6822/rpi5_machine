@@ -19,7 +19,7 @@
  * unmasked. Writing n to INT_CLEAR clears bit n. Linux never clears the
  * status, as its interrupts are edges.
  *
- * TODO(WS0.4): check on hardware that INT_CLEAR takes a vector number
+ * Unverified (PLAN.md P20): that INT_CLEAR takes a vector number
  * like INT_RAISE, not a mask; which values the masks and configuration
  * reset to (masked and level here); and whether the VPU's status differs
  * from the host's (both read the one status here).

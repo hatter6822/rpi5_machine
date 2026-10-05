@@ -352,7 +352,8 @@ class DtbFixupTest(unittest.TestCase):
         dtb = self.compile(MINIMAL_DTS + FIRMWARE_NODES)
         tree = fdt.load(self.dumped("-dtb", str(dtb)))
         node = tree["/reserved-memory/nvram@0"]
-        self.assertEqual(node["reg"], cells(0, BLCONFIG_ADDR, 0, len(BLCONFIG)))
+        self.assertEqual(node["reg"],
+                         cells(0, BLCONFIG_ADDR, 0, len(BLCONFIG)))
         self.assertEqual(node["status"], string("okay"))
 
         qmp = Qmp(self, "-M", "raspi5b", "-S", "-kernel", str(GUEST),

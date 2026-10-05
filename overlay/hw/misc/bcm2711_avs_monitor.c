@@ -36,7 +36,7 @@ REG32(RO_TEMP_STATUS,           0x200)
 
 /*
  * Linux takes the code as valid if either of these bits is set: the
- * model sets both. TODO(WS0.4): what the register's other bits read.
+ * model sets both. Unverified (PLAN.md P13): what the other bits read.
  */
 #define RO_TEMP_STATUS_VALID    (BIT(16) | BIT(10))
 

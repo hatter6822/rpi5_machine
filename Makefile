@@ -3,11 +3,14 @@
 # Top-level developer entry points. QEMU itself is built with its own
 # configure/meson/ninja machinery in $(BUILD_DIR); this file only wires the
 # overlay, the build and the tests together. Run 'make help' for a summary.
+# This repository is an out-of-tree fork: the patches and overlay are applied
+# to a pinned QEMU and built here; they are not prepared for upstream.
 
 BUILD_DIR   ?= build
 QEMU_SRC    := $(CURDIR)/qemu
 QEMU_BIN    := $(BUILD_DIR)/qemu-system-aarch64
 QTEST_BIN   := $(BUILD_DIR)/tests/qtest/raspi5b-test
+DTMERGE     := $(BUILD_DIR)/dtmerge
 GUEST_DIR   := tests/guest
 GUEST_BUILD := $(CURDIR)/$(GUEST_DIR)/build
 NINJA       ?= ninja
@@ -16,35 +19,31 @@ PYTHON      ?= python3
 CONFIGURE_FLAGS ?= --target-list=aarch64-softmmu --disable-docs --disable-user
 EXTRA_CONFIGURE_FLAGS ?=
 
-# Sources we own, as they appear inside the QEMU tree
-OVERLAY_SRCS := $(shell cd overlay && find . -name '*.[ch]' | sed 's|^\./||')
-
 .DEFAULT_GOAL := build
 .PHONY: FORCE help setup apply unapply status configure build guest check \
         check-qtest check-smoke check-minimal check-dt firmware check-firmware \
-        checkpatch export-series run-hello \
+        lint run-hello \
         clean distclean
 
 help:
-	@echo 'setup        initialise the qemu submodule and apply the overlay'
+	@echo 'setup        initialise the submodules and apply the overlay'
 	@echo 'apply        apply patches/ and link overlay/ into qemu/'
 	@echo 'unapply      restore qemu/ to the pristine pinned commit'
 	@echo 'status       show overlay/patch state and unmanaged qemu/ changes'
 	@echo 'configure    configure QEMU in $$(BUILD_DIR) (default: build/)'
-	@echo 'build        build qemu-system-aarch64 (default target)'
+	@echo 'build        build qemu-system-aarch64 and dtmerge (default target)'
 	@echo 'guest        build the bare-metal test guests (clang + lld)'
 	@echo 'check        run the raspi5b qtest and the smoke tests'
-	@echo 'check-minimal build QEMU with raspi5b as its only board, run check on it'
+	@echo 'check-minimal configure QEMU with raspi5b as its only board'
 	@echo 'check-dt     validate the built-in device tree (needs dtschema, network)'
 	@echo 'firmware     build the pinned firmware check-firmware boots (network)'
 	@echo 'check-firmware boot real firmware with -bios (needs aarch64-linux-gnu-gcc)'
-	@echo 'checkpatch   run QEMU checkpatch.pl over overlay sources and patches'
-	@echo 'export-series write the upstream series to $$(SERIES_DIR) and check it'
+	@echo 'lint         shellcheck the shell scripts, ruff the Python'
 	@echo 'run-hello    boot the hello guest interactively'
 	@echo 'clean        remove guest builds; distclean also removes $$(BUILD_DIR)'
 
 setup:
-	git submodule update --init --depth 1 qemu
+	git submodule update --init --depth 1 qemu rpi-utils
 	scripts/qemu-tree apply
 
 apply unapply status:
@@ -70,8 +69,54 @@ $(BUILD_DIR)/build.ninja: $(CONFIGURE_STAMP) | apply
 configure: $(BUILD_DIR)/build.ninja
 
 # Ninja tracks every dependency, so these always defer to it
-build: configure
+build: configure $(DTMERGE)
 	$(NINJA) -C $(BUILD_DIR) qemu-system-aarch64
+
+# The firmware's dtoverlay code as raspberrypi/utils builds it into
+# dtmerge, which scripts/rpi5-boot applies config.txt's overlays with. It
+# reads the overlays of the cards rpi5-boot boots, so it is built with
+# patches/rpi-utils/, applied to a copy: Deferred (PLAN.md P25).
+RPI_UTILS_SRCS := rpi-utils/dtmerge/dtmerge.c rpi-utils/dtmerge/dtoverlay.c
+DTMERGE_PATCH  := patches/rpi-utils/0001-dtoverlay-Refuse-an-override-s-offset-outside-a-property.patch
+DTOVERLAY_SRC  := $(BUILD_DIR)/dtmerge-src/dtoverlay.c
+
+RPI_UTILS_STAMP := $(BUILD_DIR)/.rpi-utils-commit
+
+# Holds the rpi-utils commit this checkout pins (its gitlink in the index,
+# which 'git submodule update' checks out) and is rewritten only when that
+# changes. Every make checks the submodule against it: one that is not
+# checked out, or at another commit (after switching to a revision that
+# pins another), is updated first, so dtmerge is never built from a stale
+# checkout. One target runs git, so -j runs it once. Outside a git
+# checkout the sources are taken as they are.
+$(RPI_UTILS_STAMP): FORCE
+	@mkdir -p $(@D)
+	@want=$$(git rev-parse -q --verify :rpi-utils 2>/dev/null); \
+	if [ -n "$$want" ]; then \
+		have=; \
+		if [ -e rpi-utils/.git ]; then \
+			have=$$(git -C rpi-utils rev-parse -q --verify HEAD); \
+		fi; \
+		if [ "$$have" != "$$want" ]; then \
+			echo "git submodule update --init --depth 1 rpi-utils"; \
+			git submodule update --init --depth 1 rpi-utils || exit 1; \
+		fi; \
+	else \
+		want=untracked; \
+	fi; \
+	printf '%s\n' "$$want" | cmp -s - $@ || printf '%s\n' "$$want" >$@
+
+# The sources are as new as the stamp says: made by its recipe
+$(RPI_UTILS_SRCS): $(RPI_UTILS_STAMP) ;
+
+$(DTOVERLAY_SRC): rpi-utils/dtmerge/dtoverlay.c $(DTMERGE_PATCH) \
+		$(RPI_UTILS_STAMP)
+	@mkdir -p $(@D)
+	patch -s -o $@ rpi-utils/dtmerge/dtoverlay.c $(DTMERGE_PATCH)
+
+$(DTMERGE): rpi-utils/dtmerge/dtmerge.c $(DTOVERLAY_SRC) $(RPI_UTILS_STAMP)
+	@mkdir -p $(@D)
+	$(CC) -O2 -Irpi-utils/dtmerge -o $@ $(filter %.c,$^) -lfdt
 
 # After 'build', never beside it: two ninja processes must not share a
 # build directory (make -j would otherwise run both at once)
@@ -83,10 +128,14 @@ guest:
 
 check: check-qtest check-smoke
 
-# A QEMU containing the raspi5b machine and nothing else, which proves that
-# the machine selects every device it needs by itself, without the other
-# Raspberry Pi boards (CONFIG_RASPI). configure looks the device file up
-# relative to qemu/configs/devices/aarch64-softmmu/.
+# QEMU configured with the raspi5b machine and nothing else: Kconfig
+# resolves what the machine selects without the other Raspberry Pi boards
+# (CONFIG_RASPI) and without contradictions. Configure only: the build and
+# the tests of the full configuration cover the code itself, and a device
+# the machine fails to select would show only at run time (docs/PLAN.md,
+# P24). Ninja's build.ninja target reruns meson when its inputs, the
+# Kconfig files among them, have changed since. configure
+# looks the device file up relative to qemu/configs/devices/aarch64-softmmu/.
 MINIMAL_BUILD_DIR ?= build-minimal
 MINIMAL_DEVICES   := tests/configs/raspi5b-only
 MINIMAL_CONFIGURE_FLAGS := --without-default-devices \
@@ -94,7 +143,11 @@ MINIMAL_CONFIGURE_FLAGS := --without-default-devices \
 
 check-minimal:
 	$(MAKE) BUILD_DIR=$(MINIMAL_BUILD_DIR) \
-		EXTRA_CONFIGURE_FLAGS='$(MINIMAL_CONFIGURE_FLAGS)' check
+		EXTRA_CONFIGURE_FLAGS='$(MINIMAL_CONFIGURE_FLAGS)' configure
+	$(NINJA) -C $(MINIMAL_BUILD_DIR) build.ninja
+	@grep -qx 'CONFIG_RASPI5=y' \
+		$(MINIMAL_BUILD_DIR)/aarch64-softmmu-config-devices.mak || \
+		{ echo 'check-minimal: CONFIG_RASPI5 is not enabled' >&2; exit 1; }
 	@! grep -qx 'CONFIG_RASPI=y' \
 		$(MINIMAL_BUILD_DIR)/aarch64-softmmu-config-devices.mak || \
 		{ echo 'check-minimal: CONFIG_RASPI is enabled' >&2; exit 1; }
@@ -104,7 +157,7 @@ check-qtest: build $(QTEST_BIN)
 
 check-smoke: build guest
 	QEMU=$(abspath $(QEMU_BIN)) GUEST=$(GUEST_BUILD)/hello.elf \
-		SUITE=$(GUEST_BUILD)/suite.elf \
+		SUITE=$(GUEST_BUILD)/suite.elf DTMERGE=$(abspath $(DTMERGE)) \
 		$(PYTHON) -m unittest discover -s tests/smoke -v
 
 # The built-in device tree is validated against the kernel's bindings at a
@@ -143,7 +196,7 @@ check-dt: build guest $(DT_SCHEMA)
 # Real firmware booted with -bios: scripts/firmware builds it at pinned
 # versions in $(FIRMWARE_DIR), which must be new, empty, or marked as made
 # there by an earlier run, as for check-dt. It skips what is up to date.
-# The rpi5-boot tests use its overlays, dtmerge and kernel.
+# The rpi5-boot tests use its overlays and kernel.
 FIRMWARE_DIR ?= build-firmware
 
 firmware:
@@ -152,27 +205,19 @@ firmware:
 check-firmware: build guest firmware
 	QEMU=$(abspath $(QEMU_BIN)) GUEST=$(GUEST_BUILD)/hello.elf \
 		SUITE=$(GUEST_BUILD)/suite.elf FIRMWARE=$(abspath $(FIRMWARE_DIR)) \
+		DTMERGE=$(abspath $(DTMERGE)) \
 		PYTHONPATH=$(CURDIR)/tests/smoke$${PYTHONPATH:+:$$PYTHONPATH} \
 		$(PYTHON) -m unittest -v test_firmware test_rpi5_boot
 
-# The upstream series (scripts/qemu-tree export): SERIES_FLAGS takes
-# -v <n>, --build (build every commit) and --signoff
-SERIES_DIR   ?= build-series
-SERIES_FLAGS ?=
+# The repository's own scripts: the shell ones with shellcheck, the Python
+# ones (tests/smoke and scripts/rpi5-boot) with ruff, configured in
+# ruff.toml
+SHELL_SCRIPTS  := scripts/qemu-tree scripts/firmware
+PYTHON_SCRIPTS := scripts/rpi5-boot tests/smoke
 
-export-series:
-	scripts/qemu-tree export $(SERIES_FLAGS) $(SERIES_DIR)
-
-checkpatch:
-	@status=0; \
-	for f in $(OVERLAY_SRCS); do \
-		(cd overlay && $(QEMU_SRC)/scripts/checkpatch.pl --terse -f $$f) \
-			|| status=1; \
-	done; \
-	for p in patches/*.patch; do \
-		$(QEMU_SRC)/scripts/checkpatch.pl --terse --no-signoff $$p || status=1; \
-	done; \
-	exit $$status
+lint:
+	shellcheck $(SHELL_SCRIPTS)
+	ruff check $(PYTHON_SCRIPTS)
 
 run-hello: build guest
 	$(QEMU_BIN) -M raspi5b -nographic -kernel $(GUEST_BUILD)/hello.elf
@@ -182,8 +227,7 @@ clean:
 
 # distclean removes a directory only when this repository made it, since
 # each of these variables can point anywhere: a build directory carries
-# configure's stamp, an export the marker scripts/qemu-tree writes, the
-# schema directory the marker check-dt writes, and the firmware directory
+# configure's stamp, the schema directory the marker check-dt writes, and the firmware directory
 # the marker scripts/firmware writes. A directory that holds a
 # repository is never a build directory, whatever it carries:
 # not this one or a parent of it ('make configure BUILD_DIR=.' leaves the
@@ -207,6 +251,5 @@ endef
 distclean: clean
 	$(call rm_made,$(BUILD_DIR),[ -f '$(BUILD_DIR)/$(notdir $(CONFIGURE_STAMP))' ])
 	$(call rm_made,$(MINIMAL_BUILD_DIR),[ -f '$(MINIMAL_BUILD_DIR)/$(notdir $(CONFIGURE_STAMP))' ])
-	$(call rm_made,$(SERIES_DIR),[ -f '$(SERIES_DIR)/.qemu-tree-export' ])
 	$(call rm_made,$(DT_SCHEMA_DIR),[ -f '$(DT_SCHEMA_MARKER)' ])
 	$(call rm_made,$(FIRMWARE_DIR),[ -f '$(FIRMWARE_DIR)/.check-firmware' ])

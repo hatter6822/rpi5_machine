@@ -8,7 +8,7 @@
  * The card in the SD card slot, on SDIO1 (Linux sdhci-brcmstb.c), read
  * as a bootloader reads it: polled, a word at a time through the buffer
  * data port. The card has to answer at 3.3 V, as it does from power-on.
- * TODO(WS0.4): check how the firmware leaves the card on hardware.
+ * Unverified (PLAN.md P21): how the firmware leaves the card.
  */
 
 #include <bm/fdt.h>
