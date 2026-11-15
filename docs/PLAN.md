@@ -1067,8 +1067,13 @@ concatenated as the firmware loads them, or `auto_initramfs`),
 `cmdline`, `armstub` (loaded with `-bios` and `secure=on`, the tree at
 `device_tree_address` when given) and `enable_uart` (0 drops
 `console=serial0`); `uart_2ndstage` and `dtdebug` make it verbose, and
-`arm_64bit=0`, `pciex4_reset=0`, `kernel_address`, `upstream_kernel` and
-`boot_ramdisk` are reported as ignored. Step 2's `fdtoverlay` would not
+`arm_64bit=0`, `pciex4_reset=0`, `upstream_kernel` and
+`boot_ramdisk` are reported as ignored. Later, `kernel_address`,
+`device_tree_address` and `device_tree_end` went to the machine with or
+without an armstub (`kernel-address`, `dtb-address`, `dtb-end`): without
+one, the machine lays out the kernel, initrd and tree as under `-bios`
+and enters the kernel at EL2 from a stub at 0 standing in for the
+firmware's own armstub, with QEMU's PSCI. Step 2's `fdtoverlay` would not
 do: libfdt's overlay code has no parameters, and merges, numbers
 phandles and copies labels differently from the firmware. The script
 runs the firmware's own code instead: `dtmerge` from the Raspberry Pi
@@ -2222,3 +2227,4 @@ pin them check the model against itself, not against silicon.
 | P25 | *deferred:* `dtmerge` (Raspberry Pi utilities, `dtoverlay_extract_override()`) read an override's cell offset with `atoi()`, so a negative one (`"prop:-4"`) made `dtoverlay_override_one_target()` write before the property's buffer, and one near `INT_MAX` overflowed the length it computes. rpi5-boot runs `dtmerge` on the trees and overlays of the card it boots, so a crafted image could corrupt the host process's heap; upstream (checked at `e0484c8`) has no fix. `make build` builds `dtmerge` with `patches/rpi-utils/0001-*.patch`, which refuses such an offset as a malformed override; a `dtmerge` named with `DTMERGE` or `--dtmerge` must carry it too. Report upstream, move to the fixed commit and drop the patch | `Makefile` (`DTMERGE_PATCH`) | `test_rpi5_boot.OverlayTest.test_failures` (`neg`) | WS3.5 |
 | P26 | *deferred:* a parameter with several `__overrides__` targets is skipped whole when one target fails, and an overlay one of whose fragments cannot be merged is skipped whole: `dtmerge` stops at the first error and writes nothing, where the firmware changes the tree in place and keeps the targets it set and the fragments it merged before the failing one. Matching it needs `dtmerge` to keep going past a non-fatal error (a patch to `dtmerge.c`, with rpi5-boot reading the errors from its output), not a parser of the overrides here | `scripts/rpi5-boot` (`compose_tree`) | — | WS3.5 |
 | P27 | *deferred:* `dtmerge` makes the `i2c_arm`/`i2c_vc` synonyms (when the tree has no `i2c` alias) at the start of every run, and rpi5-boot runs it once for the tree and once per overlay or parameter, where the firmware makes them once, before the first overlay: an overlay that changes the `i2c0` or `i2c1` alias, label or parameter of such a tree has the synonyms follow it. A Pi 5's own tree has an `i2c` alias, so it never gets them. Matching it needs every line applied in one `dtmerge` run (with P26's patch), not a copy of the synonyms here | `scripts/rpi5-boot` (`compose_tree`) | `test_rpi5_boot.ParityTest` (the synonyms) | WS3.5 |
+| P28 | the firmware loads a kernel at `kernel_address` exactly, without adding an arm64 `Image`'s `text_offset` (the Raspberry Pi documentation calls it "the memory address to which the kernel image should be loaded"), while at its default address an `Image` lands at `text_offset` above it; measure with an `Image` whose `text_offset` is not 0 under both | `overlay/hw/arm/raspi5b.c` (`raspi5b_load_kernel`) | qtest `/raspi5b/bios/kernel-address`, `/raspi5b/builtin-armstub` | WS0.4 |

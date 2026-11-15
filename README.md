@@ -131,16 +131,23 @@ $ sudo apt install build-essential python3-venv ninja-build \
 
 ```
 qemu-system-aarch64 -M raspi5b[,secure=on][,serial=N][,builtin-dtb=off] \
+    [,kernel-address=ADDR][,dtb-address=ADDR][,dtb-end=ADDR] \
     [-smp 1-4] [-m 1G|2G|4G|8G|16G] \
     -kernel <Image|payload.elf> [-dtb bcm2712-rpi-5-b.dtb] [-append ...]
-qemu-system-aarch64 -M raspi5b,secure=on[,dtb-address=ADDR] -bios bl31.bin \
+qemu-system-aarch64 -M raspi5b,secure=on[,kernel-address=ADDR] \
+    [,dtb-address=ADDR][,dtb-end=ADDR] -bios bl31.bin \
     [-kernel <Image|payload.elf>] [-dtb ...] [-initrd ...] [-append ...]
 ```
 
 By default the guest enters at **EL2** and QEMU provides **PSCI over SMC**,
-matching the contract of the Pi 5 firmware and its resident TF-A BL31. With
-`secure=on`, EL3 and the GIC Security Extensions are exposed and every core
-starts at the image entry point. With `secure=on` and `-bios`, the machine
+matching the contract of the Pi 5 firmware and its resident TF-A BL31: the
+kernel, initrd and device tree go where the firmware puts them (the
+`kernel_address`, `device_tree_address` and `device_tree_end` of
+`config.txt` are `kernel-address`, `dtb-address` and `dtb-end`), and a
+stub at address 0 enters the kernel with the tree in `x0`, as the
+firmware's own armstub does. With `secure=on`, EL3 and the GIC Security
+Extensions are exposed and every core starts at the image entry point,
+loaded as QEMU loads it. With `secure=on` and `-bios`, the machine
 loads that firmware at address 0 as the Pi's firmware loads its armstub,
 places the kernel, initrd and device tree as the firmware does and tells
 the armstub where they are; TF-A then provides PSCI and enters the kernel

@@ -10,7 +10,11 @@
 # overlays, which the rpi5-boot tests apply with dtmerge ('make build'
 # builds it from the rpi-utils submodule).
 #
-#   scripts/firmware DIR
+#   scripts/firmware DIR [OUTPUT...]
+#
+# With OUTPUTs named (paths as listed below, or overlays/ and modules/),
+# only those are made, for a user that needs one of them, such as a kernel
+# booted through TF-A on the Pi 5's own device tree.
 #
 # DIR receives
 #   bl31.bin                    TF-A's rpi5 BL31
@@ -56,8 +60,24 @@ die() {
     exit 1
 }
 
-[ $# -eq 1 ] || die "usage: scripts/firmware DIR"
+[ $# -ge 1 ] || die "usage: scripts/firmware DIR [OUTPUT...]"
 dir=$1
+shift
+outputs=(bl31.bin u-boot.bin RPI_EFI.fd edk2/bcm2712-rpi-5-b.dtb
+         kernel_2712.img bcm2712-rpi-5-b.dtb overlays/ modules/)
+for output in "$@"; do
+    case " ${outputs[*]} " in
+        *" $output "*) ;;
+        *) die "no output $output (${outputs[*]})" ;;
+    esac
+done
+wanted_outputs=("$@")
+
+# wanted OUTPUT: OUTPUT is to be made, all of them when none was named
+wanted() {
+    [ ${#wanted_outputs[@]} -eq 0 ] ||
+        case " ${wanted_outputs[*]} " in *" $1 "*) true ;; *) false ;; esac
+}
 # find -H looks into DIR when it is a symbolic link to a directory
 if [ -e "$dir" ] && [ ! -f "$dir/.check-firmware" ] &&
    [ -n "$(find -H "$dir" -mindepth 1 -maxdepth 1 -print -quit 2>&1)" ]; then
@@ -115,7 +135,7 @@ need_cross() {
 # release build, TF-A's default: debug builds also read the DSU's
 # cluster registers, which the model does not implement.
 pin="tf-a $TFA_TAG $TFA_COMMIT"
-if ! made bl31.bin "$pin"; then
+if wanted bl31.bin && ! made bl31.bin "$pin"; then
     need_cross
     checkout tf-a "$TFA_URL" "$TFA_TAG" "$TFA_COMMIT"
     make -C "$dir/src/tf-a" -j"$jobs" CROSS_COMPILE="$cross" PLAT=rpi5 \
@@ -128,7 +148,7 @@ fi
 # enters as its kernel. Its host tools need bison, flex, OpenSSL and
 # GnuTLS.
 pin="u-boot $UBOOT_TAG $UBOOT_COMMIT rpi_arm64_defconfig"
-if ! made u-boot.bin "$pin"; then
+if wanted u-boot.bin && ! made u-boot.bin "$pin"; then
     need_cross
     checkout u-boot "$UBOOT_URL" "$UBOOT_TAG" "$UBOOT_COMMIT"
     make -C "$dir/src/u-boot" O="$dir/src/u-boot-build" \
@@ -142,7 +162,8 @@ fi
 # The EDK2 release: RPI_EFI.fd is the armstub its config.txt names, with
 # the device tree its config.txt places at 0x1f0000
 pin="edk2 $EDK2_URL $EDK2_SHA256"
-if ! made RPI_EFI.fd "$pin" || ! made edk2/bcm2712-rpi-5-b.dtb "$pin"; then
+if { wanted RPI_EFI.fd || wanted edk2/bcm2712-rpi-5-b.dtb; } &&
+   { ! made RPI_EFI.fd "$pin" || ! made edk2/bcm2712-rpi-5-b.dtb "$pin"; }; then
     fetch edk2.zip "$EDK2_URL" "$EDK2_SHA256"
     python3 -m zipfile -e "$dir/src/edk2.zip" "$dir/src/edk2"
     mkdir -p "$dir/edk2"
@@ -157,7 +178,7 @@ fi
 for f in kernel_2712.img:$KERNEL_SHA256 bcm2712-rpi-5-b.dtb:$DTB_SHA256; do
     name=${f%%:*}
     pin="$RPI_FIRMWARE_URL/$name ${f#*:}"
-    if ! made "$name" "$pin"; then
+    if wanted "$name" && ! made "$name" "$pin"; then
         fetch "$name" "$RPI_FIRMWARE_URL/$name" "${f#*:}"
         cp "$dir/src/$name" "$dir/$name"
         record "$name" "$pin"
@@ -169,7 +190,7 @@ for f in net/ethernet/intel/igb/igb.ko.xz:$IGB_SHA256 \
     path=${f%%:*}
     name=modules/${path##*/}
     pin="$RPI_MODULES_URL/$path ${f#*:}"
-    if ! made "$name" "$pin"; then
+    if wanted modules/ && ! made "$name" "$pin"; then
         fetch "$name" "$RPI_MODULES_URL/$path" "${f#*:}"
         mkdir -p "$dir/modules"
         cp "$dir/src/$name" "$dir/$name"
@@ -179,7 +200,7 @@ done
 
 # The release's overlays, as its boot partition holds them
 pin="$RPI_FIRMWARE_REPO $RPI_FIRMWARE_TAG $RPI_FIRMWARE_COMMIT boot/overlays"
-if ! made overlays/overlay_map.dtb "$pin"; then
+if wanted overlays/ && ! made overlays/overlay_map.dtb "$pin"; then
     checkout firmware "$RPI_FIRMWARE_REPO" "$RPI_FIRMWARE_TAG" \
         "$RPI_FIRMWARE_COMMIT" boot/overlays
     rm -rf "$dir/overlays"

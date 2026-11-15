@@ -5203,6 +5203,93 @@ static void test_bios_old_kernel(void)
 }
 
 /*
+ * kernel_address= places a kernel exactly, header or not: an Image whose
+ * text_offset would add to the address is loaded at it, and the armstub
+ * is told so
+ */
+static void test_bios_kernel_address(void)
+{
+    g_autofree char *stub = armstub_file(true);
+    g_autofree char *kernel_file = NULL;
+    uint8_t image[4 * KiB] = { 0 };
+    QTestState *qts;
+
+    stq_le_p(image + IMAGE_TEXT_OFFSET, 0x80000);
+    stq_le_p(image + IMAGE_SIZE, sizeof(image));
+    memcpy(image + IMAGE_MAGIC, "ARM\x64", 4);
+    kernel_file = tmp_file("raspi5b-image-XXXXXX", image, sizeof(image));
+
+    qts = qtest_initf("-machine raspi5b,secure=on,kernel-address=0x80000 "
+                      "-bios %s -kernel %s", stub, kernel_file);
+    g_assert_cmphex(qtest_readl(qts, ARMSTUB_KERNEL_OFFSET), ==, 0x80000);
+    g_assert_cmphex(qtest_readl(qts, 0x80000 + IMAGE_MAGIC), ==,
+                    ldl_le_p("ARM\x64"));
+    qtest_quit(qts);
+
+    unlink(stub);
+    unlink(kernel_file);
+}
+
+/*
+ * Without -bios, the firmware's own armstub at 0: x0 = the device tree,
+ * x1-x3 = 0 and a branch to the kernel, whose addresses follow the code.
+ * The kernel and the tree go where they go under -bios.
+ */
+#define BUILTIN_STUB_DTB        0x18
+#define BUILTIN_STUB_KERNEL     0x20
+
+static const uint32_t builtin_stub[] = {
+    0x580000c0, 0xaa1f03e1, 0xaa1f03e2, 0xaa1f03e3, 0x58000084, 0xd61f0080,
+};
+
+static void assert_builtin_stub(QTestState *qts, uint64_t dtb,
+                                uint64_t kernel)
+{
+    for (int i = 0; i < ARRAY_SIZE(builtin_stub); i++) {
+        g_assert_cmphex(qtest_readl(qts, i * 4), ==, builtin_stub[i]);
+    }
+    g_assert_cmphex(qtest_readq(qts, BUILTIN_STUB_DTB), ==, dtb);
+    g_assert_cmphex(qtest_readq(qts, BUILTIN_STUB_KERNEL), ==, kernel);
+}
+
+static void test_builtin_armstub(void)
+{
+    g_autofree char *kernel_file = NULL;
+    uint8_t image[4 * KiB] = { 0 };
+    QTestState *qts;
+
+    qts = qtest_init("-machine raspi5b");
+    assert_builtin_stub(qts, BIOS_DTB_ADDR, BIOS_KERNEL_ADDR);
+    assert_fdt_at(qts, BIOS_DTB_ADDR);
+    qtest_quit(qts);
+
+    qts = qtest_init("-machine raspi5b,builtin-dtb=off");
+    assert_builtin_stub(qts, 0, BIOS_KERNEL_ADDR);
+    qtest_quit(qts);
+
+    /* An Image at the default address goes at it plus its text_offset */
+    stq_le_p(image + IMAGE_TEXT_OFFSET, 0x80000);
+    stq_le_p(image + IMAGE_SIZE, sizeof(image));
+    memcpy(image + IMAGE_MAGIC, "ARM\x64", 4);
+    kernel_file = tmp_file("raspi5b-image-XXXXXX", image, sizeof(image));
+    qts = qtest_initf("-machine raspi5b -kernel %s", kernel_file);
+    assert_builtin_stub(qts, BIOS_DTB_ADDR, BIOS_KERNEL_ADDR + 0x80000);
+    qtest_quit(qts);
+
+    /* kernel_address=, device_tree_address= and device_tree_end= */
+    qts = qtest_initf("-machine raspi5b,kernel-address=0x80000,"
+                      "dtb-address=0x4f6b000,dtb-end=0x516b000 -kernel %s",
+                      kernel_file);
+    assert_builtin_stub(qts, 0x4f6b000, 0x80000);
+    g_assert_cmphex(qtest_readl(qts, 0x80000 + IMAGE_MAGIC), ==,
+                    ldl_le_p("ARM\x64"));
+    assert_fdt_at(qts, 0x4f6b000);
+    qtest_quit(qts);
+
+    unlink(kernel_file);
+}
+
+/*
  * The PCIe root complexes (Linux pcie-brcmstb.c, BCM7712 offsets), with
  * QEMU's edu device on PCIe1's connector where the build has it
  */
@@ -6271,6 +6358,8 @@ int main(int argc, char **argv)
     qtest_add_func("/raspi5b/bios/no-header", test_bios_no_header);
     qtest_add_func("/raspi5b/bios/kernel", test_bios_kernel);
     qtest_add_func("/raspi5b/bios/old-kernel", test_bios_old_kernel);
+    qtest_add_func("/raspi5b/bios/kernel-address", test_bios_kernel_address);
+    qtest_add_func("/raspi5b/builtin-armstub", test_builtin_armstub);
 
     return g_test_run();
 }

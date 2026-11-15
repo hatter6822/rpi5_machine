@@ -8,7 +8,9 @@
  * Boot model: on real hardware the VideoCore firmware loads TF-A BL31 at
  * physical address 0 and enters the OS at EL2, with BL31 providing PSCI
  * over SMC. By default this machine reproduces that contract with QEMU's
- * built-in PSCI emulation and hides EL3 from the guest; "secure=on"
+ * built-in PSCI emulation and hides EL3 from the guest, loading the kernel
+ * and device tree where the firmware does and entering the kernel from a
+ * stub at address 0, as the firmware's own armstub does; "secure=on"
  * exposes EL3 (and the GIC Security Extensions) so the guest may bring
  * its own secure firmware instead: an image that owns EL3 from reset
  * (-kernel), or the BL31 the firmware would load (-bios), which the
@@ -62,6 +64,12 @@ struct Raspi5bMachineState {
     uint64_t dtb_addr;
     /* Whether dtb-address was given at all: 0 is an address like any other */
     bool dtb_addr_set;
+    /* device_tree_end=: where the firmware's device tree must end by */
+    uint64_t dtb_end;
+    bool dtb_end_set;
+    /* kernel_address=: where the firmware loads the kernel */
+    uint64_t kernel_addr;
+    bool kernel_addr_set;
     /* The size of the image -bios loaded, which the built-in tree reserves */
     uint64_t armstub_size;
     bool secure;
@@ -131,14 +139,34 @@ struct Raspi5bMachineState {
 #define RASPI5B_FDT_SD_1V8              1800000
 
 /*
- * With -bios the machine loads what the firmware runs at EL3 (config.txt's
- * "armstub=", TF-A BL31 on a stock Pi 5) at address 0, and lays out the
- * rest as the firmware does: the kernel at the firmware's default
- * kernel_address for 64-bit kernels, and above it the initrd and the
- * device tree, unless "dtb-address" (device_tree_address=) places the
- * tree. Everything stays in the first GiB, below the VideoCore's memory.
+ * The machine lays out what it loads as the firmware does, with -bios
+ * (what the firmware runs at EL3, config.txt's "armstub=", TF-A BL31 on a
+ * stock Pi 5, at address 0) or with the firmware's own armstub: the kernel
+ * at "kernel-address" (kernel_address=), by default the firmware's
+ * kernel_address for 64-bit kernels plus an Image's text_offset, and above
+ * it the initrd and the device tree, unless "dtb-address"
+ * (device_tree_address=) places the tree; "dtb-end" (device_tree_end=)
+ * bounds it. Everything stays in the first GiB, below the VideoCore's
+ * memory.
  */
 #define RASPI5B_KERNEL_ADDR     0x200000
+
+/*
+ * The firmware's own armstub, which stands in for BL31 without -bios:
+ * x0 = the device tree, x1-x3 = 0, then a branch to the kernel, whose
+ * addresses follow the code
+ */
+static const uint32_t raspi5b_builtin_stub[] = {
+    0x580000c0,     /* ldr x0, 0x18 */
+    0xaa1f03e1,     /* mov x1, xzr */
+    0xaa1f03e2,     /* mov x2, xzr */
+    0xaa1f03e3,     /* mov x3, xzr */
+    0x58000084,     /* ldr x4, 0x20 */
+    0xd61f0080,     /* br x4 */
+};
+#define RASPI5B_BUILTIN_STUB_DTB        0x18
+#define RASPI5B_BUILTIN_STUB_KERNEL     0x20
+#define RASPI5B_BUILTIN_STUB_SIZE       0x28
 
 /* The lowest address for the initrd and the device tree, as for -kernel */
 #define RASPI5B_INITRD_ADDR     (128 * MiB)
@@ -933,22 +961,46 @@ static void raspi5b_cpu_reset(void *opaque)
 /*
  * Load a 64-bit kernel where the firmware does: an ELF at its own
  * addresses, anything else, such as a Linux Image (gzipped or not), at
+ * @addr, the kernel_address the configuration gives (@exact) or else
  * RASPI5B_KERNEL_ADDR plus the Image's text_offset. Returns the entry
  * point, and in *start and *end the memory the kernel uses, which for an
  * Image includes the BSS its header declares. An Image whose header takes
  * it past the VideoCore's memory is refused, and so is an ELF whose entry
  * point, where the armstub jumps, lies outside every segment it loads.
  */
+static bool raspi5b_is_elf(const char *filename)
+{
+    uint8_t ident[SELFMAG];
+    int fd = open(filename, O_RDONLY | O_BINARY);
+    bool elf;
+
+    if (fd < 0) {
+        /* load_elf_as() reports it */
+        return true;
+    }
+    elf = read(fd, ident, sizeof(ident)) == sizeof(ident) &&
+          !memcmp(ident, ELFMAG, SELFMAG);
+    close(fd);
+    return elf;
+}
+
 static hwaddr raspi5b_load_kernel(const char *filename, AddressSpace *as,
+                                  hwaddr addr, bool exact,
                                   hwaddr *start, hwaddr *end)
 {
     g_autofree uint8_t *buffer = NULL;
     uint64_t entry, low, high, used;
-    hwaddr addr = RASPI5B_KERNEL_ADDR;
     ssize_t size;
 
-    size = load_elf_as(filename, NULL, NULL, NULL, &entry, &low, &high, NULL,
-                       ELFDATA2LSB, EM_AARCH64, 1, 0, as);
+    /*
+     * Only a file that starts as an ELF does is one: load_elf_as() fails,
+     * rather than answering ELF_LOAD_NOT_ELF, for a file shorter than the
+     * ELF identification, which a raw image may well be
+     */
+    size = raspi5b_is_elf(filename) ?
+           load_elf_as(filename, NULL, NULL, NULL, &entry, &low, &high, NULL,
+                       ELFDATA2LSB, EM_AARCH64, 1, 0, as) :
+           ELF_LOAD_NOT_ELF;
     if (size > 0) {
         /*
          * The segments may leave gaps between low and high; they are the
@@ -989,7 +1041,14 @@ static hwaddr raspi5b_load_kernel(const char *filename, AddressSpace *as,
         uint64_t text_offset = ldq_le_p(buffer + RASPI5B_IMAGE_TEXT_OFFSET);
         uint64_t image_size = ldq_le_p(buffer + RASPI5B_IMAGE_SIZE);
 
-        if (!image_size) {
+        if (exact) {
+            /*
+             * kernel_address= is where the image goes, header or not.
+             * Unverified (PLAN.md P28): that the firmware adds no
+             * text_offset to it
+             */
+            text_offset = 0;
+        } else if (!image_size) {
             /* Linux before 3.17, whatever byte order the field is in */
             text_offset = RASPI5B_IMAGE_OLD_TEXT_OFFSET;
         }
@@ -997,10 +1056,11 @@ static hwaddr raspi5b_load_kernel(const char *filename, AddressSpace *as,
         /* Subtracting, as a header's values could wrap a sum around */
         if (text_offset > BCM2712_VC_RAM_BASE - addr ||
             used > BCM2712_VC_RAM_BASE - addr - text_offset) {
-            error_report("could not load kernel '%s': its text_offset "
-                         "0x%" PRIx64 " and size 0x%" PRIx64 " take it past "
-                         "0x%x, where the VideoCore's memory starts",
-                         filename, text_offset, used, BCM2712_VC_RAM_BASE);
+            error_report("could not load kernel '%s' at 0x%" HWADDR_PRIx
+                         ": its text_offset 0x%" PRIx64 " and size 0x%"
+                         PRIx64 " take it past 0x%x, where the VideoCore's "
+                         "memory starts", filename, addr, text_offset, used,
+                         BCM2712_VC_RAM_BASE);
             exit(EXIT_FAILURE);
         }
         addr += text_offset;
@@ -1046,34 +1106,26 @@ static void raspi5b_check_fits(hwaddr end)
 }
 
 /*
- * -bios: load the armstub at address 0, the kernel, initrd and device
- * tree where the firmware puts them, and tell the armstub where they are
- * through its header. Every core starts in the armstub at EL3, as when
- * the firmware releases them.
+ * Load the kernel, initrd and device tree where the firmware puts them,
+ * above the armstub at address 0, which ends at @stub_end. Returns the
+ * kernel's entry point, and in *dtb the device tree's address (0 without
+ * a tree).
  */
-static void raspi5b_boot_armstub(Raspi5bMachineState *s,
-                                 MachineState *machine)
+static hwaddr raspi5b_load_as_firmware(Raspi5bMachineState *s,
+                                       MachineState *machine,
+                                       hwaddr stub_end, hwaddr *dtb)
 {
     ARMCPU *cpu = &s->soc.cpu[0];
     AddressSpace *as = arm_boot_address_space(cpu, &s->binfo);
-    g_autofree char *filename = qemu_find_file(QEMU_FILE_TYPE_BIOS,
-                                               machine->firmware);
-    g_autofree uint8_t *stub = NULL;
     hwaddr kernel = RASPI5B_KERNEL_ADDR, next = RASPI5B_INITRD_ADDR;
-    hwaddr kernel_start = 0, kernel_end = 0, dtb = 0, stub_end;
-    gsize size;
+    hwaddr kernel_start = 0, kernel_end = 0;
 
-    if (!filename ||
-        !g_file_get_contents(filename, (char **)&stub, &size, NULL)) {
-        error_report("could not load the armstub '%s'", machine->firmware);
-        exit(EXIT_FAILURE);
-    }
-    stub_end = BCM2712_RAM_BASE + size;
-    raspi5b_check_fits(stub_end);
-    s->armstub_size = size;
-
+    *dtb = 0;
     if (machine->kernel_filename) {
         kernel = raspi5b_load_kernel(machine->kernel_filename, as,
+                                     s->kernel_addr_set ? s->kernel_addr :
+                                     RASPI5B_KERNEL_ADDR,
+                                     s->kernel_addr_set,
                                      &kernel_start, &kernel_end);
         raspi5b_check_fits(kernel_end);
         raspi5b_check_overlap("kernel", kernel_start, kernel_end,
@@ -1102,22 +1154,59 @@ static void raspi5b_boot_armstub(Raspi5bMachineState *s,
         int dtb_size;
 
         /* As for -kernel: the kernel maps the tree's 2 MiB block early */
-        dtb = s->dtb_addr_set ? s->dtb_addr : QEMU_ALIGN_UP(next, 2 * MiB);
-        s->binfo.dtb_start = dtb;
-        dtb_size = arm_load_dtb(dtb, &s->binfo, 0, as, machine, cpu);
+        *dtb = s->dtb_addr_set ? s->dtb_addr : QEMU_ALIGN_UP(next, 2 * MiB);
+        s->binfo.dtb_start = *dtb;
+        dtb_size = arm_load_dtb(*dtb, &s->binfo, 0, as, machine, cpu);
         if (dtb_size < 0) {
             exit(EXIT_FAILURE);
         }
-        raspi5b_check_overlap("device tree", dtb, dtb + dtb_size,
+        /* device_tree_end: the firmware writes no tree past it */
+        if (s->dtb_end_set &&
+            (*dtb >= s->dtb_end || dtb_size > s->dtb_end - *dtb)) {
+            error_report("the device tree at 0x%" HWADDR_PRIx " is 0x%x "
+                         "bytes, past dtb-end 0x%" PRIx64,
+                         *dtb, dtb_size, s->dtb_end);
+            exit(EXIT_FAILURE);
+        }
+        raspi5b_check_overlap("device tree", *dtb, *dtb + dtb_size,
                               "armstub", BCM2712_RAM_BASE, stub_end);
-        raspi5b_check_overlap("device tree", dtb, dtb + dtb_size,
+        raspi5b_check_overlap("device tree", *dtb, *dtb + dtb_size,
                               "kernel", kernel_start, kernel_end);
-        raspi5b_check_overlap("device tree", dtb, dtb + dtb_size,
+        raspi5b_check_overlap("device tree", *dtb, *dtb + dtb_size,
                               "initrd", s->binfo.initrd_start,
                               s->binfo.initrd_start + s->binfo.initrd_size);
-        next = MAX(next, dtb + dtb_size);
+        next = MAX(next, *dtb + dtb_size);
     }
     raspi5b_check_fits(next);
+    return kernel;
+}
+
+/*
+ * -bios: load the armstub at address 0, the kernel, initrd and device
+ * tree where the firmware puts them, and tell the armstub where they are
+ * through its header. Every core starts in the armstub at EL3, as when
+ * the firmware releases them.
+ */
+static void raspi5b_boot_armstub(Raspi5bMachineState *s,
+                                 MachineState *machine)
+{
+    AddressSpace *as = arm_boot_address_space(&s->soc.cpu[0], &s->binfo);
+    g_autofree char *filename = qemu_find_file(QEMU_FILE_TYPE_BIOS,
+                                               machine->firmware);
+    g_autofree uint8_t *stub = NULL;
+    hwaddr kernel, dtb, stub_end;
+    gsize size;
+
+    if (!filename ||
+        !g_file_get_contents(filename, (char **)&stub, &size, NULL)) {
+        error_report("could not load the armstub '%s'", machine->firmware);
+        exit(EXIT_FAILURE);
+    }
+    stub_end = BCM2712_RAM_BASE + size;
+    raspi5b_check_fits(stub_end);
+    s->armstub_size = size;
+
+    kernel = raspi5b_load_as_firmware(s, machine, stub_end, &dtb);
 
     if (size >= RASPI5B_ARMSTUB_KERNEL_OFFSET + 4 &&
         ldl_le_p(stub + RASPI5B_ARMSTUB_MAGIC_OFFSET) ==
@@ -1132,6 +1221,43 @@ static void raspi5b_boot_armstub(Raspi5bMachineState *s,
     for (unsigned int i = 0; i < machine->smp.cpus; i++) {
         qemu_register_reset(raspi5b_cpu_reset, &s->soc.cpu[i]);
     }
+}
+
+/*
+ * Without -bios or secure=on, the firmware's own armstub: the kernel,
+ * initrd and device tree go where the firmware puts them, as with -bios,
+ * and the first core starts at address 0 in EL2, the level BL31 enters
+ * the OS at, in a stub that passes the device tree in x0, as BL31 does,
+ * and branches to the kernel. QEMU's PSCI over SMC stands in for BL31's:
+ * the other cores wait, powered off, for CPU_ON.
+ */
+static void raspi5b_boot_builtin_armstub(Raspi5bMachineState *s,
+                                         MachineState *machine)
+{
+    AddressSpace *as = arm_boot_address_space(&s->soc.cpu[0], &s->binfo);
+    uint8_t stub[RASPI5B_BUILTIN_STUB_SIZE];
+    hwaddr kernel, dtb;
+
+    /* Before the tree is loaded, whose /psci node follows the conduit */
+    for (unsigned int i = 0; i < machine->smp.cpus; i++) {
+        Object *cpu = OBJECT(&s->soc.cpu[i]);
+
+        object_property_set_int(cpu, "psci-conduit", QEMU_PSCI_CONDUIT_SMC,
+                                &error_abort);
+        object_property_set_bool(cpu, "start-powered-off", i != 0,
+                                 &error_abort);
+        qemu_register_reset(raspi5b_cpu_reset, &s->soc.cpu[i]);
+    }
+    kernel = raspi5b_load_as_firmware(s, machine,
+                                      BCM2712_RAM_BASE + sizeof(stub), &dtb);
+
+    for (unsigned int i = 0; i < ARRAY_SIZE(raspi5b_builtin_stub); i++) {
+        stl_le_p(stub + 4 * i, raspi5b_builtin_stub[i]);
+    }
+    stq_le_p(stub + RASPI5B_BUILTIN_STUB_DTB, dtb);
+    stq_le_p(stub + RASPI5B_BUILTIN_STUB_KERNEL, kernel);
+    rom_add_blob_fixed_as("raspi5b.armstub", stub, sizeof(stub),
+                          BCM2712_RAM_BASE, as);
 }
 
 static void raspi5b_pwr_button_release(void *opaque)
@@ -1239,13 +1365,26 @@ static void raspi5b_machine_init(MachineState *machine)
                      "use -M raspi5b,secure=on");
         exit(EXIT_FAILURE);
     }
-    if (s->dtb_addr_set && !machine->firmware) {
-        error_report("dtb-address places the device tree for -bios only");
+    if ((s->dtb_addr_set || s->dtb_end_set || s->kernel_addr_set) &&
+        s->secure && !machine->firmware) {
+        error_report("dtb-address, dtb-end and kernel-address place what "
+                     "the firmware loads, which secure=on without -bios "
+                     "does not model");
         exit(EXIT_FAILURE);
     }
     if (s->dtb_addr_set &&
         (s->dtb_addr % 8 || s->dtb_addr >= BCM2712_VC_RAM_BASE)) {
         error_report("dtb-address must be a multiple of 8 below 0x%x",
+                     BCM2712_VC_RAM_BASE);
+        exit(EXIT_FAILURE);
+    }
+    if (s->dtb_end_set && s->dtb_end > BCM2712_VC_RAM_BASE) {
+        error_report("dtb-end must be at most 0x%x", BCM2712_VC_RAM_BASE);
+        exit(EXIT_FAILURE);
+    }
+    if (s->kernel_addr_set &&
+        (s->kernel_addr % 4 || s->kernel_addr >= BCM2712_VC_RAM_BASE)) {
+        error_report("kernel-address must be a multiple of 4 below 0x%x",
                      BCM2712_VC_RAM_BASE);
         exit(EXIT_FAILURE);
     }
@@ -1284,6 +1423,9 @@ static void raspi5b_machine_init(MachineState *machine)
     if (machine->firmware) {
         s->binfo.dtb_filename = machine->dtb;
         raspi5b_boot_armstub(s, machine);
+    } else if (!s->secure) {
+        s->binfo.dtb_filename = machine->dtb;
+        raspi5b_boot_builtin_armstub(s, machine);
     } else {
         arm_load_kernel(&s->soc.cpu[0], machine, &s->binfo);
     }
@@ -1326,6 +1468,40 @@ static void raspi5b_set_dtb_addr(Object *obj, Visitor *v, const char *name,
 
     if (visit_type_uint64(v, name, &s->dtb_addr, errp)) {
         s->dtb_addr_set = true;
+    }
+}
+
+static void raspi5b_get_dtb_end(Object *obj, Visitor *v, const char *name,
+                                void *opaque, Error **errp)
+{
+    visit_type_uint64(v, name, &RASPI5B_MACHINE(obj)->dtb_end, errp);
+}
+
+static void raspi5b_set_dtb_end(Object *obj, Visitor *v, const char *name,
+                                void *opaque, Error **errp)
+{
+    Raspi5bMachineState *s = RASPI5B_MACHINE(obj);
+
+    if (visit_type_uint64(v, name, &s->dtb_end, errp)) {
+        s->dtb_end_set = true;
+    }
+}
+
+static void raspi5b_get_kernel_addr(Object *obj, Visitor *v,
+                                    const char *name, void *opaque,
+                                    Error **errp)
+{
+    visit_type_uint64(v, name, &RASPI5B_MACHINE(obj)->kernel_addr, errp);
+}
+
+static void raspi5b_set_kernel_addr(Object *obj, Visitor *v,
+                                    const char *name, void *opaque,
+                                    Error **errp)
+{
+    Raspi5bMachineState *s = RASPI5B_MACHINE(obj);
+
+    if (visit_type_uint64(v, name, &s->kernel_addr, errp)) {
+        s->kernel_addr_set = true;
     }
 }
 
@@ -1510,9 +1686,24 @@ static void raspi5b_machine_class_init(ObjectClass *oc, const void *data)
                               raspi5b_get_dtb_addr, raspi5b_set_dtb_addr,
                               NULL, NULL);
     object_class_property_set_description(oc, "dtb-address",
-        "Where -bios places the device tree, like device_tree_address= "
-        "in the firmware's config.txt; by default, above the kernel and "
-        "initrd");
+        "Where the firmware places the device tree, like "
+        "device_tree_address= in its config.txt; by default, above the "
+        "kernel and initrd");
+
+    object_class_property_add(oc, "dtb-end", "uint64",
+                              raspi5b_get_dtb_end, raspi5b_set_dtb_end,
+                              NULL, NULL);
+    object_class_property_set_description(oc, "dtb-end",
+        "Where the device tree the firmware writes must end by, like "
+        "device_tree_end= in its config.txt; a larger tree stops the boot");
+
+    object_class_property_add(oc, "kernel-address", "uint64",
+                              raspi5b_get_kernel_addr,
+                              raspi5b_set_kernel_addr, NULL, NULL);
+    object_class_property_set_description(oc, "kernel-address",
+        "Where the firmware loads a kernel that is not an ELF, like "
+        "kernel_address= in its config.txt; by default 0x200000 plus an "
+        "arm64 Image's text_offset");
 
     object_class_property_add(oc, "serial", "uint64", raspi5b_get_serial,
                               raspi5b_set_serial, NULL, NULL);

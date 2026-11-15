@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 #
-# The -bios options raspi5b refuses, each with the message it gives.
-# Booting real firmware with -bios is 'make check-firmware'
+# The -bios and firmware-layout options raspi5b refuses, each with the
+# message it gives. Booting real firmware with -bios is 'make check-firmware'
 # (tests/smoke/test_firmware.py); the armstub handoff itself is checked at
 # register level by the qtest.
 
@@ -61,11 +61,49 @@ class BiosOptionsTest(unittest.TestCase):
                            "-M", "raspi5b,secure=on",
                            "-bios", "no-such-armstub")
 
-    def test_dtb_address_needs_bios(self):
-        self.assertRefused("dtb-address places the device tree for -bios "
-                           "only",
-                           "-M", "raspi5b,secure=on,dtb-address=0x1f0000",
+    def test_firmware_addresses_need_firmware(self):
+        """An image that owns EL3 from reset is loaded as QEMU loads it:
+        there is no firmware to place it, or the device tree"""
+        for option in ("dtb-address=0x1f0000", "dtb-end=0x200000",
+                       "kernel-address=0x80000"):
+            with self.subTest(option=option):
+                self.assertRefused("dtb-address, dtb-end and kernel-address "
+                                   "place what the firmware loads, which "
+                                   "secure=on without -bios does not model",
+                                   "-M", f"raspi5b,secure=on,{option}",
+                                   "-kernel", str(GUEST))
+
+    def test_kernel_address_range(self):
+        for addr in (0x80002, VC_RAM_BASE):
+            with self.subTest(addr=hex(addr)):
+                self.assertRefused("kernel-address must be a multiple of 4 "
+                                   f"below {VC_RAM_BASE:#x}",
+                                   "-M", f"raspi5b,kernel-address={addr:#x}",
+                                   "-kernel", str(GUEST))
+
+    def test_dtb_end(self):
+        """device_tree_end= past the VideoCore's memory, a tree that does
+        not fit before it, and an end at or before the tree's address,
+        with the firmware's own armstub and with -bios"""
+        self.assertRefused(f"dtb-end must be at most {VC_RAM_BASE:#x}",
+                           "-M", f"raspi5b,dtb-end={VC_RAM_BASE + 8:#x}",
                            "-kernel", str(GUEST))
+        for machine in ("raspi5b", "raspi5b,secure=on"):
+            for end in (0x4f6b100, 0x4f6b000, 0x1000000):
+                with self.subTest(machine=machine, end=hex(end)):
+                    args = ["-M", f"{machine},dtb-address=0x4f6b000,"
+                            f"dtb-end={end:#x}"]
+                    args += ["-bios", str(GUEST)] if "secure" in machine \
+                        else ["-kernel", str(GUEST)]
+                    self.assertRefused("the device tree at 0x4f6b000 is ",
+                                       *args)
+
+    def test_builtin_armstub_overlap(self):
+        """dtb-address on the firmware's own armstub at 0"""
+        err = self.assertRefused("the device tree at 0x0-",
+                                 "-M", "raspi5b,dtb-address=0",
+                                 "-kernel", str(GUEST))
+        self.assertIn(" overlaps the armstub at 0x0-0x27", err)
 
     def test_dtb_address_range(self):
         for addr in (0x1f0004, VC_RAM_BASE):
@@ -136,7 +174,8 @@ class BiosOptionsTest(unittest.TestCase):
                 image.write_bytes(header)
                 with self.subTest(text_offset=hex(text_offset),
                                   image_size=hex(image_size)):
-                    self.assertRefused(f"could not load kernel '{image}': "
+                    self.assertRefused(f"could not load kernel '{image}' "
+                                       "at 0x200000: "
                                        f"its text_offset {text_offset:#x} "
                                        f"and size {image_size:#x} take it "
                                        f"past {VC_RAM_BASE:#x}, where the "
@@ -144,6 +183,30 @@ class BiosOptionsTest(unittest.TestCase):
                                        "-M", "raspi5b,secure=on",
                                        "-bios", str(GUEST),
                                        "-kernel", str(image))
+
+    def test_kernel_address_past_videocore(self):
+        """An Image at kernel-address whose declared size, BSS included,
+        takes it into the VideoCore's memory, with the firmware's own
+        armstub and with -bios"""
+        addr = VC_RAM_BASE - (1 << 20)
+        with tempfile.TemporaryDirectory() as tmp:
+            image = Path(tmp) / "Image"
+            header = bytearray(64)
+            header[8:16] = (0x80000).to_bytes(8, "little")
+            header[16:24] = (2 << 20).to_bytes(8, "little")
+            header[56:60] = b"ARM\x64"
+            image.write_bytes(header)
+            for machine, args in (("raspi5b", ()),
+                                  ("raspi5b,secure=on", ("-bios",
+                                                         str(GUEST)))):
+                with self.subTest(machine=machine):
+                    self.assertRefused(f"could not load kernel '{image}' "
+                                       f"at {addr:#x}: its text_offset 0x0 "
+                                       f"and size {2 << 20:#x} take it past "
+                                       f"{VC_RAM_BASE:#x}",
+                                       "-M", f"{machine},"
+                                       f"kernel-address={addr:#x}",
+                                       *args, "-kernel", str(image))
 
     def test_elf_entry(self):
         """An ELF whose entry point, where the armstub would jump, lies

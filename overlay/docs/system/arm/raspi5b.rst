@@ -149,7 +149,12 @@ QEMU's built-in PSCI emulation:
 
 * EL3 is not implemented and the guest starts in EL2;
 * only CPU 0 runs, the others are started with PSCI ``CPU_ON``;
-* the GIC has no Security Extensions, so every interrupt is Non-secure.
+* the GIC has no Security Extensions, so every interrupt is Non-secure;
+* the kernel, initrd and device tree are loaded where the firmware puts
+  them, as with ``-bios`` (see below), and CPU 0 starts at address 0 in
+  the firmware's own armstub, a stub that passes the device tree's address
+  in ``x0``, zeroes ``x1`` to ``x3`` and branches to the kernel, which is
+  what BL31 does when it enters the operating system.
 
 With ``-machine raspi5b,secure=on`` the guest owns EL3 instead: CPUs and the
 GIC implement the Security Extensions, PSCI is not emulated for guests that
@@ -159,10 +164,12 @@ ELF file given with ``-kernel``; a Linux ``Image`` given with ``-kernel``
 alone still starts in EL2 with QEMU's PSCI, as the Linux boot protocol
 asks, whatever ``secure`` says.
 
-``-kernel`` accepts an AArch64 Linux ``Image`` (booted using the Linux boot
-protocol, with the device tree address in ``x0``) or an ELF file (entered at
-its entry point; the device tree is placed at the base of RAM if it fits
-below the image).
+``-kernel`` accepts an AArch64 Linux ``Image`` or a raw image (booted
+using the Linux boot protocol, with the device tree address in ``x0``) or
+an ELF file (entered at its entry point). With ``secure=on`` and no
+``-bios`` there is no firmware: QEMU loads the kernel as it does on other
+boards, and the device tree of an ELF file goes at the base of RAM if it
+fits below the image.
 
 Booting firmware with ``-bios``
 -------------------------------
@@ -173,15 +180,19 @@ stock Pi 5) and hands it the rest the way the firmware does:
 
 * the image is loaded at physical address 0, and every CPU starts there
   in EL3; PSCI is left to the image;
-* ``-kernel`` is loaded at ``0x20_0000``, the firmware's
-  ``kernel_address`` for 64-bit kernels (a Linux ``Image`` at that address
-  plus its ``text_offset``, taken as ``0x8_0000`` for kernels before
-  Linux 3.17, whose header has no ``image_size``; an ELF file at its own
-  addresses, with its entry point in one of its segments);
+* ``-kernel`` is loaded at ``-machine kernel-address=<addr>``, the
+  counterpart of ``kernel_address=``, header or not; by default at
+  ``0x20_0000``, the firmware's ``kernel_address`` for 64-bit kernels (a
+  Linux ``Image`` at that address plus its ``text_offset``, taken as
+  ``0x8_0000`` for kernels before Linux 3.17, whose header has no
+  ``image_size``). An ELF file goes at its own addresses, with its entry
+  point in one of its segments;
 * ``-initrd`` goes at 128 MiB or above the kernel, whichever is higher,
   and the device tree at the next 2 MiB boundary, or at
   ``-machine dtb-address=<addr>``, the counterpart of
-  ``device_tree_address=``. None of them may overlap another, the kernel
+  ``device_tree_address=``; ``-machine dtb-end=<addr>``, the counterpart
+  of ``device_tree_end=``, stops the boot when the tree would not end by
+  it. None of them may overlap another, the kernel
   counting with its BSS, and all of it, the armstub included, must fit in
   the first GiB, below the VideoCore's memory;
 * an image that starts with the header of TF-A's Raspberry Pi ports (the
