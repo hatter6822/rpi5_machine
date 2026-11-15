@@ -1141,8 +1141,6 @@ def prepare(image, args, reset):
     kernel_cmdline(boot, args.root, args.append)
     for name, default, why in (
             ("arm_64bit", 1, "a Pi 5 runs only 64-bit kernels"),
-            ("kernel_address", None, "the kernel goes where a Pi 5's "
-             "firmware puts it by default"),
             ("upstream_kernel", 0, "the firmware's own device tree names "
              "are used"),
             ("boot_ramdisk", 0, "boot.img is not read")):
@@ -1209,9 +1207,16 @@ def qemu_command(args, image, boot, files, reset):
     machine = ["raspi5b"]
     if boot.armstub:
         machine.append("secure=on")
-        address = boot.config.get("device_tree_address")
-        if address:
-            machine.append(f"dtb-address={c_strtoul(address)[0]:#x}")
+    # Where the firmware loads the kernel and writes the tree, with the
+    # armstub or with its own: an end of 0 bounds nothing
+    for key, option in (("kernel_address", "kernel-address"),
+                        ("device_tree_address", "dtb-address"),
+                        ("device_tree_end", "dtb-end")):
+        value = boot.config.get(key)
+        if value:
+            number = c_strtoul(value)[0]
+            if number or key != "device_tree_end":
+                machine.append(f"{option}={number:#x}")
     if boot.tree is None:
         machine.append("builtin-dtb=off")
     # The firmware resets PCIe2 for the OS unless told to keep it, which

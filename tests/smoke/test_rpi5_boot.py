@@ -1493,6 +1493,30 @@ class PrintTest(unittest.TestCase):
         self.assertEqual((out / "cmdline.txt").read_text(),
                          "console=serial0,115200 root=/dev/sda2\n")
 
+    def test_firmware_addresses(self):
+        """kernel_address, device_tree_address and device_tree_end place
+        the kernel and the tree with the firmware's own armstub as with
+        armstub=; a device_tree_end of 0 bounds nothing"""
+        for n, (config, options) in enumerate((
+                ("kernel_address=0x80000\ndevice_tree_address=0x4f6b000\n"
+                 "device_tree_end=0x516b000\n",
+                 ["kernel-address=0x80000", "dtb-address=0x4f6b000",
+                  "dtb-end=0x516b000"]),
+                ("kernel_address=524288\ndevice_tree_end=0\n",
+                 ["kernel-address=0x80000"]))):
+            with self.subTest(config=config):
+                image = self.tmp / f"addresses{n}.img"
+                make_card(image, {
+                    "config.txt": config, "cmdline.txt": "quiet\n",
+                    "kernel_2712.img": b"kernel",
+                    "bcm2712-rpi-5-b.dtb": dtc(BASE_DTS)})
+                status, stdout, stderr = run_boot(
+                    "--print", "-o", self.tmp / "out", image)
+                self.assertEqual((status, stderr), (0, ""))
+                self.assertEqual(shlex.split(stdout)[2],
+                                 ",".join(["raspi5b", *options,
+                                           "boot-partition=1"]))
+
     def test_pcie2_preinit(self):
         """PCIe2 starts as the firmware leaves it with pciex4_reset=0, the
         default with enable_rp1_uart=1"""

@@ -474,6 +474,10 @@ class BootValuesTest(unittest.TestCase):
     """What the firmware writes afresh for each boot, read from the tree
     the guest gets, at 0 for this guest, before it starts"""
 
+    # Where the machine puts the tree as the firmware does: on the first
+    # 2 MiB boundary from 128 MiB, the guest ELF ending below that
+    TREE_ADDR = 128 << 20
+
     def start(self, *args, machine="raspi5b"):
         return Qmp(self, "-M", machine, "-S", "-kernel", str(GUEST), *args)
 
@@ -489,9 +493,9 @@ class BootValuesTest(unittest.TestCase):
         changes (a watchdog reset's status and partition are the bare-metal
         suite's pm/watchdog-reset)"""
         qmp = self.start()
-        first = qmp.tree(0)
+        first = qmp.tree(self.TREE_ADDR)
         qmp.reset()
-        second = qmp.tree(0)
+        second = qmp.tree(self.TREE_ADDR)
         self.assertEqual(first["/chosen/bootloader"]["count"], cells(1))
         self.assertEqual(second["/chosen/bootloader"]["count"], cells(2))
         for name in ("kaslr-seed", "rng-seed"):
@@ -508,18 +512,18 @@ class BootValuesTest(unittest.TestCase):
         on, from the partition the files came from"""
         qmp = self.start(machine="raspi5b,reset-status=0x30,reboot-flags=1,"
                                  "boot-count=4,boot-partition=3")
-        self.assertEqual(self.boot(qmp.tree(0)), {
+        self.assertEqual(self.boot(qmp.tree(self.TREE_ADDR)), {
             "rsts": 0x30, "partition": 3, "tryboot": 1, "count": 5})
         # The flags were for that boot only
         qmp.reset()
-        self.assertEqual(self.boot(qmp.tree(0)), {
+        self.assertEqual(self.boot(qmp.tree(self.TREE_ADDR)), {
             "rsts": 0x30, "partition": 3, "tryboot": 0, "count": 6})
 
     def test_reset_partition(self):
         """Without boot-partition, the partition is the one the reset
         status asks for: 4, in bits 0, 2, .. 10"""
         qmp = self.start(machine="raspi5b,reset-status=0x1010")
-        self.assertEqual(self.boot(qmp.tree(0)), {
+        self.assertEqual(self.boot(qmp.tree(self.TREE_ADDR)), {
             "rsts": 0x1010, "partition": 4, "tryboot": 0, "count": 1})
 
     def test_count_wraps(self):
@@ -527,7 +531,7 @@ class BootValuesTest(unittest.TestCase):
         qmp = self.start()
         for _ in range(255):
             qmp.reset()
-        self.assertEqual(qmp.tree(0)["/chosen/bootloader"]["count"],
+        self.assertEqual(qmp.tree(self.TREE_ADDR)["/chosen/bootloader"]["count"],
                          cells(0))
 
     def test_count_migrates(self):
@@ -541,10 +545,10 @@ class BootValuesTest(unittest.TestCase):
 
         dst = self.start("-incoming", "defer")
         dst.migrate("migrate-incoming", f"exec:cat {path}")
-        self.assertEqual(dst.tree(0)["/chosen/bootloader"]["count"],
+        self.assertEqual(dst.tree(self.TREE_ADDR)["/chosen/bootloader"]["count"],
                          cells(3))
         dst.reset()
-        self.assertEqual(dst.tree(0)["/chosen/bootloader"]["count"],
+        self.assertEqual(dst.tree(self.TREE_ADDR)["/chosen/bootloader"]["count"],
                          cells(4))
 
 
